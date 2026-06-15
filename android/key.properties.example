@@ -1,0 +1,7 @@
+# Copy to android/key.properties and fill in your release keystore details.
+# Never commit key.properties or the .jks file to git.
+
+storePassword=your_keystore_password
+keyPassword=your_key_password
+keyAlias=coc-omr
+storeFile=../app/upload-keystore.jks
