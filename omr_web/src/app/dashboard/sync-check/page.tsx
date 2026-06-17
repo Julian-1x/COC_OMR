@@ -29,6 +29,9 @@ export default async function SyncCheckPage() {
           {diagnostic.schoolName ? ` · ${diagnostic.schoolName}` : ""}
         </p>
         <p className="mt-1 font-mono text-xs text-slate-500">Account ID: {diagnostic.userId}</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Portal role: <strong>{diagnostic.role ?? "unknown"}</strong>
+        </p>
         {diagnostic.lastCloudUpdate ? (
           <p className="mt-2 text-sm text-slate-600">
             Last cloud update:{" "}

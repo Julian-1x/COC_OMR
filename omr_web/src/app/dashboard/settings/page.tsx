@@ -8,7 +8,7 @@ import { formatDistanceToNow } from "date-fns";
 
 export default async function SettingsPage() {
   const { user, profile, supabase } = await requireTeacherSession();
-  const admin = isSchoolAdmin(profile);
+  const admin = isSchoolAdmin(profile, user);
   const [stats, lastUpdated] = await Promise.all([
     fetchDashboardStats(supabase),
     fetchCloudLastUpdated(supabase),
@@ -39,6 +39,13 @@ export default async function SettingsPage() {
             <div className="flex justify-between gap-4">
               <dt className="font-bold text-slate-500">Email</dt>
               <dd className="font-semibold text-slate-800">{user.email}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="font-bold text-slate-500">Portal role</dt>
+              <dd className="font-semibold capitalize text-slate-800">
+                {profile?.role?.replace("_", " ") ?? "unknown"}
+                {admin ? " · admin access" : ""}
+              </dd>
             </div>
           </dl>
         </Card>

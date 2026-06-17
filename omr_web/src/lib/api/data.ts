@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DbSection, DbStudent, DbSubject, DbScanResult, DbTeacherProfile } from "@/lib/types/database";
 
@@ -7,6 +8,7 @@ export async function fetchProfile(
   supabase: SupabaseClient,
   userId?: string,
 ): Promise<DbTeacherProfile | null> {
+  noStore();
   let id = userId;
   if (!id) {
     const {
@@ -17,7 +19,7 @@ export async function fetchProfile(
   }
   const { data, error } = await supabase
     .from("teacher_profiles")
-    .select("*")
+    .select("id, full_name, role, is_active, school_name, created_at, updated_at")
     .eq("id", id)
     .maybeSingle();
   if (error) throw error;

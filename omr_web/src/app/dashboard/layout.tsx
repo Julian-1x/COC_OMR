@@ -4,13 +4,15 @@ import { isSchoolAdmin } from "@/lib/api/admin";
 import { requireTeacherSession } from "@/lib/api/session";
 import { parsePortalMode, PORTAL_MODE_COOKIE } from "@/lib/portal-mode";
 
+export const dynamic = "force-dynamic";
+
 export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   const { user, profile } = await requireTeacherSession();
-  const admin = isSchoolAdmin(profile);
+  const admin = isSchoolAdmin(profile, user);
   const cookieStore = await cookies();
   const initialMode = parsePortalMode(cookieStore.get(PORTAL_MODE_COOKIE)?.value);
 

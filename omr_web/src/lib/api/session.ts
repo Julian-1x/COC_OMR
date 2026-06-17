@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { isSchoolAdmin } from "@/lib/api/admin";
 import { fetchProfile } from "@/lib/api/data";
 import { getSupabaseServerEnv } from "@/lib/supabase/env";
 import type { DbTeacherProfile } from "@/lib/types/database";
@@ -45,10 +46,7 @@ export async function requireAdminSession(): Promise<{
   profile: DbTeacherProfile;
 }> {
   const session = await requireTeacherSession();
-  if (
-    !session.profile?.is_active ||
-    (session.profile.role !== "admin" && session.profile.role !== "school_admin")
-  ) {
+  if (!isSchoolAdmin(session.profile, session.user) || !session.profile) {
     redirect("/dashboard");
   }
   return {

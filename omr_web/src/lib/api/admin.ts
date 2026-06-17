@@ -1,9 +1,26 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { User } from "@supabase/supabase-js";
 import type { DbTeacherProfile } from "@/lib/types/database";
 
-export function isSchoolAdmin(profile: DbTeacherProfile | null): boolean {
-  if (!profile?.is_active) return false;
-  return profile.role === "admin" || profile.role === "school_admin";
+export function normalizeRole(role: string | null | undefined): string {
+  return role?.trim().toLowerCase() ?? "";
+}
+
+export function isSchoolAdmin(
+  profile: DbTeacherProfile | null,
+  user?: User | null,
+): boolean {
+  if (profile?.is_active === false) return false;
+
+  const profileRole = normalizeRole(profile?.role);
+  if (profileRole === "admin" || profileRole === "school_admin") return true;
+
+  if (!user) return false;
+  const metaRole = normalizeRole(
+    (user.app_metadata?.role as string | undefined) ??
+      (user.user_metadata?.role as string | undefined),
+  );
+  return metaRole === "admin" || metaRole === "school_admin";
 }
 
 export type SchoolTeacherSummary = {
