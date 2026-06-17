@@ -65,3 +65,7 @@ secrets.json
 .cursor/
 dart_analyze_capture.txt
 dart_version_capture.txt
+
+# Next.js web portal build output
+omr_web/.next/
+omr_web/.vercel/

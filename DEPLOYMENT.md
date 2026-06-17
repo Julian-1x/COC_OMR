@@ -52,3 +52,21 @@ Rollout checklist for **ongoing professional use** at Cagayan de Oro College (no
 - Google Play internal / managed distribution
 - MDM push for school-owned devices
 - Department-wide Supabase project review and RLS audit
+
+## Web portal (Vercel)
+
+Production URL: **https://omrweb.vercel.app**
+
+Deploy from repo root:
+
+```powershell
+.\scripts\deploy_web_vercel.ps1
+```
+
+Smoke test after each web deploy:
+
+- [ ] Login works (wrong password shows clear error, not “fetch failed”)
+- [ ] Dashboard loads with skeleton then stats
+- [ ] Phone **Sync Now** → web shows classes/students within one refresh
+- [ ] Answer key save preserves exam date and partial credit
+- [ ] Results CSV uses subject passing score (not hardcoded 75%)
