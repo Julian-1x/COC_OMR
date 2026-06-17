@@ -46,7 +46,10 @@ export async function requireAdminSession(): Promise<{
   profile: DbTeacherProfile;
 }> {
   const session = await requireTeacherSession();
-  if (!isSchoolAdmin(session.profile, session.user) || !session.profile) {
+  if (!isSchoolAdmin(session.profile, session.user)) {
+    redirect("/dashboard");
+  }
+  if (!session.profile) {
     redirect("/dashboard");
   }
   return {

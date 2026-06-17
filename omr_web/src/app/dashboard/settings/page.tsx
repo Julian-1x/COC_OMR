@@ -1,14 +1,20 @@
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
-import { isSchoolAdmin } from "@/lib/api/admin";
+import { isSchoolAdmin, normalizeRole } from "@/lib/api/admin";
 import { fetchCloudLastUpdated, fetchDashboardStats } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
+import { getSupabaseProjectRef } from "@/lib/supabase/env";
 import { workspaceName } from "@/lib/theme";
 import { formatDistanceToNow } from "date-fns";
 
 export default async function SettingsPage() {
   const { user, profile, supabase } = await requireTeacherSession();
   const admin = isSchoolAdmin(profile, user);
+  const cloudProject = getSupabaseProjectRef();
+  const metaRole =
+    normalizeRole(user.app_metadata?.role as string | undefined) ||
+    normalizeRole(user.user_metadata?.role as string | undefined) ||
+    "none";
   const [stats, lastUpdated] = await Promise.all([
     fetchDashboardStats(supabase),
     fetchCloudLastUpdated(supabase),
@@ -47,7 +53,28 @@ export default async function SettingsPage() {
                 {admin ? " · admin access" : ""}
               </dd>
             </div>
+            <div className="flex justify-between gap-4">
+              <dt className="font-bold text-slate-500">Auth metadata role</dt>
+              <dd className="font-semibold text-slate-800">{metaRole}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="font-bold text-slate-500">Cloud project</dt>
+              <dd className="font-mono text-xs text-slate-800">{cloudProject}</dd>
+            </div>
+            <div className="flex justify-between gap-4">
+              <dt className="font-bold text-slate-500">Account ID</dt>
+              <dd className="font-mono text-xs text-slate-800">{user.id}</dd>
+            </div>
           </dl>
+          {!admin ? (
+            <p className="mt-3 text-sm leading-relaxed text-amber-800">
+              Admin access needs <strong>school_admin</strong> in Supabase for project{" "}
+              <strong>{cloudProject}</strong>. In SQL Editor, confirm the URL shows{" "}
+              <strong>{cloudProject}.supabase.co</strong>, then run{" "}
+              <code className="text-xs">supabase/get_my_teacher_profile.sql</code> and promote your
+              account.
+            </p>
+          ) : null}
         </Card>
 
         <Card title="Cloud data for this account">

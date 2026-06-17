@@ -4,6 +4,36 @@ import type { DbSection, DbStudent, DbSubject, DbScanResult, DbTeacherProfile } 
 
 const now = () => new Date().toISOString();
 
+const PROFILE_COLUMNS =
+  "id, full_name, role, is_active, school_name, created_at, updated_at";
+
+async function fetchProfileFromTable(
+  supabase: SupabaseClient,
+  id: string,
+): Promise<DbTeacherProfile | null> {
+  const { data, error } = await supabase
+    .from("teacher_profiles")
+    .select(PROFILE_COLUMNS)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DbTeacherProfile | null;
+}
+
+async function fetchProfileViaRpc(
+  supabase: SupabaseClient,
+): Promise<DbTeacherProfile | null> {
+  const { data, error } = await supabase.rpc("get_my_teacher_profile").maybeSingle();
+  if (error) {
+    // RPC not installed yet — fall back to table read.
+    if (error.code === "PGRST202" || error.message.includes("get_my_teacher_profile")) {
+      return null;
+    }
+    throw error;
+  }
+  return data as DbTeacherProfile | null;
+}
+
 export async function fetchProfile(
   supabase: SupabaseClient,
   userId?: string,
@@ -17,13 +47,11 @@ export async function fetchProfile(
     if (!user) return null;
     id = user.id;
   }
-  const { data, error } = await supabase
-    .from("teacher_profiles")
-    .select("id, full_name, role, is_active, school_name, created_at, updated_at")
-    .eq("id", id)
-    .maybeSingle();
-  if (error) throw error;
-  return data as DbTeacherProfile | null;
+
+  const rpcProfile = await fetchProfileViaRpc(supabase);
+  if (rpcProfile) return rpcProfile;
+
+  return fetchProfileFromTable(supabase, id);
 }
 
 export async function fetchSections(supabase: SupabaseClient): Promise<DbSection[]> {

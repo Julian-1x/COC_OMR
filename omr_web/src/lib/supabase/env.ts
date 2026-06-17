@@ -25,6 +25,11 @@ export function getSupabaseClientEnv() {
   return { url, key };
 }
 
+export function getSupabaseProjectRef(): string {
+  const { url } = getSupabaseServerEnv();
+  return new URL(url).hostname.split(".")[0] ?? "unknown";
+}
+
 export function isSupabaseConfigured(): boolean {
   const { url, key } = getSupabaseClientEnv();
   return Boolean(url?.startsWith("https://") && key);
