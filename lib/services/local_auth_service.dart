@@ -121,19 +121,71 @@ class LocalAuthService {
     final salt = _createSalt();
     final now = DateTime.now().toIso8601String();
 
-    await prefs.setString(_nameKey, trimmedName);
-    await prefs.setString(_schoolKey, school.trim());
-    await _setOrRemove(prefs, _emailKey, email?.trim().toLowerCase());
-    await _setOrRemove(prefs, _cloudUserIdKey, cloudUserId?.trim());
-    await prefs.setString(_pinSaltKey, salt);
-    await prefs.setString(_pinHashKey, _hashPin(pin, salt));
-    await prefs.setString(_createdAtKey, now);
-    await prefs.setString(_lastUnlockedAtKey, now);
+    await _writeProfile(
+      prefs: prefs,
+      name: trimmedName,
+      school: school.trim(),
+      email: email?.trim().toLowerCase(),
+      cloudUserId: cloudUserId?.trim(),
+      pinSalt: salt,
+      pinHash: _hashPin(pin, salt),
+      createdAt: now,
+      lastUnlockedAt: now,
+    );
     await prefs.remove(_failedAttemptsKey);
     await prefs.remove(_cumulativeFailedAttemptsKey);
     await prefs.remove(_cooldownUntilKey);
     _activeCloudUserId = cloudUserId?.trim();
     _isUnlocked = true;
+  }
+
+  /// Restores a profile from cloud-synced PIN credentials on a new device.
+  /// Leaves the session locked until [verifyPin] succeeds.
+  Future<void> installCloudProfile({
+    required String name,
+    required String school,
+    required String pinHash,
+    required String pinSalt,
+    String? email,
+    String? cloudUserId,
+  }) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) {
+      throw ArgumentError('Teacher name is required.');
+    }
+    if (pinHash.trim().isEmpty || pinSalt.trim().isEmpty) {
+      throw ArgumentError('Cloud PIN credentials are incomplete.');
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now().toIso8601String();
+
+    await _writeProfile(
+      prefs: prefs,
+      name: trimmedName,
+      school: school.trim(),
+      email: email?.trim().toLowerCase(),
+      cloudUserId: cloudUserId?.trim(),
+      pinSalt: pinSalt.trim(),
+      pinHash: pinHash.trim(),
+      createdAt: now,
+      lastUnlockedAt: null,
+    );
+    await prefs.remove(_failedAttemptsKey);
+    await prefs.remove(_cumulativeFailedAttemptsKey);
+    await prefs.remove(_cooldownUntilKey);
+    _activeCloudUserId = cloudUserId?.trim();
+    _isUnlocked = false;
+  }
+
+  Future<({String hash, String salt})?> storedPinCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final hash = prefs.getString(_pinHashKey);
+    final salt = prefs.getString(_pinSaltKey);
+    if (hash == null || salt == null) {
+      return null;
+    }
+    return (hash: hash, salt: salt);
   }
 
   Future<LocalAuthResult> verifyPin(String pin) async {
@@ -256,6 +308,31 @@ class LocalAuthService {
       return;
     }
     await prefs.setString(key, value);
+  }
+
+  Future<void> _writeProfile({
+    required SharedPreferences prefs,
+    required String name,
+    required String school,
+    required String pinSalt,
+    required String pinHash,
+    required String createdAt,
+    String? email,
+    String? cloudUserId,
+    String? lastUnlockedAt,
+  }) async {
+    await prefs.setString(_nameKey, name);
+    await prefs.setString(_schoolKey, school);
+    await _setOrRemove(prefs, _emailKey, email);
+    await _setOrRemove(prefs, _cloudUserIdKey, cloudUserId);
+    await prefs.setString(_pinSaltKey, pinSalt);
+    await prefs.setString(_pinHashKey, pinHash);
+    await prefs.setString(_createdAtKey, createdAt);
+    if (lastUnlockedAt == null) {
+      await prefs.remove(_lastUnlockedAtKey);
+    } else {
+      await prefs.setString(_lastUnlockedAtKey, lastUnlockedAt);
+    }
   }
 
   void _validatePin(String pin) {

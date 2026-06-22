@@ -1,14 +1,15 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { formatCorrectAnswer } from "@/lib/omr/answer-key";
+import { scanPassed } from "@/lib/omr/passing-score";
 
 const ROWS_PER_PAGE = 45;
 
-function passingScoreForScan(scan: DbScanResult, subjects: DbSubject[]): number {
+function passingPointsForScan(scan: DbScanResult, subjects: DbSubject[]): number {
   const subject = subjects.find(
     (s) => s.local_id === scan.subject_local_id || s.name === scan.subject_name,
   );
-  return subject?.passing_score ?? 75;
+  return subject?.passing_score ?? Math.round(scan.total_questions * 0.6);
 }
 
 export function exportResultsCsv(
@@ -30,7 +31,7 @@ export function exportResultsCsv(
   const lines = filtered.map((scan) => {
     const student = studentMap.get(scan.student_omr_id);
     const pct = scan.total_questions > 0 ? Math.round((scan.score / scan.total_questions) * 100) : 0;
-    const passed = pct >= passingScoreForScan(scan, subjects);
+    const passed = scanPassed(scan.score, scan.total_questions, passingPointsForScan(scan, subjects));
     return [
       student?.school_id ?? "",
       scan.student_omr_id,

@@ -170,6 +170,9 @@ class Section {
   String name;
   String? teacher;
   int? studentCount;
+  String? schoolYear;
+  String? termLabel;
+  DateTime? archivedAt;
   String? ownerTeacherId;
   String? cloudId;
   String syncStatus;
@@ -179,17 +182,52 @@ class Section {
     required this.name,
     this.teacher,
     this.studentCount,
+    this.schoolYear,
+    this.termLabel,
+    this.archivedAt,
     this.ownerTeacherId,
     this.cloudId,
     this.syncStatus = SyncStatus.pending,
     DateTime? updatedAt,
   }) : updatedAt = updatedAt ?? DateTime.now();
 
+  bool get isArchived => archivedAt != null;
+
+  Section copyWith({
+    String? name,
+    String? teacher,
+    int? studentCount,
+    String? schoolYear,
+    String? termLabel,
+    DateTime? archivedAt,
+    bool clearArchivedAt = false,
+    String? ownerTeacherId,
+    String? cloudId,
+    String? syncStatus,
+    DateTime? updatedAt,
+  }) {
+    return Section(
+      name: name ?? this.name,
+      teacher: teacher ?? this.teacher,
+      studentCount: studentCount ?? this.studentCount,
+      schoolYear: schoolYear ?? this.schoolYear,
+      termLabel: termLabel ?? this.termLabel,
+      archivedAt: clearArchivedAt ? null : (archivedAt ?? this.archivedAt),
+      ownerTeacherId: ownerTeacherId ?? this.ownerTeacherId,
+      cloudId: cloudId ?? this.cloudId,
+      syncStatus: syncStatus ?? this.syncStatus,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'name': name,
       'teacher': teacher,
       'studentCount': studentCount,
+      'schoolYear': schoolYear,
+      'termLabel': termLabel,
+      'archivedAt': archivedAt?.toIso8601String(),
       'ownerTeacherId': ownerTeacherId,
       'cloudId': cloudId,
       'syncStatus': syncStatus,
@@ -202,6 +240,9 @@ class Section {
       name: json['name']?.toString() ?? '',
       teacher: json['teacher']?.toString(),
       studentCount: json['studentCount'] as int?,
+      schoolYear: json['schoolYear']?.toString(),
+      termLabel: json['termLabel']?.toString(),
+      archivedAt: DateTime.tryParse(json['archivedAt']?.toString() ?? ''),
       ownerTeacherId: json['ownerTeacherId']?.toString(),
       cloudId: json['cloudId']?.toString(),
       syncStatus: json['syncStatus']?.toString() ?? SyncStatus.pending,
@@ -761,12 +802,17 @@ class SubjectDeletionSummary {
     required this.removedScans,
     required this.removedDeadlines,
     required this.affectedStudents,
+    this.detachedSectionName,
   });
 
   final int removedSubjects;
   final int removedScans;
   final int removedDeadlines;
   final int affectedStudents;
+  final String? detachedSectionName;
+
+  bool get removedFromSectionOnly =>
+      detachedSectionName != null && removedSubjects == 0;
 }
 
 /// Canonical section name used across roster import and class management.
@@ -779,12 +825,30 @@ class SectionDeletionSummary {
     required this.removedScans,
     required this.removedDeadlines,
     required this.removedSection,
+    this.removedReviewImages = 0,
   });
 
   final int removedStudents;
   final int removedScans;
   final int removedDeadlines;
   final bool removedSection;
+  final int removedReviewImages;
+}
+
+class SectionArchiveSummary {
+  const SectionArchiveSummary({
+    required this.removedStudents,
+    required this.removedScans,
+    required this.removedDeadlines,
+    required this.removedReviewImages,
+    required this.archivedSection,
+  });
+
+  final int removedStudents;
+  final int removedScans;
+  final int removedDeadlines;
+  final int removedReviewImages;
+  final bool archivedSection;
 }
 
 class SectionRenameSummary {
@@ -880,6 +944,90 @@ SubjectDeletionSummary deleteSubjectAndRelatedData(Subject subject) {
   );
 }
 
+SubjectDeletionSummary removeSubjectFromSectionInMemory({
+  required Subject subject,
+  required String sectionName,
+}) {
+  final target = normalizeSectionName(sectionName);
+  final assigned = (subject.sectionNames ?? const <String>[])
+      .map(normalizeSectionName)
+      .toList();
+
+  if (!assigned.contains(target)) {
+    throw StateError('Section "$sectionName" is not assigned to this answer key.');
+  }
+
+  if (assigned.length <= 1) {
+    return deleteSubjectAndRelatedData(subject);
+  }
+
+  final remainingNames = (subject.sectionNames ?? const <String>[])
+      .where((name) => normalizeSectionName(name) != target)
+      .toList();
+  final studentOmrIdsInSection = globalStudentDatabase
+      .where((student) => normalizeSectionName(student.section) == target)
+      .map((student) => student.omrId)
+      .toSet();
+  final removedScans = globalScanResults
+      .where(
+        (result) =>
+            result.subjectId == subject.id &&
+            studentOmrIdsInSection.contains(result.studentOmrId),
+      )
+      .toList();
+  final removedDeadlines = globalDeadlines
+      .where(
+        (deadline) =>
+            deadline.subjectId == subject.id &&
+            deadline.sectionName != null &&
+            normalizeSectionName(deadline.sectionName!) == target,
+      )
+      .toList();
+  final affectedStudents =
+      removedScans.map((result) => result.studentOmrId).toSet();
+
+  final updatedQrData = Map<String, String>.from(subject.sectionQrData)
+    ..removeWhere((key, _) => normalizeSectionName(key) == target);
+
+  final index = globalSubjects.indexWhere((entry) => entry.id == subject.id);
+  if (index != -1) {
+    globalSubjects[index] = subject.copyWith(
+      sectionNames: remainingNames,
+      sectionQrData: updatedQrData,
+      syncStatus: SyncStatus.pending,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  globalScanResults.removeWhere(
+    (result) =>
+        result.subjectId == subject.id &&
+        studentOmrIdsInSection.contains(result.studentOmrId),
+  );
+  globalDeadlines.removeWhere(
+    (deadline) =>
+        deadline.subjectId == subject.id &&
+        deadline.sectionName != null &&
+        normalizeSectionName(deadline.sectionName!) == target,
+  );
+
+  for (final omrId in affectedStudents) {
+    _refreshStudentSnapshotFromLatestScan(omrId);
+  }
+  rebuildStudentIndex();
+
+  final detachedSection = (subject.sectionNames ?? const <String>[])
+      .firstWhere((name) => normalizeSectionName(name) == target);
+
+  return SubjectDeletionSummary(
+    removedSubjects: 0,
+    removedScans: removedScans.length,
+    removedDeadlines: removedDeadlines.length,
+    affectedStudents: affectedStudents.length,
+    detachedSectionName: detachedSection,
+  );
+}
+
 // GLOBAL OMR COUNTER with thread safety
 int _globalOmrCounter = 1;
 int _globalSubjectCounter = 1;
@@ -890,8 +1038,11 @@ String buildStudentOmrId(
   String schoolId, {
   Set<String> reservedOmrIds = const <String>{},
 }) {
-  // Generate sequential IDs starting from current counter
+  // Generate sequential IDs starting from current counter (max 9999 = 4 digits).
   for (var attempt = 0; attempt < 9999; attempt++) {
+    if (_globalOmrCounter > 9999) {
+      break;
+    }
     final omrId = _globalOmrCounter.toString().padLeft(4, '0');
     _globalOmrCounter++;
 
@@ -906,6 +1057,9 @@ String buildStudentOmrId(
 
 // Legacy sequential OMR IDs remain available for older flows and tests.
 String generateNextOmrId() {
+  if (_globalOmrCounter > 9999) {
+    throw StateError('No available OMR IDs remaining.');
+  }
   final id = _globalOmrCounter.toString().padLeft(4, '0');
   _globalOmrCounter++;
   return id;

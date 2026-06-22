@@ -78,7 +78,7 @@ void main() {
     expect(merged.students.single.name, 'Ana Local');
   });
 
-  test('cloud merge prefers cloud when local has no cloud id', () {
+  test('cloud merge keeps pending local row without cloud id when newer', () {
     final merged = CloudSnapshotMerger.merge(
       localSections: const <Section>[],
       localStudents: [
@@ -109,8 +109,44 @@ void main() {
       ),
     );
 
-    expect(merged.students.single.name, 'Ana Cloud');
-    expect(merged.students.single.cloudId, 'stu-1');
+    expect(merged.students.single.name, 'Ana Local');
+    expect(merged.students.single.cloudId, isNull);
+  });
+
+  test('cloud merge collapses duplicate school ids with different omr ids', () {
+    final merged = CloudSnapshotMerger.merge(
+      localSections: const <Section>[],
+      localStudents: [
+        Student(
+          schoolId: '02-2223-44444',
+          omrId: '0007',
+          name: 'Marjorie Agcopra',
+          section: 'BSIT-01',
+          syncStatus: SyncStatus.pending,
+          updatedAt: DateTime(2026, 4, 10),
+        ),
+      ],
+      localSubjects: const <Subject>[],
+      localScanResults: const <ScanResult>[],
+      localDeadlines: const <Deadline>[],
+      cloud: CloudPullSnapshot(
+        students: [
+          Student(
+            schoolId: '02-2223-44444',
+            omrId: '0025',
+            name: 'Marjorie Agcopra',
+            section: 'BSIT-01',
+            cloudId: 'stu-dup',
+            syncStatus: SyncStatus.synced,
+            updatedAt: DateTime(2026, 4, 8),
+          ),
+        ],
+      ),
+    );
+
+    expect(merged.students.length, 1);
+    expect(merged.students.single.omrId, '0007');
+    expect(merged.students.single.schoolId, '02-2223-44444');
   });
 
   test('cloud merge keeps old and new section names when cloud was not tombstoned', () {

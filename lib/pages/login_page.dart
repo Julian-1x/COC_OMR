@@ -1,12 +1,18 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:omr_app/pages/dashboard_page.dart';
+import 'package:omr_app/pages/welcome_onboarding_page.dart';
 import 'package:omr_app/services/cloud_auth_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/onboarding_preferences_service.dart';
 import 'package:omr_app/services/supabase_service.dart';
 import 'package:omr_app/services/supabase_sync_service.dart';
+import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/widgets/app_pin_input.dart';
@@ -18,6 +24,7 @@ enum _AuthMode { login, register }
 
 enum _LoginStage {
   onlineAuth,
+  awaitingEmailConfirmation,
   offlinePinSetup,
   offlineUnlock,
 }
@@ -36,8 +43,6 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _schoolController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  final TextEditingController _pinController = TextEditingController();
-  final TextEditingController _confirmPinController = TextEditingController();
   final TextEditingController _unlockPinController = TextEditingController();
 
   _AuthMode _mode = _AuthMode.login;
@@ -47,24 +52,188 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscurePassword = true;
   CloudTeacherAccount? _pendingTrustedAccount;
   LocalTeacherProfile? _offlineProfile;
-  _PinSetupStep _pinSetupStep = _PinSetupStep.enter;
+  bool _isNewRegistration = false;
+  bool _restoredPinFromCloud = false;
+  bool _confirmedEmailThisSession = false;
+  String? _pendingConfirmationEmail;
+  bool _isDeviceOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  StreamSubscription<Uri>? _authLinkSub;
+  final AppLinks _appLinks = AppLinks();
 
   @override
   void initState() {
     super.initState();
-    unawaited(_restoreSession());
+    unawaited(_bootstrapAuth());
+    unawaited(_initConnectivity());
+  }
+
+  Future<void> _bootstrapAuth() async {
+    await _restoreSession();
+    await _initAuthDeepLinks();
   }
 
   @override
   void dispose() {
+    _connectivitySub?.cancel();
+    _authLinkSub?.cancel();
     _nameController.dispose();
     _schoolController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
-    _pinController.dispose();
-    _confirmPinController.dispose();
     _unlockPinController.dispose();
     super.dispose();
+  }
+
+  Future<void> _initConnectivity() async {
+    final connectivity = Connectivity();
+    final initial = await connectivity.checkConnectivity();
+    if (mounted) {
+      setState(() => _isDeviceOnline = _hasNetworkConnection(initial));
+    }
+
+    _connectivitySub = connectivity.onConnectivityChanged.listen((results) {
+      if (!mounted) {
+        return;
+      }
+      final wasOffline = !_isDeviceOnline;
+      final isOnline = _hasNetworkConnection(results);
+      setState(() => _isDeviceOnline = isOnline);
+      if (wasOffline &&
+          isOnline &&
+          _stage == _LoginStage.offlineUnlock &&
+          !_isLoading) {
+        _showMessage(
+          'You\'re back online. After unlock, open Settings and tap Sync now to upload your work.',
+          isError: false,
+        );
+      }
+    });
+  }
+
+  bool _hasNetworkConnection(List<ConnectivityResult> results) {
+    return results.any((result) => result != ConnectivityResult.none);
+  }
+
+  Future<void> _initAuthDeepLinks() async {
+    if (!SupabaseService.isReady) {
+      return;
+    }
+
+    try {
+      final initial = await _appLinks.getInitialLink();
+      if (initial != null) {
+        await _handleAuthDeepLink(initial);
+      }
+    } catch (error) {
+      debugPrint('Auth deep link (initial) failed: $error');
+    }
+
+    _authLinkSub = _appLinks.uriLinkStream.listen(
+      (uri) => unawaited(_handleAuthDeepLink(uri)),
+      onError: (Object error) {
+        debugPrint('Auth deep link stream failed: $error');
+      },
+    );
+  }
+
+  bool _isAuthCallbackUri(Uri uri) {
+    return uri.scheme == 'edu.coc.omr' && uri.host == 'login-callback';
+  }
+
+  Future<void> _handleAuthDeepLink(Uri uri) async {
+    if (!mounted || !SupabaseService.isReady || !_isAuthCallbackUri(uri)) {
+      return;
+    }
+
+    final client = SupabaseService.client;
+    if (client == null) {
+      return;
+    }
+
+    try {
+      await client.auth.getSessionFromUrl(uri);
+      if (!mounted) {
+        return;
+      }
+      _confirmedEmailThisSession = true;
+      await _continueWithActiveSession(
+        fromEmailConfirmation: true,
+        isNewRegistration: _isNewRegistration,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showMessage(
+        UserErrorMessages.friendlyError(error),
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _continueWithActiveSession({
+    bool fromEmailConfirmation = false,
+    bool isNewRegistration = false,
+  }) async {
+    if (SupabaseService.client?.auth.currentSession == null) {
+      return;
+    }
+
+    final currentUser = SupabaseService.client?.auth.currentUser;
+    final profile = await _localAuth.loadProfile();
+    if (profile == null && currentUser != null) {
+      final account = await _auth.accountFromCurrentSession();
+      final resolvedAccount = account ??
+          CloudTeacherAccount(
+            id: currentUser.id,
+            email: currentUser.email ?? '',
+            name: currentUser.email ?? 'Teacher',
+            isActive: true,
+          );
+      if (await _tryRestoreCloudPinProfile(resolvedAccount)) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          if (fromEmailConfirmation) {
+            _showMessage(
+              'Email confirmed! Enter your PIN to open the dashboard.',
+              isError: false,
+            );
+          }
+          await _goToOfflineUnlock(restoredFromCloud: true);
+        }
+        return;
+      }
+      if (mounted) {
+        if (fromEmailConfirmation) {
+          _showMessage(
+            'Email confirmed! Create your PIN — then you\'re in.',
+            isError: false,
+          );
+        }
+        setState(() {
+          _pendingTrustedAccount = resolvedAccount;
+          _isNewRegistration = isNewRegistration || _isNewRegistration;
+          _restoredPinFromCloud = false;
+          _stage = _LoginStage.offlinePinSetup;
+          _isLoading = false;
+          _isSubmitting = false;
+        });
+      }
+      return;
+    }
+
+    await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
+    await _pullCloudData(showErrors: fromEmailConfirmation);
+    await _syncPinToCloudIfNeeded();
+    if (!mounted) {
+      return;
+    }
+    setState(() => _isLoading = false);
+    if (fromEmailConfirmation) {
+      _showMessage('Email confirmed! Opening your dashboard…', isError: false);
+    }
+    unawaited(_enterAppAfterAuth(showWelcome: false));
   }
 
   Future<void> _restoreSession() async {
@@ -84,32 +253,7 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     if (SupabaseService.client?.auth.currentSession != null) {
-      final currentUser = SupabaseService.client?.auth.currentUser;
-      final profile = await _localAuth.loadProfile();
-      if (profile == null && currentUser != null) {
-        final account = await _auth.accountFromCurrentSession();
-        if (mounted) {
-          setState(() {
-            _pendingTrustedAccount = account ??
-                CloudTeacherAccount(
-                  id: currentUser.id,
-                  email: currentUser.email ?? '',
-                  name: currentUser.email ?? 'Teacher',
-                  isActive: true,
-                );
-            _stage = _LoginStage.offlinePinSetup;
-            _isLoading = false;
-          });
-        }
-        return;
-      }
-      await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
-      await _pullCloudData(showErrors: true);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          unawaited(_enterDashboard());
-        }
-      });
+      await _continueWithActiveSession();
       return;
     }
 
@@ -173,14 +317,47 @@ class _LoginPageState extends State<LoginPage> {
 
     setState(() => _isSubmitting = true);
     try {
-      final account = isRegister
-          ? await _auth.registerTeacher(
-              name: name,
-              email: email,
-              password: password,
-              school: school,
-            )
-          : await _auth.signInTeacher(email: email, password: password);
+      if (isRegister) {
+        final registration = await _auth.registerTeacher(
+          name: name,
+          email: email,
+          password: password,
+          school: school,
+        );
+
+        if (!mounted) {
+          return;
+        }
+
+        if (registration.needsEmailConfirmation) {
+          setState(() {
+            _isSubmitting = false;
+            _isNewRegistration = true;
+            _pendingConfirmationEmail =
+                registration.pendingEmail ?? email.trim().toLowerCase();
+            _stage = _LoginStage.awaitingEmailConfirmation;
+          });
+          return;
+        }
+
+        final account = registration.account;
+        if (account == null) {
+          throw const CloudAuthException(
+            'Registration did not finish. Try again.',
+          );
+        }
+
+        await _pullCloudData(showErrors: true);
+        if (!mounted) {
+          return;
+        }
+
+        setState(() => _isSubmitting = false);
+        await _routeAfterOnlineAuth(account, isNewRegistration: true);
+        return;
+      }
+
+      final account = await _auth.signInTeacher(email: email, password: password);
 
       if (!mounted) {
         return;
@@ -191,21 +368,8 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      final existingProfile = await _localAuth.loadProfile();
-      if (existingProfile?.cloudUserId == account.id) {
-        setState(() => _isSubmitting = false);
-        await _enterDashboard();
-        return;
-      }
-
-      setState(() {
-        _pendingTrustedAccount = account;
-        _stage = _LoginStage.offlinePinSetup;
-        _pinSetupStep = _PinSetupStep.enter;
-        _pinController.clear();
-        _confirmPinController.clear();
-        _isSubmitting = false;
-      });
+      setState(() => _isSubmitting = false);
+      await _routeAfterOnlineAuth(account, isNewRegistration: false);
     } catch (error) {
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -214,24 +378,18 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  Future<void> _createOfflinePin() async {
+  Future<void> _createOfflinePin(String pin) async {
     final account = _pendingTrustedAccount;
     if (account == null) {
       _showMessage(
-        'Sign in online before creating offline unlock.',
+        'Sign in with your email first, then create a PIN.',
         isError: true,
       );
       return;
     }
 
-    final pin = _pinController.text.trim();
-    final confirmPin = _confirmPinController.text.trim();
     if (!RegExp(r'^\d{4,6}$').hasMatch(pin)) {
       _showMessage('PIN must be 4 to 6 digits.', isError: true);
-      return;
-    }
-    if (pin != confirmPin) {
-      _showMessage('PIN confirmation does not match.', isError: true);
       return;
     }
 
@@ -244,12 +402,45 @@ class _LoginPageState extends State<LoginPage> {
         cloudUserId: account.id,
         pin: pin,
       );
+      final credentials = await _localAuth.storedPinCredentials();
+      var cloudBackupOk = false;
+      if (credentials != null) {
+        for (var attempt = 0; attempt < 2; attempt++) {
+          try {
+            await TeacherPinSyncService.instance.uploadPin(
+              pinHash: credentials.hash,
+              pinSalt: credentials.salt,
+            );
+            cloudBackupOk = true;
+            break;
+          } catch (error) {
+            if (attempt == 1 && mounted) {
+              final message = error is PinSyncException
+                  ? error.message
+                  : 'PIN saved on this phone, but cloud backup failed. '
+                      'Stay on Wi‑Fi — open Settings after login to retry backup.';
+              _showMessage(message, isError: true);
+            }
+            if (attempt == 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 800));
+            }
+          }
+        }
+      }
       await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
       await _pullCloudData(showErrors: true);
       if (!mounted) {
         return;
       }
-      await _enterDashboard();
+      if (cloudBackupOk && mounted) {
+        _showMessage(
+          'PIN saved. You can use it on this phone and restore it after reinstall or on a new phone.',
+          isError: false,
+        );
+      }
+      await _enterAppAfterAuth(
+        showWelcome: _isNewRegistration && !_confirmedEmailThisSession,
+      );
     } catch (error) {
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -281,18 +472,129 @@ class _LoginPageState extends State<LoginPage> {
       _unlockPinController.clear();
       _showMessage(
         cooldown == null
-            ? result.message ?? 'Offline unlock failed.'
+            ? result.message ?? 'PIN unlock failed.'
             : '${result.message} ${cooldown.inSeconds}s remaining.',
         isError: true,
       );
       return;
     }
 
+    await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
     await LocalDataStore.instance.reloadForCurrentTeacher();
+    await _syncPinToCloudIfNeeded();
     if (!mounted) {
       return;
     }
     await _enterDashboard();
+  }
+
+  Future<void> _routeAfterOnlineAuth(
+    CloudTeacherAccount account, {
+    required bool isNewRegistration,
+  }) async {
+    final existingProfile = await _localAuth.loadProfile();
+    if (existingProfile?.cloudUserId == account.id &&
+        await _localAuth.hasProfile()) {
+      await _syncPinToCloudIfNeeded();
+      await _enterAppAfterAuth(showWelcome: isNewRegistration);
+      return;
+    }
+
+    if (await _tryRestoreCloudPinProfile(account)) {
+      await _goToOfflineUnlock(restoredFromCloud: true);
+      return;
+    }
+
+    setState(() {
+      _pendingTrustedAccount = account;
+      _isNewRegistration = isNewRegistration;
+      _restoredPinFromCloud = false;
+      _stage = _LoginStage.offlinePinSetup;
+    });
+  }
+
+  Future<bool> _tryRestoreCloudPinProfile(CloudTeacherAccount account) async {
+    if (!SupabaseService.hasActiveSession) {
+      return false;
+    }
+
+    final cloudPin = await TeacherPinSyncService.instance.fetchForCurrentUser();
+    if (cloudPin == null) {
+      return false;
+    }
+
+    await _localAuth.installCloudProfile(
+      name: cloudPin.name.isNotEmpty ? cloudPin.name : account.name,
+      school: cloudPin.school ?? _schoolController.text.trim(),
+      pinHash: cloudPin.pinHash,
+      pinSalt: cloudPin.pinSalt,
+      email: cloudPin.email ?? account.email,
+      cloudUserId: cloudPin.cloudUserId ?? account.id,
+    );
+    return true;
+  }
+
+  Future<void> _goToOfflineUnlock({required bool restoredFromCloud}) async {
+    final profile = await _localAuth.loadProfile();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _offlineProfile = profile;
+      _restoredPinFromCloud = restoredFromCloud;
+      _stage = _LoginStage.offlineUnlock;
+      _unlockPinController.clear();
+      _isSubmitting = false;
+    });
+  }
+
+  Future<void> _syncPinToCloudIfNeeded() async {
+    await TeacherPinSyncService.instance.syncLocalPinIfMissing(
+      readLocal: _localAuth.storedPinCredentials,
+    );
+  }
+
+  Future<void> _enterAppAfterAuth({bool showWelcome = false}) async {
+    await LocalDataStore.instance.reloadForCurrentTeacher();
+    if (!mounted) {
+      return;
+    }
+
+    final completed = await OnboardingPreferencesService.hasCompletedOnboarding();
+    if (!showWelcome && completed) {
+      _openDashboard();
+      return;
+    }
+
+    final profile = await _localAuth.loadProfile();
+    final teacherName = profile?.name ??
+        _pendingTrustedAccount?.name ??
+        _offlineProfile?.name;
+
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute<void>(
+        builder: (context) => WelcomeOnboardingPage(
+          teacherName: teacherName,
+          onFinished: () async {
+            await OnboardingPreferencesService.setOnboardingCompleted();
+            if (!context.mounted) {
+              return;
+            }
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute<void>(
+                builder: (context) => const DashboardPage(),
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _enterDashboard() async {
@@ -303,35 +605,24 @@ class _LoginPageState extends State<LoginPage> {
     _openDashboard();
   }
 
-  void _advancePinSetup() {
-    final pin = _pinController.text.trim();
-    if (!RegExp(r'^\d{4,6}$').hasMatch(pin)) {
-      _showMessage('PIN must be 4 to 6 digits.', isError: true);
-      return;
-    }
-    setState(() {
-      _pinSetupStep = _PinSetupStep.confirm;
-      _confirmPinController.clear();
-    });
+  void _openDashboard() {
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute<void>(builder: (context) => const DashboardPage()),
+    );
   }
 
   void _showOnlineLogin() {
     setState(() {
       _stage = _LoginStage.onlineAuth;
       _isSubmitting = false;
+      _restoredPinFromCloud = false;
       _unlockPinController.clear();
     });
   }
 
   bool _isValidEmail(String value) {
     return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(value);
-  }
-
-  void _openDashboard() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute<void>(builder: (context) => const DashboardPage()),
-    );
   }
 
   void _showMessage(String message, {required bool isError}) {
@@ -385,6 +676,8 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildPinStageLayout() {
+    final isSetup = _stage == _LoginStage.offlinePinSetup;
+
     return Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 500),
@@ -397,19 +690,25 @@ class _LoginPageState extends State<LoginPage> {
           ),
           child: Column(
             children: [
-              const CocSealLogo(size: 80),
+              CocSealLogo(size: isSetup ? 64 : 80),
               const SizedBox(height: AppSpacing.md),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: _stage == _LoginStage.offlinePinSetup
-                      ? _buildPinSetupContent()
-                      : _buildOfflineUnlockContent(),
+              if (isSetup)
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: _buildPinSetupContent(),
+                  ),
+                )
+              else
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: _buildOfflineUnlockContent(),
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              _stage == _LoginStage.offlinePinSetup
-                  ? _buildPinSetupActions()
-                  : _buildOfflineUnlockActions(),
+              if (!isSetup) ...[
+                const SizedBox(height: AppSpacing.md),
+                _buildOfflineUnlockActions(),
+              ],
             ],
           ),
         ),
@@ -419,12 +718,95 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildAuthPanel() {
     switch (_stage) {
+      case _LoginStage.awaitingEmailConfirmation:
+        return _buildAwaitingEmailConfirmationPanel();
       case _LoginStage.offlinePinSetup:
-        return _buildPinSetupPanel();
+        return _buildPinSetupContent();
       case _LoginStage.offlineUnlock:
         return _buildOfflineUnlockPanel();
       case _LoginStage.onlineAuth:
         return _buildOnlineAuthPanel();
+    }
+  }
+
+  Widget _buildAwaitingEmailConfirmationPanel() {
+    final email = _pendingConfirmationEmail ?? _emailController.text.trim();
+
+    return AuthShell(
+      title: 'Check your email',
+      subtitle:
+          'We sent a confirmation link to finish setting up your account.',
+      badge: AuthBadgeType.online,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _statusNote(
+            icon: Icons.mark_email_read_outlined,
+            text:
+                'Open the email on this phone and tap Confirm.\n\n'
+                'COC OMR will open automatically. Create your PIN once, then you\'ll land on your dashboard — no need to sign in again.',
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _statusNote(
+            icon: Icons.alternate_email_rounded,
+            text: email.isEmpty ? 'Your school email' : email,
+          ),
+          const SizedBox(height: AppSpacing.xl),
+          AppPrimaryButton(
+            label: 'I confirmed — continue',
+            icon: Icons.arrow_forward_rounded,
+            isLoading: _isSubmitting,
+            onPressed: !_isSubmitting ? _retryAfterEmailConfirmation : null,
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          TextButton(
+            onPressed: _isSubmitting
+                ? null
+                : () {
+                    setState(() {
+                      _stage = _LoginStage.onlineAuth;
+                      _mode = _AuthMode.login;
+                    });
+                  },
+            child: const Text('Back to sign in'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _retryAfterEmailConfirmation() async {
+    if (!SupabaseService.isReady) {
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+    try {
+      await SupabaseService.client?.auth.refreshSession();
+      if (!mounted) {
+        return;
+      }
+
+      if (SupabaseService.client?.auth.currentSession != null) {
+        _confirmedEmailThisSession = true;
+        await _continueWithActiveSession(
+          fromEmailConfirmation: true,
+          isNewRegistration: true,
+        );
+        return;
+      }
+
+      setState(() => _isSubmitting = false);
+      _showMessage(
+        'Not confirmed yet. Tap the link in your email first, then try again.',
+        isError: true,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _isSubmitting = false);
+      _showMessage(UserErrorMessages.friendlyError(error), isError: true);
     }
   }
 
@@ -486,28 +868,19 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
-  Widget _buildPinSetupPanel() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildPinSetupContent(),
-        const SizedBox(height: AppSpacing.md),
-        _buildPinSetupActions(),
-      ],
-    );
-  }
-
   Widget _buildPinSetupContent() {
     final account = _pendingTrustedAccount;
-    final isConfirm = _pinSetupStep == _PinSetupStep.confirm;
 
     return AuthShell(
-      title: 'Create Offline PIN',
-      subtitle: 'Use this PIN on exam days when there is no internet.',
-      badge: AuthBadgeType.online,
+      title: 'Create your PIN',
+      subtitle: _confirmedEmailThisSession
+          ? 'Last step — then your dashboard opens.'
+          : 'One PIN for exam day — on this phone, after reinstall, or on a new phone.',
+      badge: AuthBadgeType.none,
       showLogo: false,
       compact: true,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (account != null)
@@ -515,65 +888,15 @@ class _LoginPageState extends State<LoginPage> {
               icon: Icons.verified_user_rounded,
               text: account.email.isEmpty
                   ? 'Your online account is verified.'
-                  : 'Trusted account: ${account.email}',
+                  : 'Signed in as ${account.email}',
             ),
           if (account != null) const SizedBox(height: AppSpacing.md),
-          if (isConfirm)
-            const Padding(
-              padding: EdgeInsets.only(bottom: AppSpacing.sm),
-              child: Text(
-                'Re-enter the same PIN to confirm.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.brandMuted,
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          AppPinInput(
-            key: ValueKey(isConfirm ? 'pin-confirm' : 'pin-enter'),
-            controller: isConfirm ? _confirmPinController : _pinController,
-            label: isConfirm ? 'Confirm PIN' : 'Choose a PIN',
-            enabled: !_isSubmitting,
-            compact: true,
+          AppPinSetupFlow(
+            isLoading: _isSubmitting,
+            onConfirmed: _createOfflinePin,
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildPinSetupActions() {
-    final isConfirm = _pinSetupStep == _PinSetupStep.confirm;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (!isConfirm)
-          AppPrimaryButton(
-            label: 'Continue',
-            icon: Icons.arrow_forward_rounded,
-            onPressed: _advancePinSetup,
-          )
-        else ...[
-          AppPrimaryButton(
-            label: 'Trust This Device',
-            icon: Icons.verified_rounded,
-            isLoading: _isSubmitting,
-            onPressed: _createOfflinePin,
-          ),
-          const SizedBox(height: AppSpacing.sm),
-          TextButton(
-            onPressed: _isSubmitting
-                ? null
-                : () => setState(() {
-                      _pinSetupStep = _PinSetupStep.enter;
-                      _confirmPinController.clear();
-                    }),
-            child: const Text('Change PIN'),
-          ),
-        ],
-      ],
     );
   }
 
@@ -593,18 +916,39 @@ class _LoginPageState extends State<LoginPage> {
 
     return AuthShell(
       title: 'Enter your PIN',
-      subtitle: 'Unlock this trusted device without Wi‑Fi.',
+      subtitle: _restoredPinFromCloud
+          ? 'Use the same PIN you set before. It works offline on this phone too.'
+          : _isDeviceOnline
+              ? 'Unlock your trusted device to continue grading.'
+              : 'You can keep scanning and grading. Your work saves on this phone.',
       teacherName: profile?.name,
       schoolName: profile?.school,
-      badge: AuthBadgeType.offline,
+      badge: _isDeviceOnline ? AuthBadgeType.none : AuthBadgeType.offline,
       showLogo: false,
       compact: true,
-      child: AppPinInput(
-        key: const ValueKey('pin-unlock'),
-        controller: _unlockPinController,
-        label: 'Offline PIN',
-        enabled: !_isSubmitting,
-        compact: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!_isDeviceOnline) ...[
+            _statusNote(
+              icon: Icons.wifi_off_rounded,
+              text:
+                  'No Wi‑Fi or mobile data right now.\n\n'
+                  '• Scanning and grading still work — scores stay on this phone.\n'
+                  '• When internet returns, unlock and go to Settings → Sync now to upload.\n'
+                  '• Or tap Use online login below if you prefer email sign-in.',
+              isWarning: true,
+            ),
+            const SizedBox(height: AppSpacing.md),
+          ],
+          AppPinInput(
+            key: const ValueKey('pin-unlock'),
+            controller: _unlockPinController,
+            label: 'PIN',
+            enabled: !_isSubmitting,
+            compact: true,
+          ),
+        ],
       ),
     );
   }
@@ -841,5 +1185,3 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
-
-enum _PinSetupStep { enter, confirm }

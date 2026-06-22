@@ -8,7 +8,6 @@ import org.opencv.android.OpenCVLoader
 import android.util.Log
 import kotlinx.coroutines.*
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "opencv"
@@ -19,37 +18,71 @@ class MainActivity: FlutterActivity() {
     
     // Concurrent processing limits for low-end devices
     private val isProcessing = AtomicBoolean(false)
-    private var openCvLoadAttempts = AtomicInteger(0)
-    private val MAX_OPENCV_LOAD_ATTEMPTS = 3
+    private var openCvInitJob: Job? = null
+    private var openCvReadyDeferred: CompletableDeferred<Boolean>? = null
+    private val MAX_OPENCV_LOAD_ATTEMPTS = 30
     private val MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  // 20MB max
     private val MIN_FREE_MEMORY_MB = 50
 
-    private fun initializeOpenCv() {
+    private fun initializeOpenCv(forceRestart: Boolean = false) {
         if (openCvInitialized) {
             return
         }
 
-        processingScope.launch {
-            while (!openCvInitialized &&
-                openCvLoadAttempts.get() < MAX_OPENCV_LOAD_ATTEMPTS) {
-                val attempt = openCvLoadAttempts.incrementAndGet()
+        if (forceRestart) {
+            openCvInitJob?.cancel()
+            openCvInitJob = null
+            openCvReadyDeferred?.cancel()
+            openCvReadyDeferred = null
+        } else if (openCvInitJob?.isActive == true) {
+            return
+        }
+
+        val deferred = CompletableDeferred<Boolean>()
+        openCvReadyDeferred = deferred
+
+        openCvInitJob = processingScope.launch {
+            var attempt = 0
+            while (!openCvInitialized && isActive && attempt < MAX_OPENCV_LOAD_ATTEMPTS) {
+                attempt++
                 val loaded = withContext(Dispatchers.Default) {
                     OpenCVLoader.initLocal()
                 }
                 if (loaded) {
-                    Log.i(TAG, "OpenCV loaded successfully")
+                    Log.i(TAG, "OpenCV loaded successfully (attempt $attempt)")
                     openCvInitialized = true
-                    openCvLoadAttempts.set(0)
-                    return@launch
+                    break
                 }
 
                 Log.e(
                     TAG,
                     "OpenCV load failed (attempt $attempt/$MAX_OPENCV_LOAD_ATTEMPTS)",
                 )
-                delay(1000)
+                if (attempt < MAX_OPENCV_LOAD_ATTEMPTS) {
+                    val delayMs = when {
+                        attempt <= 5 -> 0L
+                        attempt <= 10 -> 200L
+                        else -> minOf(500L * (attempt - 10), 2000L)
+                    }
+                    if (delayMs > 0) {
+                        delay(delayMs)
+                    }
+                }
             }
+
+            if (!openCvInitialized) {
+                Log.e(TAG, "OpenCV failed to load after $MAX_OPENCV_LOAD_ATTEMPTS attempts")
+            }
+            deferred.complete(openCvInitialized)
         }
+    }
+
+    private suspend fun awaitOpenCvReady(): Boolean {
+        if (openCvInitialized) {
+            return true
+        }
+        initializeOpenCv()
+        return openCvReadyDeferred?.await() ?: false
     }
 
     private fun checkMemoryAvailable(): Boolean {
@@ -78,6 +111,10 @@ class MainActivity: FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        ScannerCameraPlugin.register(flutterEngine, this)
+
+        initializeOpenCv()
         
         // Setup method channel for OpenCV
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
@@ -216,7 +253,26 @@ class MainActivity: FlutterActivity() {
                     }
                     
                     "isReady" -> {
+                        if (!openCvInitialized) {
+                            initializeOpenCv()
+                        }
                         result.success(openCvInitialized)
+                    }
+
+                    "retryInit" -> {
+                        if (!openCvInitialized) {
+                            initializeOpenCv(forceRestart = true)
+                        }
+                        result.success(null)
+                    }
+
+                    "ensureReady" -> {
+                        processingScope.launch {
+                            val ready = awaitOpenCvReady()
+                            withContext(Dispatchers.Main) {
+                                result.success(ready)
+                            }
+                        }
                     }
                     
                     "getDeviceInfo" -> {
@@ -304,6 +360,7 @@ class MainActivity: FlutterActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
+        ScannerCameraRegistry.clear()
         processingScope.cancel()
     }
 }

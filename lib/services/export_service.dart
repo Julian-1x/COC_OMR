@@ -123,6 +123,176 @@ class ExportService {
     }
   }
 
+  /// Export OMR IDs for one section — spreadsheet-friendly handout.
+  Future<File?> exportOmrIdsToCsv({
+    required String sectionName,
+    String? fileName,
+  }) async {
+    try {
+      final students = await _fetchStudentsForSection(sectionName);
+      if (students.isEmpty) return null;
+
+      final rows = <List<dynamic>>[
+        ['OMR ID', 'Name', 'Student ID', 'Section'],
+      ];
+
+      for (final student in students) {
+        rows.add([
+          student.omrId,
+          student.name,
+          student.schoolId,
+          student.section,
+        ]);
+      }
+
+      final csv = const ListToCsvConverter().convert(rows);
+      final safeSection = _safeFileSegment(sectionName);
+      final file = await _writeToFile(
+        csv,
+        fileName ?? 'omr_ids_${safeSection}_${DateTime.now().millisecondsSinceEpoch}.csv',
+      );
+      return file;
+    } catch (e) {
+      debugPrint('OMR ID CSV export failed: $e');
+      return null;
+    }
+  }
+
+  /// Printable OMR ID list for exam-day distribution.
+  Future<File?> exportOmrIdsToPdf({
+    required String sectionName,
+    String? fileName,
+  }) async {
+    try {
+      final students = await _fetchStudentsForSection(sectionName);
+      if (students.isEmpty) return null;
+
+      final pdf = pw.Document();
+      final generatedAt = DateTime.now();
+
+      pdf.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(32),
+          header: (context) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text(
+                'Student OMR IDs — $sectionName',
+                style: pw.TextStyle(
+                  fontSize: 18,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.SizedBox(height: 4),
+              pw.Text(
+                'Exam day reference · Generated ${_formatReportDateTime(generatedAt)}',
+                style: const pw.TextStyle(
+                  fontSize: 10,
+                  color: PdfColors.grey700,
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  color: PdfColors.grey100,
+                  borderRadius: pw.BorderRadius.circular(4),
+                ),
+                child: pw.Text(
+                  'Hand out before the exam. Each student should write their '
+                  '4-digit OMR ID in the shaded bubbles on their answer sheet.',
+                  style: const pw.TextStyle(fontSize: 9),
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Divider(),
+            ],
+          ),
+          footer: (context) => pw.Row(
+            mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            children: [
+              pw.Text(
+                'PHINMA COC OMR System',
+                style: const pw.TextStyle(fontSize: 8),
+              ),
+              pw.Text(
+                'Page ${context.pageNumber} of ${context.pagesCount}',
+                style: const pw.TextStyle(fontSize: 8),
+              ),
+            ],
+          ),
+          build: (context) => [
+            pw.TableHelper.fromTextArray(
+              headerStyle: pw.TextStyle(
+                fontWeight: pw.FontWeight.bold,
+                fontSize: 10,
+              ),
+              cellStyle: const pw.TextStyle(fontSize: 9),
+              headerDecoration:
+                  const pw.BoxDecoration(color: PdfColors.grey300),
+              cellAlignments: {
+                0: pw.Alignment.center,
+                1: pw.Alignment.center,
+                2: pw.Alignment.centerLeft,
+                3: pw.Alignment.centerLeft,
+              },
+              headers: ['#', 'OMR ID', 'Student Name', 'School ID'],
+              data: students.asMap().entries.map((entry) {
+                final index = entry.key + 1;
+                final student = entry.value;
+                return [
+                  '$index',
+                  student.omrId,
+                  student.name,
+                  student.schoolId,
+                ];
+              }).toList(),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              '${students.length} student${students.length == 1 ? '' : 's'}',
+              style: const pw.TextStyle(
+                fontSize: 9,
+                color: PdfColors.grey700,
+              ),
+            ),
+          ],
+        ),
+      );
+
+      final bytes = await pdf.save();
+      final safeSection = _safeFileSegment(sectionName);
+      final file = await _writeToFile(
+        bytes,
+        fileName ??
+            'omr_ids_${safeSection}_${DateTime.now().millisecondsSinceEpoch}.pdf',
+        isBinary: true,
+      );
+      return file;
+    } catch (e) {
+      debugPrint('OMR ID PDF export failed: $e');
+      return null;
+    }
+  }
+
+  Future<bool> shareOmrIdsCsv({required String sectionName}) async {
+    final file = await exportOmrIdsToCsv(sectionName: sectionName);
+    if (file == null) return false;
+    await shareFile(file);
+    await LocalDataStore.instance.recordExport(sectionName);
+    return true;
+  }
+
+  Future<bool> shareOmrIdsPdf({required String sectionName}) async {
+    final file = await exportOmrIdsToPdf(sectionName: sectionName);
+    if (file == null) return false;
+    await shareFile(file);
+    await LocalDataStore.instance.recordExport(sectionName);
+    return true;
+  }
+
   /// Export results to PDF report
   Future<File?> exportResultsToPdf({
     String? subjectId,
@@ -607,6 +777,22 @@ class ExportService {
       debugPrint('Backup failed: $e');
       return null;
     }
+  }
+
+  Future<List<Student>> _fetchStudentsForSection(String sectionName) async {
+    final students = await LocalDataStore.instance.fetchStudents(
+      sectionName: sectionName,
+    );
+    students.sort((a, b) => a.name.compareTo(b.name));
+    return students;
+  }
+
+  String _safeFileSegment(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return 'section';
+    }
+    return trimmed.replaceAll(RegExp(r'[^\w\-.]+'), '_');
   }
 
   void _sortResultsByStudentName(

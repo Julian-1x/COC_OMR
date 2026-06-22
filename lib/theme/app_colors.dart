@@ -21,6 +21,20 @@ abstract final class AppColors {
   static const Color warningAccent = Color(0xFFD97706);
   static const Color cautionAccent = Color(0xFFF59E0B);
 
+  static const Color statusSuccess = brandGreenDark;
+  static const Color statusSuccessBg = brandSurface;
+  static const Color statusSuccessBorder = brandBorder;
+  static const Color statusWarning = warningAccent;
+  static const Color statusWarningBg = warningBg;
+  static const Color statusWarningBorder = warningBorder;
+  static const Color statusDanger = error;
+  static const Color statusDangerBg = Color(0xFFFEE2E2);
+  static const Color statusDangerBorder = Color(0xFFFECACA);
+  static const Color scannerOverlay = Color(0xCC04130B);
+  static const Color scannerGlass = Color(0xB3121A17);
+  static const Color neutralFill = Color(0xFFF1F5F9);
+  static const Color neutralMuted = Color(0xFF94A3B8);
+
   static const LinearGradient authHeaderGradient = LinearGradient(
     colors: [Color(0xFF064E3B), brandGreenDark, brandGreen],
     begin: Alignment.topLeft,

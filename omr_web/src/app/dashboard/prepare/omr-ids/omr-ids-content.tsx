@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Label, Select } from "@/components/ui/input";
+import { Input, Label, Select } from "@/components/ui/input";
 import { createClient } from "@/lib/supabase/client";
 import { fetchSections, fetchStudents } from "@/lib/api/data";
 import type { DbStudent } from "@/lib/types/database";
@@ -17,6 +17,7 @@ export default function OmrIdsPage() {
   const [sections, setSections] = useState<string[]>([]);
   const [students, setStudents] = useState<DbStudent[]>([]);
   const [sectionName, setSectionName] = useState(searchParams.get("section") ?? "");
+  const [studentQuery, setStudentQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pdfNote, setPdfNote] = useState<string | null>(null);
@@ -75,7 +76,18 @@ export default function OmrIdsPage() {
 
   const filtered = students
     .filter((s) => s.section_name === sectionName)
+    .filter((s) => {
+      const q = studentQuery.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.omr_id.includes(q) ||
+        s.school_id.toLowerCase().includes(q)
+      );
+    })
     .sort((a, b) => a.omr_id.localeCompare(b.omr_id));
+
+  const sectionTotal = students.filter((s) => s.section_name === sectionName).length;
 
   return (
     <>
@@ -84,6 +96,9 @@ export default function OmrIdsPage() {
           ← Prepare
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">OMR ID handouts</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Students synced from your phone — search or download the full list per section.
+        </p>
       </div>
 
       <Card className="mb-4 max-w-xl">
@@ -107,7 +122,18 @@ export default function OmrIdsPage() {
         {pdfNote ? <p className="mt-3 text-xs font-semibold text-amber-700">{pdfNote}</p> : null}
       </Card>
 
-      <Card title={`${filtered.length} students`}>
+      {sectionTotal > 8 ? (
+        <div className="mb-3 max-w-md">
+          <Input
+            value={studentQuery}
+            onChange={(e) => setStudentQuery(e.target.value)}
+            placeholder="Search name, OMR ID, or student ID…"
+            aria-label="Search students"
+          />
+        </div>
+      ) : null}
+
+      <Card title={`${sectionTotal} students in ${sectionName || "this class"}`}>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>

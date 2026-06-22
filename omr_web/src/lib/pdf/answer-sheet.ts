@@ -12,6 +12,7 @@ import {
   answerRowsTop,
 } from "@/lib/omr/constants";
 import { generateSheetId } from "@/lib/import/roster";
+import { formatPassingLabel } from "@/lib/omr/passing-score";
 
 function drawCircle(
   page: ReturnType<PDFDocument["addPage"]>,
@@ -93,7 +94,7 @@ async function drawSheetPage(
   const headerY = PAGE.height - PAGE.marginTop - 20;
   page.drawText(subject.name, { x: PAGE.marginLeft, y: headerY, size: 14, font: fontBold, color: rgb(0.1, 0.1, 0.1) });
   page.drawText(`Section: ${sectionName}`, { x: PAGE.marginLeft, y: headerY - 16, size: 10, font, color: rgb(0.3, 0.3, 0.3) });
-  page.drawText(`${subject.total_questions} items · Pass ${subject.passing_score}%`, {
+  page.drawText(`${subject.total_questions} items · ${formatPassingLabel(subject.passing_score, subject.total_questions)}`, {
     x: PAGE.marginLeft,
     y: headerY - 30,
     size: 9,

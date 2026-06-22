@@ -36,14 +36,19 @@ export default function PrintSheetsPage() {
       const names = sectionRows.map((s) => s.name);
       setSections(names);
       setStudents(studentRows);
-      if (subjectRows[0]) setSubjectId((prev) => prev || subjectRows[0].local_id);
-      const param = searchParams.get("section") ?? "";
-      if (param && names.includes(param)) {
-        setSectionName(param);
+      const subjectParam = searchParams.get("subject") ?? "";
+      const sectionParam = searchParams.get("section") ?? "";
+      if (subjectParam && subjectRows.some((s) => s.local_id === subjectParam)) {
+        setSubjectId(subjectParam);
+      } else if (subjectRows[0]) {
+        setSubjectId((prev) => prev || subjectRows[0].local_id);
+      }
+      if (sectionParam && names.includes(sectionParam)) {
+        setSectionName(sectionParam);
       } else {
         setSectionName((prev) => prev || names[0] || "");
-        if (param && !names.includes(param)) {
-          setError(`Section "${param}" was not found. Choose a section below.`);
+        if (sectionParam && !names.includes(sectionParam)) {
+          setError(`Section "${sectionParam}" was not found. Choose a section below.`);
         }
       }
     }

@@ -8,7 +8,7 @@
 | Data | On your phone | In the cloud (Supabase) |
 |------|---------------|-------------------------|
 | Teacher name, school, email | Yes | Yes (profile) |
-| Offline PIN | Hashed on phone only | No |
+| Offline PIN | Hashed on phone; hash also backed up to your account | Salted hash only (not the digits) |
 | Class roster, student names | Yes | Yes (when you sync) |
 | Exam scores and answers | Yes | Yes (when you sync) |
 | Scan photos | Yes, on device only | **No** |

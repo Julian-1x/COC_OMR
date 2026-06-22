@@ -109,33 +109,42 @@ void main() {
     scaffoldState.openDrawer();
     await tester.pumpAndSettle();
 
-    expect(find.text('COC OMR Hub'), findsOneWidget);
+    expect(find.text('Quick actions'), findsOneWidget);
+    expect(find.text('Start scanning'), findsOneWidget);
+    expect(find.text('Sign out'), findsOneWidget);
+    expect(find.text('Open Settings'), findsNothing);
     expect(find.text('Home'), findsWidgets);
 
     scaffoldState.closeDrawer();
     await tester.pumpAndSettle();
 
     expect(find.text('Dashboard'), findsOneWidget);
-    expect(find.text('What to do next'), findsOneWidget);
-    expect(find.textContaining('% complete'), findsOneWidget);
-    expect(find.text('Start Scan'), findsOneWidget);
-    expect(find.text('Import Roster'), findsOneWidget);
-    expect(find.text('Answer Keys'), findsOneWidget);
+    expect(find.text('Tap to scan'), findsOneWidget);
+    expect(find.text('Exam prep'), findsOneWidget);
+    expect(find.text('Import'), findsOneWidget);
+    expect(find.text('Keys'), findsOneWidget);
+    expect(find.text('Print'), findsOneWidget);
+    expect(find.byIcon(Icons.notifications_none_rounded), findsOneWidget);
+    expect(find.text('Your classes'), findsNothing);
 
-    await tester.tap(find.text('Tools').last);
+    await tester.tap(find.text('Prepare').last);
     await tester.pumpAndSettle();
 
+    await tester.tap(find.text('Exam setup'));
+    await tester.pumpAndSettle();
     expect(find.text('Print Sheets'), findsOneWidget);
 
     await tester.scrollUntilVisible(
-      find.text('Export Results'),
+      find.text('Roster & results'),
       120,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.tap(find.text('Roster & results'));
     await tester.pumpAndSettle();
     expect(find.text('Export Results'), findsOneWidget);
 
     expect(find.text('Classes'), findsOneWidget);
+    expect(find.text('Prepare'), findsWidgets);
     expect(find.text('Settings'), findsOneWidget);
   });
 
@@ -154,7 +163,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('BSIT-01'), findsWidgets);
-    expect(find.text('1/2 subjects scanned'), findsOneWidget);
+    expect(find.textContaining('1/2 subjects scanned'), findsOneWidget);
 
     await tester.tap(find.text('BSIT-01').first);
     await tester.pumpAndSettle();

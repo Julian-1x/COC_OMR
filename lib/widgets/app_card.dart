@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 
 class AppCard extends StatelessWidget {
@@ -23,13 +24,7 @@ class AppCard extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(AppSpacing.radiusXl),
         border: Border.all(color: AppColors.borderSubtle),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
+        boxShadow: AppShadows.card,
       ),
       child: child,
     );

@@ -10,7 +10,10 @@ import {
 } from "@/lib/api/data";
 import { buildImportPlan, type ImportRow } from "@/lib/import/roster";
 
-export async function commitRosterImport(rows: ImportRow[]) {
+export async function commitRosterImport(
+  rows: ImportRow[],
+  meta?: { schoolYear: string; termLabel: string },
+) {
   const { user, supabase } = await requireTeacherSession();
   const existing = await fetchStudents(supabase);
   const plan = buildImportPlan(rows, existing);
@@ -32,7 +35,7 @@ export async function commitRosterImport(rows: ImportRow[]) {
     ...plan.toUpsert.map((r) => r.section),
   ]);
   for (const sectionName of sectionNames) {
-    await upsertSection(supabase, user.id, sectionName, counts.get(sectionName) ?? 0);
+    await upsertSection(supabase, user.id, sectionName, counts.get(sectionName) ?? 0, meta);
   }
 
   revalidatePath("/dashboard");

@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { webAuthCallbackUrl } from "@/lib/auth/redirect";
 import { getSupabaseServerEnv } from "@/lib/supabase/env";
 
 async function makeClient() {
@@ -51,10 +52,12 @@ export async function POST(request: Request) {
         );
       }
 
-      const { error } = await supabase.auth.signUp({
+      const { origin } = new URL(request.url);
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
+          emailRedirectTo: webAuthCallbackUrl(origin),
           data: {
             full_name: name,
             school,
@@ -67,7 +70,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: error.message }, { status: 400 });
       }
 
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({
+        ok: true,
+        needsEmailConfirmation: data.session == null,
+      });
     }
 
     const { error } = await supabase.auth.signInWithPassword({ email, password });

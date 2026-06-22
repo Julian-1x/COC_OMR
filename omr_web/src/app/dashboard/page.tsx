@@ -1,81 +1,136 @@
-import { Card, StatCard } from "@/components/ui/card";
-import { fetchDashboardStats } from "@/lib/api/data";
-import { requireTeacherSession } from "@/lib/api/session";
 import Link from "next/link";
+import { formatDistanceToNow } from "date-fns";
+import { BookOpen, GraduationCap, BarChart3, Smartphone } from "lucide-react";
+import { Card, StatCard } from "@/components/ui/card";
+import { fetchCloudLastUpdated, fetchDashboardStats } from "@/lib/api/data";
+import { requireTeacherSession } from "@/lib/api/session";
+
+const deskTasks = [
+  {
+    href: "/dashboard/prepare/import",
+    title: "Import roster",
+    body: "Upload your class list from Excel or CSV.",
+    icon: GraduationCap,
+  },
+  {
+    href: "/dashboard/prepare/answer-keys",
+    title: "Answer keys",
+    body: "Set up subjects and correct answers before printing.",
+    icon: BookOpen,
+  },
+  {
+    href: "/dashboard/prepare/print-sheets",
+    title: "Print sheets",
+    body: "Download OMR bubble sheets for your students.",
+    icon: BookOpen,
+  },
+  {
+    href: "/dashboard/results",
+    title: "Results & export",
+    body: "View scores and download PDF or CSV after exam day.",
+    icon: BarChart3,
+  },
+];
 
 export default async function DashboardHomePage() {
   const { user, profile, supabase } = await requireTeacherSession();
-  const stats = await fetchDashboardStats(supabase);
+  const [stats, lastUpdated] = await Promise.all([
+    fetchDashboardStats(supabase),
+    fetchCloudLastUpdated(supabase),
+  ]);
+
+  const firstName = profile?.full_name?.split(" ")[0] ?? "Teacher";
+  const hasData =
+    stats.sectionCount > 0 ||
+    stats.studentCount > 0 ||
+    stats.subjectCount > 0 ||
+    stats.scanCount > 0;
 
   return (
     <>
       <div className="mb-6">
-        <h1 className="text-2xl font-extrabold text-slate-800">Welcome back</h1>
+        <h1 className="text-2xl font-extrabold text-slate-800">Hello, {firstName}</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Prep on the web, scan on your phone, then sync to see results here.
+          Prep and print here on your desk. Scan on your phone. Results show up after you sync.
         </p>
+        {lastUpdated && hasData ? (
+          <p className="mt-1 text-xs text-slate-400">
+            Last updated {formatDistanceToNow(new Date(lastUpdated), { addSuffix: true })}
+          </p>
+        ) : null}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Classes" value={stats.sectionCount} />
         <StatCard label="Students" value={stats.studentCount} />
         <StatCard label="Answer keys" value={stats.subjectCount} />
-        <StatCard label="Scans synced" value={stats.scanCount} hint={`${stats.pendingReview} need review on phone`} />
+        <StatCard
+          label="Graded sheets"
+          value={stats.scanCount}
+          hint={stats.pendingReview > 0 ? `${stats.pendingReview} to review on phone` : undefined}
+        />
       </div>
 
-      {stats.sectionCount === 0 &&
-      stats.studentCount === 0 &&
-      stats.subjectCount === 0 &&
-      stats.scanCount === 0 ? (
-        <Card className="mt-6 border-amber-200 bg-amber-50" title="No cloud data yet" subtitle="Phone data does not appear automatically">
-          <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
-            <li>
-              Sign in on the web with the <strong>same email</strong> as the mobile app ({user.email}).
-            </li>
-            <li>
-              On your phone, open the app → <strong>Settings</strong> → <strong>Sync Now</strong> while on Wi‑Fi.
-            </li>
-            <li>Refresh this page. Classes, rosters, and scans should appear here.</li>
-          </ol>
-          <p className="mt-3 text-sm text-slate-600">
-            Or import a roster here in Prepare — then sync on the phone to use it for scanning.
+      {!hasData ? (
+        <Card className="mt-6 border-amber-200 bg-amber-50" title="Get started">
+          <p className="text-sm leading-relaxed text-slate-700">
+            This desk is empty. You can build everything here, or start on your phone and sync over.
           </p>
+          <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+            <li>
+              <Link href="/dashboard/prepare/import" className="font-bold text-emerald-700 hover:underline">
+                Import a roster
+              </Link>{" "}
+              or add students in the phone app.
+            </li>
+            <li>
+              <Link href="/dashboard/prepare/answer-keys" className="font-bold text-emerald-700 hover:underline">
+                Create answer keys
+              </Link>{" "}
+              and print OMR sheets.
+            </li>
+            <li>
+              On your phone ({user.email}): <strong>Settings</strong> → <strong>Sync Now</strong> on Wi‑Fi.
+            </li>
+          </ol>
         </Card>
       ) : null}
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <Card title="Quick start" subtitle="Common desk tasks">
-          <ul className="space-y-2 text-sm font-semibold text-slate-700">
-            <li>
-              <Link className="text-emerald-700 hover:underline" href="/dashboard/prepare/import">
-                1. Import roster
+      <div className="mt-6">
+        <h2 className="mb-3 text-sm font-extrabold uppercase tracking-wide text-slate-500">What you can do here</h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {deskTasks.map((task) => {
+            const Icon = task.icon;
+            return (
+              <Link key={task.href} href={task.href}>
+                <Card className="h-full transition hover:border-emerald-300 hover:shadow-md">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-xl bg-emerald-50 p-2 text-emerald-700">
+                      <Icon className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-slate-800">{task.title}</h3>
+                      <p className="mt-1 text-sm text-slate-500">{task.body}</p>
+                    </div>
+                  </div>
+                </Card>
               </Link>
-            </li>
-            <li>
-              <Link className="text-emerald-700 hover:underline" href="/dashboard/prepare/answer-keys">
-                2. Create answer keys
-              </Link>
-            </li>
-            <li>
-              <Link className="text-emerald-700 hover:underline" href="/dashboard/prepare/print-sheets">
-                3. Print OMR sheets
-              </Link>
-            </li>
-            <li>
-              <Link className="text-emerald-700 hover:underline" href="/dashboard/results">
-                4. View results after phone sync
-              </Link>
-            </li>
-          </ul>
-        </Card>
-        <Card title="Exam day reminder" subtitle="Phone only">
-          <p className="text-sm leading-relaxed text-slate-600">
-            Scanning and offline PIN unlock happen in the <strong>mobile app</strong>. This portal
-            does not include a scanner. After the exam, open the app on Wi‑Fi and tap{" "}
-            <strong>Sync Now</strong> in Settings.
-          </p>
-        </Card>
+            );
+          })}
+        </div>
       </div>
+
+      <Card className="mt-6" title="Phone app">
+        <div className="flex items-start gap-3">
+          <div className="rounded-xl bg-slate-100 p-2 text-slate-600">
+            <Smartphone className="h-5 w-5" />
+          </div>
+          <p className="text-sm leading-relaxed text-slate-600">
+            <strong>Scanning</strong> and your <strong>offline PIN</strong> are only on the Android app. This
+            website is for prep, printing, viewing results, and exporting — not for scanning during the exam.
+          </p>
+        </div>
+      </Card>
     </>
   );
 }

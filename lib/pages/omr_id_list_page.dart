@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/app_card.dart';
 
@@ -12,6 +13,7 @@ class OmrIdListPage extends StatefulWidget {
 
 class _OmrIdListPageState extends State<OmrIdListPage> {
   static const Color brandGreen = AppColors.brandGreen;
+  static const Color brandGreenDark = AppColors.brandGreenDark;
   static const Color brandSurface = AppColors.brandSurface;
   static const Color brandBorder = AppColors.brandBorder;
   static const Color brandText = AppColors.brandText;
@@ -19,10 +21,27 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
 
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
+  String? _sectionFilter;
+
+  List<String> get _sectionNames {
+    final sections = globalStudentDatabase
+        .map((student) => student.section.trim())
+        .where((section) => section.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    return sections;
+  }
 
   List<Student> get _filteredStudents {
     final query = _searchQuery.trim().toLowerCase();
     final students = globalStudentDatabase.where((student) {
+      if (_sectionFilter != null &&
+          normalizeSectionName(student.section) !=
+              normalizeSectionName(_sectionFilter!)) {
+        return false;
+      }
+
       if (query.isEmpty) {
         return true;
       }
@@ -55,6 +74,222 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
     final minute = date.minute.toString().padLeft(2, '0');
     final suffix = date.hour >= 12 ? 'PM' : 'AM';
     return '${date.month}/${date.day}/${date.year} $hour:$minute $suffix';
+  }
+
+  void _showSnackBar(String message, {Color? backgroundColor}) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: backgroundColor,
+      ),
+    );
+  }
+
+  Future<String?> _pickSectionForExport() async {
+    final sections = _sectionNames;
+    if (sections.isEmpty) {
+      return null;
+    }
+    if (sections.length == 1) {
+      return sections.first;
+    }
+
+    return showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Text(
+                'Choose a section',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: brandText,
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'Export one section at a time for exam-day handouts.',
+                style: TextStyle(color: brandMuted, height: 1.35),
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: sections
+                    .map(
+                      (section) => ListTile(
+                        leading: const Icon(
+                          Icons.groups_rounded,
+                          color: brandGreen,
+                        ),
+                        title: Text(section),
+                        subtitle: Text(
+                          '${globalStudentDatabase.where((student) => student.section.trim() == section).length} students',
+                        ),
+                        onTap: () => Navigator.pop(context, section),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showExportSheet({String? sectionName}) async {
+    if (globalStudentDatabase.isEmpty) {
+      _showSnackBar(
+        'Import students first to export OMR IDs.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    final section = sectionName ?? _sectionFilter ?? await _pickSectionForExport();
+    if (!mounted || section == null) {
+      return;
+    }
+
+    final studentCount = globalStudentDatabase
+        .where(
+          (student) =>
+              normalizeSectionName(student.section) ==
+              normalizeSectionName(section),
+        )
+        .length;
+    if (studentCount == 0) {
+      _showSnackBar(
+        'No students in $section.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Export OMR IDs — $section',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: brandText,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '$studentCount student${studentCount == 1 ? '' : 's'} · share or print for exam day',
+                style: const TextStyle(color: brandMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                title: const Text('PDF handout'),
+                subtitle: const Text('Best for printing and posting in class'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final success = await ExportService.instance.shareOmrIdsPdf(
+                    sectionName: section,
+                  );
+                  if (mounted) {
+                    _showSnackBar(
+                      success ? 'PDF shared.' : 'Export failed.',
+                      backgroundColor: success ? brandGreen : Colors.red,
+                    );
+                  }
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.table_chart, color: brandGreen),
+                title: const Text('CSV spreadsheet'),
+                subtitle: const Text('For Excel, Google Sheets, or messaging'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final success = await ExportService.instance.shareOmrIdsCsv(
+                    sectionName: section,
+                  );
+                  if (mounted) {
+                    _showSnackBar(
+                      success ? 'CSV shared.' : 'Export failed.',
+                      backgroundColor: success ? brandGreen : Colors.red,
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionFilters() {
+    final sections = _sectionNames;
+    if (sections.length <= 1) {
+      return const SizedBox.shrink();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Section',
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            color: brandText,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _SectionChip(
+              label: 'All',
+              selected: _sectionFilter == null,
+              onTap: () => setState(() => _sectionFilter = null),
+            ),
+            ...sections.map(
+              (section) => _SectionChip(
+                label: section,
+                selected: _sectionFilter == section,
+                onTap: () => setState(() => _sectionFilter = section),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   void _showStudentDetails(Student student) {
@@ -253,7 +488,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                         decoration: BoxDecoration(
                           color: result.passed
                               ? brandGreen.withValues(alpha: 0.12)
-                              : const Color(0xFFFEE2E2),
+                              : AppColors.statusDangerBg,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
@@ -261,7 +496,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                           style: TextStyle(
                             color: result.passed
                                 ? brandGreen
-                                : const Color(0xFFDC2626),
+                                : AppColors.statusDanger,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -370,7 +605,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                       ),
                       decoration: BoxDecoration(
                         color: latest == null
-                            ? const Color(0xFFFEF3C7)
+                            ? AppColors.statusWarningBg
                             : brandGreen.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(999),
                       ),
@@ -378,7 +613,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                         latest == null ? 'Pending' : 'Scanned',
                         style: TextStyle(
                           color: latest == null
-                              ? const Color(0xFFD97706)
+                              ? AppColors.statusWarning
                               : brandGreen,
                           fontWeight: FontWeight.w700,
                         ),
@@ -406,6 +641,13 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('OMR ID List'),
+        actions: [
+          IconButton(
+            tooltip: 'Export for exam day',
+            onPressed: _showExportSheet,
+            icon: const Icon(Icons.ios_share_rounded),
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
@@ -424,7 +666,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'View all imported students and search by OMR ID, name, school ID, or section.',
+                  'View imported students and export a section list for exam day.',
                   style: TextStyle(
                     color: brandMuted.withValues(alpha: 0.95),
                     height: 1.4,
@@ -433,6 +675,30 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                 const SizedBox(height: 16),
                 _buildSearchField(),
                 const SizedBox(height: 14),
+                _buildSectionFilters(),
+                if (_sectionNames.length > 1) const SizedBox(height: 14),
+                if (globalStudentDatabase.isNotEmpty) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () => _showExportSheet(
+                        sectionName: _sectionFilter,
+                      ),
+                      icon: const Icon(Icons.ios_share_rounded),
+                      label: Text(
+                        _sectionFilter == null
+                            ? 'Export section OMR IDs'
+                            : 'Export $_sectionFilter OMR IDs',
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: brandGreen,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -484,6 +750,40 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
           else
             ...filteredStudents.map(_buildStudentTile),
         ],
+      ),
+    );
+  }
+}
+
+class _SectionChip extends StatelessWidget {
+  const _SectionChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilterChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      selectedColor: _OmrIdListPageState.brandGreen.withValues(alpha: 0.14),
+      checkmarkColor: _OmrIdListPageState.brandGreen,
+      labelStyle: TextStyle(
+        color: selected
+            ? _OmrIdListPageState.brandGreenDark
+            : _OmrIdListPageState.brandText,
+        fontWeight: FontWeight.w700,
+      ),
+      side: BorderSide(
+        color: selected
+            ? _OmrIdListPageState.brandGreen
+            : _OmrIdListPageState.brandBorder,
       ),
     );
   }

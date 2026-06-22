@@ -7,23 +7,41 @@ import { Card } from "@/components/ui/card";
 import { Label, Select } from "@/components/ui/input";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { exportResultsCsv, exportResultsPdf } from "@/lib/pdf/exports";
+import { scanPassed } from "@/lib/omr/passing-score";
 import { downloadBlob, downloadText } from "@/lib/utils";
+import { formatSectionTerm } from "@/lib/academic-term";
+
+function resultsHref(view?: "archived", year?: string) {
+  const params = new URLSearchParams();
+  if (view === "archived") params.set("view", "archived");
+  if (year) params.set("year", year);
+  const query = params.toString();
+  return query ? `/dashboard/results?${query}` : "/dashboard/results";
+}
 
 export function ResultsContent({
   scans,
   students,
   subjects,
+  sections,
+  showArchived = false,
+  schoolYear,
+  yearOptions = [],
 }: {
   scans: DbScanResult[];
   students: DbStudent[];
   subjects: DbSubject[];
+  sections: { name: string; school_year?: string | null; term_label?: string | null }[];
+  showArchived?: boolean;
+  schoolYear?: string;
+  yearOptions?: string[];
 }) {
   const [sectionFilter, setSectionFilter] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("");
   const [pdfNote, setPdfNote] = useState<string | null>(null);
 
   const studentMap = new Map(students.map((s) => [s.omr_id, s]));
-  const sections = [...new Set(students.map((s) => s.section_name))].sort();
+  const sectionOptions = [...sections].sort((a, b) => a.name.localeCompare(b.name));
 
   const filtered = scans.filter((scan) => {
     const student = studentMap.get(scan.student_omr_id);
@@ -60,14 +78,62 @@ export function ResultsContent({
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-800">Results</h1>
-          <p className="mt-1 text-sm text-slate-500">Synced scan results from your phone.</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {showArchived
+              ? "Archived term results — read-only history."
+              : "Active term scores — export when you need them."}
+          </p>
         </div>
-        <Link
-          href="/dashboard/results/analysis"
-          className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-extrabold text-emerald-800 hover:bg-emerald-100"
-        >
-          Item analysis
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={resultsHref(undefined, schoolYear)}
+            className={`rounded-xl px-3 py-2 text-sm font-bold ${
+              !showArchived
+                ? "bg-emerald-500 text-white"
+                : "border border-slate-200 bg-white text-slate-600"
+            }`}
+          >
+            Active
+          </Link>
+          <Link
+            href={resultsHref("archived", schoolYear)}
+            className={`rounded-xl px-3 py-2 text-sm font-bold ${
+              showArchived
+                ? "bg-emerald-500 text-white"
+                : "border border-slate-200 bg-white text-slate-600"
+            }`}
+          >
+            Archived
+          </Link>
+          <form className="flex items-center gap-2" method="get">
+            {showArchived ? <input type="hidden" name="view" value="archived" /> : null}
+            <select
+              name="year"
+              defaultValue={schoolYear ?? ""}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+              aria-label="School year"
+            >
+              <option value="">All years</option>
+              {yearOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:border-emerald-300"
+            >
+              Filter
+            </button>
+          </form>
+          <Link
+            href="/dashboard/results/analysis"
+            className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-extrabold text-emerald-800 hover:bg-emerald-100"
+          >
+            Item analysis
+          </Link>
+        </div>
       </div>
 
       <Card className="mb-4">
@@ -76,11 +142,14 @@ export function ResultsContent({
             <Label htmlFor="section">Section</Label>
             <Select id="section" value={sectionFilter} onChange={(e) => setSectionFilter(e.target.value)}>
               <option value="">All sections</option>
-              {sections.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
+              {sectionOptions.map((section) => {
+                const term = formatSectionTerm(section);
+                return (
+                  <option key={section.name} value={section.name}>
+                    {term ? `${section.name} (${term})` : section.name}
+                  </option>
+                );
+              })}
             </Select>
           </div>
           <div>
@@ -110,7 +179,7 @@ export function ResultsContent({
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
           <h3 className="text-base font-extrabold text-slate-800">No results yet</h3>
           <p className="mt-2 text-sm text-slate-500">
-            Scan sheets on your phone, then tap Sync Now in the app Settings.
+            After exam day, scan on your phone then open Settings → Sync Now on Wi‑Fi.
           </p>
         </div>
       ) : (
@@ -136,7 +205,11 @@ export function ResultsContent({
                     scan.total_questions > 0
                       ? Math.round((scan.score / scan.total_questions) * 100)
                       : 0;
-                  const passed = pct >= (subject?.passing_score ?? 75);
+                  const passed = scanPassed(
+                    scan.score,
+                    scan.total_questions,
+                    subject?.passing_score ?? Math.round(scan.total_questions * 0.6),
+                  );
                   return (
                     <tr key={scan.id} className="border-b border-slate-100">
                       <td className="px-2 py-2">

@@ -160,7 +160,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
 
         _showSnackBar(
           summary.feedbackMessage,
-          backgroundColor: summary.imported > 0 ? brandGreen : Colors.orange,
+          backgroundColor: summary.imported > 0 ? brandGreen : AppColors.warningAccent,
         );
         setState(() {});
       }
@@ -676,7 +676,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     if (otherSections.isEmpty) {
       _showSnackBar(
         'Add or import another section before merging.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -1774,7 +1774,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     if (subjects.isEmpty) {
       _showSnackBar(
         'Scan at least one graded sheet before exporting an exam summary.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -1804,6 +1804,87 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     );
   }
 
+  Future<void> _exportSectionOmrIds() async {
+    final section = widget.sectionName;
+    final count = _sectionStudents.length;
+
+    if (count == 0) {
+      _showSnackBar(
+        'No students in this section yet.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'OMR IDs — $section',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: brandText,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '$count student${count == 1 ? '' : 's'} · share or print for exam day',
+                style: const TextStyle(color: brandMuted, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                title: const Text('PDF handout'),
+                subtitle: const Text('Best for printing and posting in class'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await ExportService.instance.shareOmrIdsPdf(
+                    sectionName: section,
+                  );
+                  if (mounted) {
+                    _showSnackBar(
+                      ok ? 'PDF shared.' : 'Export failed.',
+                      backgroundColor: ok ? brandGreen : Colors.red,
+                    );
+                  }
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.table_chart, color: brandGreen),
+                title: const Text('CSV spreadsheet'),
+                subtitle: const Text('For Excel, Google Sheets, or messaging'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await ExportService.instance.shareOmrIdsCsv(
+                    sectionName: section,
+                  );
+                  if (mounted) {
+                    _showSnackBar(
+                      ok ? 'CSV shared.' : 'Export failed.',
+                      backgroundColor: ok ? brandGreen : Colors.red,
+                    );
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _exportSectionResults() async {
     final section = widget.sectionName;
     final count = globalScanResults.where((r) {
@@ -1814,7 +1895,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     if (count == 0) {
       _showSnackBar(
         'No scan results for this section yet.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -1950,6 +2031,16 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                 _exportSectionResults();
               },
             ),
+            if (_sectionStudents.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.tag_rounded, color: brandGreen),
+                title: const Text('Export OMR IDs'),
+                subtitle: const Text('Printable list for exam day'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _exportSectionOmrIds();
+                },
+              ),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.drive_file_rename_outline_rounded),

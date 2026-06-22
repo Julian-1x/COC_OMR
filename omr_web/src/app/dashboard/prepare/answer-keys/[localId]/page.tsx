@@ -11,6 +11,11 @@ import { createClient } from "@/lib/supabase/client";
 import { fetchSections, fetchSubject, fetchSubjects, upsertSubject } from "@/lib/api/data";
 import { generateSubjectLocalId } from "@/lib/import/roster";
 import {
+  defaultPassingPoints,
+  formatPassingLabel,
+  passingPercent,
+} from "@/lib/omr/passing-score";
+import {
   formatCorrectAnswer,
   getQuestionAnswers,
   isAnswerSelected,
@@ -28,7 +33,7 @@ export default function AnswerKeyEditorPage() {
 
   const [name, setName] = useState("");
   const [totalQuestions, setTotalQuestions] = useState(50);
-  const [passingScore, setPassingScore] = useState(75);
+  const [passingScore, setPassingScore] = useState(() => defaultPassingPoints(50));
   const [examDate, setExamDate] = useState("");
   const [usePartialCredit, setUsePartialCredit] = useState(false);
   const [allowMultiAnswer, setAllowMultiAnswer] = useState(false);
@@ -77,6 +82,10 @@ export default function AnswerKeyEditorPage() {
 
   function resizeKey(count: number) {
     setTotalQuestions(count);
+    setPassingScore((prev) => {
+      const pct = passingPercent(prev, totalQuestions);
+      return defaultPassingPoints(count) === prev ? prev : Math.max(1, Math.round((count * pct) / 100));
+    });
     setAnswerKey((prev) => {
       const next: AnswerKeyMap = {};
       for (let i = 1; i <= count; i++) {
@@ -164,15 +173,18 @@ export default function AnswerKeyEditorPage() {
               </Select>
             </div>
             <div>
-              <Label htmlFor="pass">Passing %</Label>
+              <Label htmlFor="pass">Minimum score to pass (points)</Label>
               <Input
                 id="pass"
                 type="number"
-                min={0}
-                max={100}
+                min={1}
+                max={totalQuestions}
                 value={passingScore}
-                onChange={(e) => setPassingScore(parseInt(e.target.value, 10) || 0)}
+                onChange={(e) => setPassingScore(parseInt(e.target.value, 10) || 1)}
               />
+              <p className="mt-1 text-xs text-slate-500">
+                {formatPassingLabel(passingScore, totalQuestions)} — same as the phone app
+              </p>
             </div>
             <div>
               <Label htmlFor="exam">Exam date</Label>

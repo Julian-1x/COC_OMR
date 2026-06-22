@@ -5,13 +5,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   BookOpen,
+  BarChart3,
   ClipboardList,
   GraduationCap,
   Home,
   LogOut,
-  RefreshCw,
   Settings,
-  BarChart3,
   Shield,
 } from "lucide-react";
 import { BrandHeader } from "@/components/brand";
@@ -32,8 +31,7 @@ const teacherNav = [
 ];
 
 const adminNav = [
-  { href: "/dashboard/admin", label: "Admin", icon: Shield },
-  { href: "/dashboard/sync-check", label: "Sync check", icon: RefreshCw },
+  { href: "/dashboard/admin", label: "Overview", icon: Shield },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -105,7 +103,7 @@ export function DashboardShell({
     setMode(readPortalModeCookie());
   }, []);
 
-  const subtitle = isAdmin && mode === "admin" ? "School admin" : "Teacher portal";
+  const subtitle = isAdmin && mode === "admin" ? "School monitoring" : "Teacher desk";
   const nav = isAdmin && mode === "admin" ? adminNav : teacherNav;
 
   function switchMode(next: PortalMode) {

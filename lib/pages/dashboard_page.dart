@@ -12,6 +12,7 @@ import 'package:omr_app/pages/login_page.dart';
 import 'package:omr_app/pages/omr_id_list_page.dart';
 import 'package:omr_app/pages/scanner_page.dart';
 import 'package:omr_app/pages/section_detail_page.dart';
+import 'package:omr_app/pages/welcome_onboarding_page.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/services/app_update_service.dart';
 import 'package:omr_app/services/cloud_auth_service.dart';
@@ -20,20 +21,28 @@ import 'package:omr_app/services/backup_service.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/supabase_service.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:omr_app/services/supabase_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
-import 'package:omr_app/theme/app_text_styles.dart';
+import 'package:omr_app/theme/app_page_transitions.dart';
+import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_empty_state.dart';
 import 'package:omr_app/widgets/dashboard/classes_search_filters.dart';
+import 'package:omr_app/widgets/dashboard/teacher_hub_drawer.dart';
 import 'package:omr_app/widgets/dashboard/dashboard_top_bar.dart';
-import 'package:omr_app/widgets/dashboard/home_next_action_line.dart';
-import 'package:omr_app/widgets/dashboard/tool_section.dart';
+import 'package:omr_app/widgets/dashboard/home_status_panel.dart';
+import 'package:omr_app/widgets/dashboard/review_queue_card.dart';
+import 'package:omr_app/widgets/pressable_scale.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
+import 'package:omr_app/utils/section_program.dart';
+import 'package:omr_app/utils/academic_term.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/loading_indicators.dart';
+import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
 import 'package:omr_app/widgets/auth_shell.dart';
 
 class DashboardPageData {
@@ -78,7 +87,9 @@ class _DashboardPageState extends State<DashboardPage> {
   final TextEditingController _classesSearchController = TextEditingController();
   String _classesSearchQuery = '';
   int _classesStatusFilter = 0;
-  final Set<String> _collapsedClassGroups = <String>{};
+  String? _classesProgramFilter;
+  final Set<String> _expandedSettingsSections = <String>{};
+  final Set<String> _expandedPrepareSections = <String>{};
 
   int _selectedIndex = 0;
   bool _isImporting = false;
@@ -100,6 +111,11 @@ class _DashboardPageState extends State<DashboardPage> {
   List<Deadline> _deadlineRecords = <Deadline>[];
   List<ExportRecord> _exportRecordsData = <ExportRecord>[];
   Map<String, Student> _studentIndex = <String, Student>{};
+  String _teacherName = 'Teacher';
+  String _teacherSchool = 'PHINMA COC';
+  String? _teacherEmail;
+  String _appVersion = '';
+  bool _isOnline = true;
 
   @override
   void initState() {
@@ -114,8 +130,31 @@ class _DashboardPageState extends State<DashboardPage> {
     unawaited(_refreshSyncStatus());
     unawaited(_loadAutoSyncPreference());
     unawaited(_checkForAppUpdate());
+    unawaited(_loadTeacherHubMeta());
     _initConnectivityListener();
   }
+
+  Future<void> _loadTeacherHubMeta() async {
+    final profile = await LocalAuthService.instance.loadProfile();
+    final packageInfo = await PackageInfo.fromPlatform();
+    final email = SupabaseService.client?.auth.currentUser?.email;
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (profile != null) {
+        _teacherName = profile.name;
+        _teacherSchool = profile.school;
+        _teacherEmail = profile.email ?? email;
+      } else if (email != null) {
+        _teacherEmail = email;
+      }
+      _appVersion = packageInfo.version;
+    });
+  }
+
+  int get _reviewScanCount =>
+      globalScanResults.where((scan) => scan.requiresReview).length;
 
   Future<void> _checkForAppUpdate() async {
     if (!SupabaseService.isReady) {
@@ -279,7 +318,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (_dataLoadError != null) {
       _showSnackBar(
         'Still could not load saved data. Try signing in online once, then tap Retry again.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -288,8 +327,8 @@ class _DashboardPageState extends State<DashboardPage> {
     final sectionCount = _sections.length;
     if (studentCount == 0) {
       _showSnackBar(
-        'No saved students found yet. Import your roster under Tools.',
-        backgroundColor: Colors.orange,
+        'No saved students found yet. Import your roster under Prepare.',
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -320,19 +359,21 @@ class _DashboardPageState extends State<DashboardPage> {
 
   String _normalizeSectionName(String value) => value.trim().toUpperCase();
 
-  String _sectionGroupKey(String sectionName) {
-    final trimmed = sectionName.trim();
-    if (trimmed.isEmpty) {
-      return 'Other';
-    }
+  String _sectionGroupKey(String sectionName) =>
+      SectionProgram.programKey(sectionName);
 
-    final programMatch = RegExp(r'^([A-Za-z]{2,})').firstMatch(trimmed);
-    if (programMatch != null) {
-      return programMatch.group(1)!.toUpperCase();
-    }
+  List<String> _distinctProgramKeys(List<_SectionSnapshot> sections) {
+    return SectionProgram.sortedProgramKeys(
+      sections.map((section) => section.name),
+    );
+  }
 
-    final prefix = trimmed.split(RegExp(r'[-\s_/]')).first.trim();
-    return prefix.isEmpty ? 'Other' : prefix.toUpperCase();
+  bool _sectionMatchesClassesProgram(_SectionSnapshot section) {
+    final filter = _classesProgramFilter;
+    if (filter == null) {
+      return true;
+    }
+    return _sectionGroupKey(section.name) == filter;
   }
 
   bool _sectionMatchesClassesSearch(_SectionSnapshot section) {
@@ -362,46 +403,13 @@ class _DashboardPageState extends State<DashboardPage> {
     return sections
         .where(
           (section) =>
+              _sectionMatchesClassesProgram(section) &&
               _sectionMatchesClassesSearch(section) &&
               _sectionMatchesClassesStatus(section),
         )
         .toList();
   }
 
-  Map<String, List<_SectionSnapshot>> _groupedClassSections(
-    List<_SectionSnapshot> sections,
-  ) {
-    final groups = <String, List<_SectionSnapshot>>{};
-    for (final section in sections) {
-      final key = _sectionGroupKey(section.name);
-      groups.putIfAbsent(key, () => <_SectionSnapshot>[]).add(section);
-    }
-
-    for (final group in groups.values) {
-      group.sort((a, b) => a.name.compareTo(b.name));
-    }
-
-    final sortedKeys = groups.keys.toList()..sort();
-    return {for (final key in sortedKeys) key: groups[key]!};
-  }
-
-  bool _shouldGroupClassSections(List<_SectionSnapshot> sections) {
-    if (sections.length < 4) {
-      return false;
-    }
-    return _groupedClassSections(sections).length > 1 ||
-        sections.length >= 6;
-  }
-
-  void _toggleClassGroup(String groupKey) {
-    setState(() {
-      if (_collapsedClassGroups.contains(groupKey)) {
-        _collapsedClassGroups.remove(groupKey);
-      } else {
-        _collapsedClassGroups.add(groupKey);
-      }
-    });
-  }
   String _canonicalizeSectionName(String value) =>
       value.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
 
@@ -638,7 +646,7 @@ class _DashboardPageState extends State<DashboardPage> {
         ),
         _DashboardAction(
           label: 'OMR ID List',
-          subtitle: '${globalStudentDatabase.length} students',
+          subtitle: 'View & export per section',
           icon: Icons.tag_rounded,
           color: AppColors.brandGreenDark,
           onTap: _openOmrIdList,
@@ -697,7 +705,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (globalSubjects.isEmpty) {
       _showSnackBar(
         'Create an answer key before printing sheets.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -953,9 +961,13 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
     _wasOffline = !_hasNetworkConnection(initial);
+    _isOnline = !_wasOffline;
 
     _connectivitySub = connectivity.onConnectivityChanged.listen((results) {
       final isOnline = _hasNetworkConnection(results);
+      if (mounted) {
+        setState(() => _isOnline = isOnline);
+      }
       if (isOnline && _wasOffline) {
         unawaited(_onConnectivityRestored(results));
       }
@@ -989,6 +1001,9 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     if (_autoSyncOnWifi && _isWifiLikeConnection(results)) {
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -1002,6 +1017,9 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     if (_autoSyncOnWifi && !_isWifiLikeConnection(results)) {
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -1017,6 +1035,9 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -1043,64 +1064,30 @@ class _DashboardPageState extends State<DashboardPage> {
     return '$date $time';
   }
 
-  Future<bool> _confirmDeleteSubject(Subject subject) async {
-    final linkedScans = findScansBySubject(subject.id).length;
-    final linkedDeadlines = globalDeadlines
-        .where((deadline) => deadline.subjectId == subject.id)
-        .length;
-    final sections = List<String>.from(subject.sectionNames ?? const <String>[])
-      ..sort();
-
-    final confirmed = await showDialog<bool>(
+  Future<SubjectDeletionSummary?> _performAnswerKeyDeletion({
+    required Subject subject,
+    String? sectionName,
+  }) async {
+    final choice = await showAnswerKeyDeleteDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Answer Key?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Delete ${subject.displayName} and all data directly linked to this answer key?',
-            ),
-            if (sections.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Assigned sections: ${sections.join(', ')}',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ],
-            if (linkedScans > 0) ...[
-              const SizedBox(height: 12),
-              Text(
-                '$linkedScans scan result${linkedScans == 1 ? '' : 's'} will also be removed.',
-              ),
-            ],
-            if (linkedDeadlines > 0) ...[
-              const SizedBox(height: 8),
-              Text(
-                '$linkedDeadlines related deadline${linkedDeadlines == 1 ? '' : 's'} will also be removed.',
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+      subject: subject,
+      sectionName: sectionName,
     );
+    if (choice == AnswerKeyDeleteChoice.cancelled || !mounted) {
+      return null;
+    }
 
-    return confirmed ?? false;
+    if (choice == AnswerKeyDeleteChoice.sectionOnly) {
+      if (sectionName == null) {
+        return null;
+      }
+      return LocalDataStore.instance.deleteSubjectFromSection(
+        subject: subject,
+        sectionName: sectionName,
+      );
+    }
+
+    return LocalDataStore.instance.deleteSubjectCascade(subject);
   }
 
   Future<void> _openAnswerKeys() async {
@@ -1151,11 +1138,19 @@ class _DashboardPageState extends State<DashboardPage> {
                     case AnswerKeyEditorAction.deleted:
                       final deletionSummary = result.deletionSummary;
                       final subjectName = result.subjectName ?? 'Answer key';
-                      final removedScans = deletionSummary?.removedScans ?? 0;
-                      _showSnackBar(
-                        'Deleted $subjectName. Removed $removedScans scan${removedScans == 1 ? '' : 's'}.',
-                        backgroundColor: Colors.red,
-                      );
+                      if (deletionSummary != null) {
+                        _showSnackBar(
+                          deletionSummary.removedFromSectionOnly
+                              ? 'Removed $subjectName from ${deletionSummary.detachedSectionName}.'
+                              : 'Deleted $subjectName. Removed ${deletionSummary.removedScans} scan${deletionSummary.removedScans == 1 ? '' : 's'}.',
+                          backgroundColor: Colors.red,
+                        );
+                      } else {
+                        _showSnackBar(
+                          'Deleted $subjectName.',
+                          backgroundColor: Colors.red,
+                        );
+                      }
                       break;
                   }
                 } else if (result is Subject) {
@@ -1167,26 +1162,27 @@ class _DashboardPageState extends State<DashboardPage> {
               }
             }
 
-            Future<void> deleteSubject(Subject subject) async {
-              final confirmed = await _confirmDeleteSubject(subject);
-              if (!confirmed || !mounted) {
+            Future<void> deleteAnswerKeyRow({
+              required Subject subject,
+              String? sectionName,
+            }) async {
+              final summary = await _performAnswerKeyDeletion(
+                subject: subject,
+                sectionName: sectionName,
+              );
+              if (summary == null || !mounted) {
                 return;
               }
 
-              final summary =
-                  await LocalDataStore.instance.deleteSubjectCascade(subject);
-
-              if (mounted) {
-                await _loadDashboardData();
-                if (!mounted) {
-                  return;
-                }
-                setModalState(() {});
-                _showSnackBar(
-                  'Deleted ${subject.displayName}. Removed ${summary.removedScans} scan${summary.removedScans == 1 ? '' : 's'}.',
-                  backgroundColor: Colors.red,
-                );
+              await _loadDashboardData();
+              if (!mounted) {
+                return;
               }
+              setModalState(() {});
+              _showSnackBar(
+                answerKeyDeletionMessage(subject: subject, summary: summary),
+                backgroundColor: Colors.red,
+              );
             }
 
             return SingleChildScrollView(
@@ -1402,11 +1398,15 @@ class _DashboardPageState extends State<DashboardPage> {
                                                   builder: (context) =>
                                                       ItemAnalysisPage(
                                                     subject: row.subject,
+                                                    sectionFilter: sectionName,
                                                   ),
                                                 ),
                                               );
                                             } else if (value == 'delete') {
-                                              deleteSubject(row.subject);
+                                              deleteAnswerKeyRow(
+                                                subject: row.subject,
+                                                sectionName: sectionName,
+                                              );
                                             }
                                           },
                                           itemBuilder: (context) => [
@@ -1448,7 +1448,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                                   ),
                                                   SizedBox(width: 10),
                                                   Text(
-                                                    'Delete',
+                                                    'Delete...',
                                                     style: TextStyle(
                                                       color: Colors.red,
                                                     ),
@@ -1815,6 +1815,9 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<void> _handleSignOut() async {
     await _refreshSyncStatus();
+    if (!mounted) {
+      return;
+    }
     if (_pendingSyncCount > 0 &&
         SupabaseService.isReady &&
         SupabaseService.hasActiveSession) {
@@ -1884,6 +1887,18 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  void _openHowItWorksGuide() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (context) => WelcomeOnboardingPage(
+          reviewMode: true,
+          onFinished: () => Navigator.pop(context),
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleSyncNow() async {
     if (_isSyncing) {
       return;
@@ -1891,7 +1906,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (!SupabaseService.hasActiveSession) {
       _showSnackBar(
         'Sign in online to sync your data to the cloud.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -1929,24 +1944,84 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  Future<void> _handleExportBackup() async {
-    final success = await BackupService.exportAndShare();
+  Future<void> _handleArchiveSectionEndOfTerm() async {
+    await _refreshSyncStatus();
     if (!mounted) {
       return;
     }
-    _showSnackBar(
-      success ? 'Backup exported. Keep the file private.' : 'Backup failed.',
-      backgroundColor: success ? AppColors.brandGreen : Colors.red,
-    );
-  }
 
-  Future<void> _handleRestoreBackup() async {
+    if (!SupabaseService.hasActiveSession) {
+      _showSnackBar(
+        'Sign in while online before archiving. Your scores must be in the cloud first.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    if (_pendingSyncCount > 0) {
+      final syncFirst = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Sync before archiving'),
+          content: Text(
+            '$_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} still waiting to upload. '
+            'Sync now so archived scores are safe in the cloud.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Sync first'),
+            ),
+          ],
+        ),
+      );
+      if (syncFirst == true) {
+        await _handleSyncNow();
+        await _refreshSyncStatus();
+      }
+      if (!mounted || _pendingSyncCount > 0) {
+        return;
+      }
+    }
+
+    final sections = _sections;
+    if (sections.isEmpty) {
+      _showSnackBar('No sections to archive.', backgroundColor: AppColors.warningAccent);
+      return;
+    }
+
+    final picked = await showDialog<_SectionSnapshot>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Archive which section?'),
+        children: sections
+            .map(
+              (section) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, section),
+                child: Text(
+                  '${section.name} · ${section.totalStudents} student${section.totalStudents == 1 ? '' : 's'}',
+                ),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (picked == null || !mounted) {
+      return;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Restore Backup?'),
+        title: Text('Archive ${picked.name}?'),
         content: const Text(
-          'This replaces your data with the backup file. Other teachers\' data on this device is kept.',
+          'Scores and roster stay in the cloud and on the web portal.\n\n'
+          'This section will be removed from this phone to save space. '
+          'You can import a fresh roster next term.',
         ),
         actions: [
           TextButton(
@@ -1955,7 +2030,107 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Restore'),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    try {
+      final summary =
+          await SupabaseSyncService.instance.archiveSectionEndOfTerm(picked.name);
+      if (!mounted) {
+        return;
+      }
+      await _loadDashboardData();
+      _showSnackBar(
+        'Archived ${picked.name}. Removed ${summary.removedStudents} student${summary.removedStudents == 1 ? '' : 's'} from this phone. View history on the web portal.',
+        backgroundColor: AppColors.brandGreen,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showSnackBar(
+        UserErrorMessages.friendlySyncError(error),
+        backgroundColor: Colors.red,
+      );
+    }
+  }
+
+  Future<void> _handleExportBackup() async {
+    final success = await BackupService.exportAndShare();
+    if (!mounted) {
+      return;
+    }
+    _showSnackBar(
+      success
+          ? 'Backup file ready. Save it somewhere safe and private.'
+          : 'Could not create backup. Please try again.',
+      backgroundColor: success ? AppColors.brandGreen : Colors.red,
+    );
+  }
+
+  Future<void> _handleRestoreBackup() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Load this backup file?'),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This will replace your answer keys, class lists, and grades on this device '
+                'with the information from the file you pick.',
+                style: TextStyle(height: 1.4),
+              ),
+              SizedBox(height: 14),
+              Text(
+                'Before you continue:',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 8),
+              Text(
+                '• Make sure you chose the correct backup file.',
+                style: TextStyle(height: 1.4),
+              ),
+              Text(
+                '• Your current work on this device will be replaced.',
+                style: TextStyle(height: 1.4),
+              ),
+              Text(
+                '• Other teachers who use this tablet will keep their own data.',
+                style: TextStyle(height: 1.4),
+              ),
+              Text(
+                '• Scanned paper photos are not in backup files—they stay on this device.',
+                style: TextStyle(height: 1.4),
+              ),
+              SizedBox(height: 14),
+              Text(
+                'Only tap Load if you are sure this is the file you want.',
+                style: TextStyle(
+                  color: Colors.orange,
+                  fontWeight: FontWeight.w600,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Load backup'),
           ),
         ],
       ),
@@ -1980,7 +2155,9 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     _showSnackBar(
-      restored ? 'Backup restored successfully.' : 'Backup restore cancelled.',
+      restored
+          ? 'Your data was loaded from the backup file.'
+          : 'Backup load was cancelled or could not finish.',
       backgroundColor: restored ? AppColors.brandGreen : Colors.red,
     );
   }
@@ -2036,7 +2213,7 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Select the subject sheet to scan. The QR code identifies the subject and the shaded OMR ID identifies the student.',
+                'Select the subject to scan. One photo reads the whole sheet — QR, student ID, and answers.',
                 style: TextStyle(
                   color: AppColors.brandMuted,
                   height: 1.4,
@@ -2081,7 +2258,7 @@ class _DashboardPageState extends State<DashboardPage> {
                           _showSnackBar(
                             'No section assigned to ${group.name}. '
                             'Open Answer Keys, edit the subject, and select a section.',
-                            backgroundColor: Colors.orange,
+                            backgroundColor: AppColors.warningAccent,
                           );
                         }
                         return;
@@ -2112,8 +2289,8 @@ class _DashboardPageState extends State<DashboardPage> {
 
                         await Navigator.push(
                           this.context,
-                          MaterialPageRoute(
-                            builder: (context) => ScannerPage(
+                          AppPageTransitions.fadeSlide(
+                            ScannerPage(
                               availableCameras: cameras,
                               targetSubject: choice.subject,
                             ),
@@ -2143,60 +2320,121 @@ class _DashboardPageState extends State<DashboardPage> {
 
   void _createNewSection() {
     _sectionController.clear();
+    var selectedYear = AcademicTerm.schoolYearForDate();
+    var selectedTerm = AcademicTerm.defaultTermLabel();
+    final yearOptions = AcademicTerm.schoolYearOptions();
 
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create New Section'),
-        content: TextField(
-          controller: _sectionController,
-          textCapitalization: TextCapitalization.characters,
-          decoration: const InputDecoration(
-            hintText: 'e.g. BSIT-1A',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final navigator = Navigator.of(context);
-              final sectionName =
-                  _canonicalizeSectionName(_sectionController.text);
-              final alreadyExists = globalSections.any(
-                (section) =>
-                    _normalizeSectionName(section.name) ==
-                    _normalizeSectionName(sectionName),
-              );
-
-              if (sectionName.isEmpty) {
-                return;
-              }
-
-              if (!alreadyExists) {
-                await LocalDataStore.instance.upsertSection(
-                  Section(name: sectionName),
-                );
-              }
-
-              if (mounted) {
-                await _loadDashboardData();
-              }
-              if (!mounted) {
-                return;
-              }
-              navigator.pop();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.brandGreen,
-              foregroundColor: Colors.white,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Create New Section'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: _sectionController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. BSIT-1A',
+                    labelText: 'Section name',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedYear,
+                  decoration: const InputDecoration(
+                    labelText: 'School year',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: yearOptions
+                      .map(
+                        (year) => DropdownMenuItem(
+                          value: year,
+                          child: Text(year),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value == null) {
+                      return;
+                    }
+                    setDialogState(() => selectedYear = value);
+                  },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedTerm,
+                  decoration: const InputDecoration(
+                    labelText: 'Term',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: AcademicTerm.commonTermLabels
+                      .map(
+                        (term) => DropdownMenuItem(
+                          value: term,
+                          child: Text(term),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value == null) {
+                      return;
+                    }
+                    setDialogState(() => selectedTerm = value);
+                  },
+                ),
+              ],
             ),
-            child: const Text('Create'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final navigator = Navigator.of(context);
+                final sectionName =
+                    _canonicalizeSectionName(_sectionController.text);
+                final alreadyExists = globalSections.any(
+                  (section) =>
+                      _normalizeSectionName(section.name) ==
+                      _normalizeSectionName(sectionName),
+                );
+
+                if (sectionName.isEmpty) {
+                  return;
+                }
+
+                if (!alreadyExists) {
+                  await LocalDataStore.instance.upsertSection(
+                    Section(
+                      name: sectionName,
+                      schoolYear: selectedYear,
+                      termLabel: selectedTerm,
+                    ),
+                  );
+                }
+
+                if (mounted) {
+                  await _loadDashboardData();
+                }
+                if (!mounted) {
+                  return;
+                }
+                navigator.pop();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.brandGreen,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Create'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2293,7 +2531,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (otherSections.isEmpty) {
       _showSnackBar(
         'Add or import another section before merging.',
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       );
       return;
     }
@@ -2368,9 +2606,10 @@ class _DashboardPageState extends State<DashboardPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete empty section?'),
+        title: const Text('Delete empty section permanently?'),
         content: Text(
-          'Remove $sectionName? This only works when no students are assigned.',
+          'Remove $sectionName from this phone and the cloud.\n\n'
+          'Use Settings → End of term → Archive if you only want to free phone space.',
         ),
         actions: [
           TextButton(
@@ -2414,17 +2653,23 @@ class _DashboardPageState extends State<DashboardPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete class?'),
+        title: Text('Delete ${section.name} permanently?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Delete ${section.name} and all ${section.totalStudents} student${section.totalStudents == 1 ? '' : 's'} with their scan results?',
+              'Delete ${section.name} and all ${section.totalStudents} student${section.totalStudents == 1 ? '' : 's'} '
+              'from this phone and the cloud.',
             ),
             const SizedBox(height: 12),
             const Text(
-              'This cannot be undone. Export a backup first if you may need this data later.',
+              'To keep scores online but remove from this phone, use Settings → End of term → Archive.',
+              style: TextStyle(color: AppColors.brandMuted, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Permanent delete cannot be undone. Export a backup first if unsure.',
               style: TextStyle(color: AppColors.brandMuted, fontSize: 13),
             ),
           ],
@@ -2511,26 +2756,53 @@ class _DashboardPageState extends State<DashboardPage> {
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: const Color(0xFFF8FAFC),
-      drawer: _DashboardDrawer(
-        selectedIndex: _selectedIndex,
-        onSelectTab: (index) {
+      drawer: TeacherHubDrawer(
+        teacherName: _teacherName,
+        school: _teacherSchool,
+        email: _teacherEmail,
+        isOnline: _isOnline,
+        hasCloudSession: SupabaseService.hasActiveSession,
+        studentCount: stats.students,
+        scannedCount: stats.scannedStudents,
+        pendingCount: stats.pending,
+        reviewCount: _reviewScanCount,
+        pendingSyncCount: _pendingSyncCount,
+        isSyncing: _isSyncing,
+        appVersion: _appVersion.isEmpty ? '—' : _appVersion,
+        onScan: () {
           Navigator.pop(context);
-          _selectTab(index);
+          _startScanning();
+        },
+        onReview: () {
+          Navigator.pop(context);
+          _showReviewQueueSheet();
+        },
+        onSync: () {
+          Navigator.pop(context);
+          unawaited(_handleSyncNow());
+        },
+        onHelp: () {
+          Navigator.pop(context);
+          _openHowItWorksGuide();
         },
         onSignOut: () {
           Navigator.pop(context);
           _handleSignOut();
         },
       ),
-      floatingActionButton: _selectedIndex == 1
-          ? FloatingActionButton.extended(
-              onPressed: _createNewSection,
-              backgroundColor: AppColors.brandGreen,
-              foregroundColor: Colors.white,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Add Section'),
-            )
-          : null,
+      floatingActionButton: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        child: _selectedIndex == 1
+            ? FloatingActionButton.extended(
+                key: const ValueKey('classes-fab'),
+                onPressed: _createNewSection,
+                backgroundColor: AppColors.brandGreen,
+                foregroundColor: Colors.white,
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('Add Section'),
+              )
+            : const SizedBox.shrink(key: ValueKey('no-fab')),
+      ),
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(
           color: Colors.white,
@@ -2560,9 +2832,9 @@ class _DashboardPageState extends State<DashboardPage> {
               label: 'Classes',
             ),
             NavigationDestination(
-              icon: Icon(Icons.tune_rounded),
-              selectedIcon: Icon(Icons.tune_rounded),
-              label: 'Tools',
+              icon: Icon(Icons.assignment_outlined),
+              selectedIcon: Icon(Icons.assignment_rounded),
+              label: 'Prepare',
             ),
             NavigationDestination(
               icon: Icon(Icons.settings_outlined),
@@ -2586,7 +2858,19 @@ class _DashboardPageState extends State<DashboardPage> {
               child: Stack(
                 children: [
                   AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
+                    duration: const Duration(milliseconds: 260),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) {
+                      final slide = Tween<Offset>(
+                        begin: const Offset(0, 0.03),
+                        end: Offset.zero,
+                      ).animate(animation);
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(position: slide, child: child),
+                      );
+                    },
                     child: KeyedSubtree(
                       key: ValueKey(_selectedIndex),
                       child: _buildCurrentTab(stats, sections),
@@ -2614,7 +2898,7 @@ class _DashboardPageState extends State<DashboardPage> {
       case 1:
         return _buildSectionsTab(sections);
       case 2:
-        return _buildToolsTab(stats);
+        return _buildPrepareTab(stats);
       case 3:
         return _buildSettingsTab(stats, sections);
       case 0:
@@ -2627,227 +2911,429 @@ class _DashboardPageState extends State<DashboardPage> {
     _DashboardStats stats,
     List<_SectionSnapshot> sections,
   ) {
-    final actionCenterItems = _buildHomeActionCenterItems(stats, sections);
-    final needsSetup = stats.students == 0 || stats.subjects == 0;
-    final attentionItems = actionCenterItems.take(2).toList(growable: false);
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
-      children: [
-        _buildTopBar(
-          title: 'Dashboard',
-          subtitle: 'Grading progress at a glance.',
-        ),
-        const SizedBox(height: 16),
-        _buildHomeNextActionLine(stats),
-        const SizedBox(height: 14),
-        _buildHomeOverviewCard(stats, sections),
-        const SizedBox(height: 14),
-        _buildHomeDualQuickActions(),
-        if (needsSetup) ...[
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+      child: Column(
+        children: [
+          _buildHomeTopBar(stats, sections),
           const SizedBox(height: 14),
-          _buildSetupChecklist(),
+          Expanded(
+            child: Column(
+              children: [
+                Expanded(child: _buildHomeStatusPanel(stats, sections)),
+                const SizedBox(height: 12),
+                _buildHomeExamPrepCard(compact: true),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildHomeScanButton(),
         ],
-        if (attentionItems.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          _buildNeedsAttentionSection(attentionItems),
-        ],
-      ],
+      ),
     );
   }
 
-  Widget _buildHomeNextActionLine(_DashboardStats stats) {
-    final flaggedScans =
-        globalScanResults.where((scan) => scan.requiresReview).length;
-
-    late final String message;
-    late final VoidCallback onTap;
-    late final IconData icon;
-
-    if (stats.students == 0) {
-      message = 'Import your roster to get started';
-      onTap = _handleImport;
-      icon = Icons.upload_rounded;
-    } else if (stats.subjects == 0) {
-      message = 'Create an answer key before scanning';
-      onTap = _createNewSubject;
-      icon = Icons.edit_note_rounded;
-    } else if (flaggedScans > 0) {
-      message =
-          'Review $flaggedScans flagged scan${flaggedScans == 1 ? '' : 's'}';
-      onTap = _showReviewQueueSheet;
-      icon = Icons.rule_folder_rounded;
-    } else {
-      message = 'Start scanning when your class is ready';
-      onTap = _startScanning;
-      icon = Icons.qr_code_scanner_rounded;
-    }
-
-    return HomeNextActionLine(
-      message: message,
-      icon: icon,
-      onTap: onTap,
-    );
-  }
-
-  Widget _buildHomeOverviewCard(
+  Widget _buildHomeTopBar(
     _DashboardStats stats,
     List<_SectionSnapshot> sections,
   ) {
-    final completion = stats.students == 0 ? 0 : (stats.progress * 100).round();
-    final flaggedScans =
-        globalScanResults.where((scan) => scan.requiresReview).length;
-    final hasFlaggedScans = flaggedScans > 0;
-    final summaryLine = stats.students == 0
-        ? 'Import a roster to get started'
-        : '${stats.students} students · ${stats.pending} pending';
-    final secondaryActionLabel =
-        hasFlaggedScans ? 'Review' : 'Open Classes';
-    final secondaryActionIcon = hasFlaggedScans
-        ? Icons.rule_folder_rounded
-        : Icons.groups_rounded;
-    final secondaryActionTap = hasFlaggedScans
-        ? _showReviewQueueSheet
-        : () => _selectTab(1);
+    return DashboardTopBar(
+      title: 'Dashboard',
+      subtitle: 'Grading progress at a glance.',
+      notificationCount: _homeNotificationCount(stats, sections),
+      onNotificationTap: () => _showHomeNotificationsSheet(stats, sections),
+      onMenuTap: () => _scaffoldKey.currentState?.openDrawer(),
+    );
+  }
 
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF064E3B), AppColors.brandGreenDark, AppColors.brandGreen],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.brandGreenDark.withValues(alpha: 0.2),
-            blurRadius: 18,
-            offset: const Offset(0, 10),
+  int _homeNotificationCount(
+    _DashboardStats stats,
+    List<_SectionSnapshot> sections,
+  ) {
+    var count = _buildHomeActionCenterItems(stats, sections).length;
+    if (_pendingSyncCount > 0) {
+      count++;
+    }
+    if (_updateInfo != null) {
+      count++;
+    }
+    return count;
+  }
+
+  void _showHomeNotificationsSheet(
+    _DashboardStats stats,
+    List<_SectionSnapshot> sections,
+  ) {
+    final actions = _buildHomeActionCenterItems(stats, sections);
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final maxHeight = MediaQuery.sizeOf(context).height * 0.72;
+
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+              Center(
+                child: Container(
+                  width: 48,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: AppColors.brandBorder,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Notifications',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.brandText,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                _homeNotificationCount(stats, sections) == 0
+                    ? 'Nothing needs your attention right now.'
+                    : 'Tap an item below to take action.',
+                style: const TextStyle(
+                  color: AppColors.brandMuted,
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (_updateInfo != null)
+                _buildNotificationTile(
+                  icon: Icons.system_update_rounded,
+                  color: AppColors.brandGreen,
+                  title: _updateInfo!.latestVersion == null
+                      ? 'App update available'
+                      : 'Update available: ${_updateInfo!.latestVersion}',
+                  subtitle: _updateInfo!.notes?.trim().isNotEmpty == true
+                      ? _updateInfo!.notes!.trim()
+                      : 'Ask your admin for the latest APK.',
+                  actionLabel: 'Dismiss',
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() => _updateInfo = null);
+                  },
+                ),
+              if (_pendingSyncCount > 0)
+                _buildNotificationTile(
+                  icon: Icons.cloud_upload_rounded,
+                  color: AppColors.brandGreen,
+                  title: '$_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting to sync',
+                  subtitle: !SupabaseService.hasActiveSession
+                      ? 'Sign in while online to upload your work.'
+                      : 'Upload pending scores to the cloud.',
+                  actionLabel: _isSyncing ? 'Syncing…' : 'Sync',
+                  onTap: _isSyncing
+                      ? null
+                      : () {
+                          Navigator.pop(context);
+                          unawaited(_handleSyncNow());
+                        },
+                ),
+              ...actions.map(
+                (action) => _buildNotificationTile(
+                  icon: action.icon,
+                  color: action.color,
+                  title: action.title,
+                  subtitle: action.tag,
+                  actionLabel: action.buttonLabel,
+                  onTap: () {
+                    Navigator.pop(context);
+                    action.onTap();
+                  },
+                ),
+              ),
+              if (_homeNotificationCount(stats, sections) == 0)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.notifications_none_rounded,
+                        size: 40,
+                        color: AppColors.brandMuted,
+                      ),
+                      SizedBox(height: 10),
+                      Text(
+                        'You\'re all caught up.',
+                        style: TextStyle(
+                          color: AppColors.brandMuted,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ],
+              ),
+            ),
           ),
-        ],
+        );
+      },
+    );
+  }
+
+  Widget _buildNotificationTile({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required String actionLabel,
+    required VoidCallback? onTap,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.brandBorder),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 14,
+            color: AppColors.brandText,
+          ),
+        ),
+        subtitle: Text(
+          subtitle,
+          style: const TextStyle(fontSize: 12, color: AppColors.brandMuted),
+        ),
+        trailing: TextButton(
+          onPressed: onTap,
+          child: Text(
+            actionLabel,
+            style: TextStyle(
+              color: onTap == null ? AppColors.brandMuted : color,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _buildHomeStatusPanel(
+    _DashboardStats stats,
+    List<_SectionSnapshot> sections,
+  ) {
+    final prioritySections = _prioritySectionsForHome(sections);
+    final allComplete = sections.isNotEmpty &&
+        sections.every(
+          (section) => section.pending == 0 && section.totalStudents > 0,
+        );
+    final actions = _buildHomeActionCenterItems(stats, sections);
+    HomeStatusNextAction? nextAction;
+    if (actions.isNotEmpty) {
+      final action = actions.first;
+      nextAction = HomeStatusNextAction(
+        message: action.title,
+        icon: action.icon,
+        onTap: action.onTap,
+      );
+    }
+
+    return HomeStatusPanel(
+      totalStudents: stats.students,
+      scannedStudents: stats.scannedStudents,
+      pending: stats.pending,
+      progress: stats.progress,
+      sections: prioritySections.map(_homeStatusSectionRow).toList(),
+      allClassesComplete: allComplete,
+      onSectionTap: _openSection,
+      nextAction: nextAction,
+    );
+  }
+
+  List<_SectionSnapshot> _prioritySectionsForHome(
+    List<_SectionSnapshot> sections,
+  ) {
+    final inProgress = sections
+        .where((section) => section.scannedStudents > 0 && section.pending > 0)
+        .toList()
+      ..sort((a, b) => b.pending.compareTo(a.pending));
+    final notStarted = sections
+        .where(
+          (section) =>
+              section.scannedStudents == 0 && section.totalStudents > 0,
+        )
+        .toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+
+    final picked = <_SectionSnapshot>[...inProgress, ...notStarted];
+    if (picked.length >= 3) {
+      return picked.take(3).toList();
+    }
+
+    final complete = sections
+        .where(
+          (section) => section.pending == 0 && section.totalStudents > 0,
+        )
+        .toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+    picked.addAll(complete);
+    return picked.take(3).toList();
+  }
+
+  HomeStatusSectionRow _homeStatusSectionRow(_SectionSnapshot section) {
+    final isComplete = section.pending == 0 && section.totalStudents > 0;
+    final hasStarted = section.scannedStudents > 0;
+    final statusLabel = section.totalStudents == 0
+        ? 'Needs roster'
+        : isComplete
+            ? 'Complete'
+            : hasStarted
+                ? 'In progress'
+                : 'Not started';
+    final statusColor = isComplete
+        ? AppColors.brandGreen
+        : hasStarted
+            ? const Color(0xFFD97706)
+            : AppColors.brandGreenDark;
+    final statusBackground = isComplete
+        ? AppColors.brandGreen.withValues(alpha: 0.12)
+        : hasStarted
+            ? const Color(0xFFFEF3C7)
+            : AppColors.brandGreen.withValues(alpha: 0.12);
+
+    return HomeStatusSectionRow(
+      name: section.name,
+      pending: section.pending,
+      totalStudents: section.totalStudents,
+      scannedStudents: section.scannedStudents,
+      statusLabel: statusLabel,
+      statusColor: statusColor,
+      statusBackground: statusBackground,
+    );
+  }
+
+  Widget _buildHomeScanButton() {
+    return PressableScale(
+      onTap: _startScanning,
+      child: Material(
+        color: AppColors.brandGreen,
+        borderRadius: BorderRadius.circular(22),
+        elevation: 2,
+        shadowColor: AppColors.brandGreenDark.withValues(alpha: 0.35),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.qr_code_scanner_rounded,
+                color: Colors.white,
+                size: 26,
+              ),
+              SizedBox(width: 10),
+              Text(
+                'Tap to scan',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHomeExamPrepCard({bool compact = false}) {
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, compact ? 14 : 16, 16, compact ? 12 : 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.brandBorder),
+        boxShadow: AppShadows.soft,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '$completion% complete',
-            style: const TextStyle(
-              fontSize: 28,
-              height: 1.1,
+          const Text(
+            'Exam prep',
+            style: TextStyle(
+              fontSize: 15,
               fontWeight: FontWeight.w800,
-              color: Colors.white,
+              color: AppColors.brandText,
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            summaryLine,
-            style: const TextStyle(
-              color: Color(0xFFE7FFF4),
-              height: 1.35,
-              fontSize: 14,
-            ),
-          ),
-          if (stats.students > 0) ...[
-            const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(999),
-              child: LinearProgressIndicator(
-                value: stats.progress.clamp(0.0, 1.0),
-                minHeight: 8,
-                backgroundColor: Colors.white.withValues(alpha: 0.2),
-                valueColor:
-                    const AlwaysStoppedAnimation<Color>(Colors.white),
+          if (!compact) ...[
+            const SizedBox(height: 4),
+            const Text(
+              'Set up rosters, keys, and printable sheets before scanning.',
+              style: TextStyle(
+                color: AppColors.brandMuted,
+                fontSize: 12.5,
+                height: 1.35,
               ),
             ),
           ],
-          if (hasFlaggedScans) ...[
-            const SizedBox(height: 12),
-            Material(
-              color: Colors.white.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(999),
-              child: InkWell(
-                onTap: _showReviewQueueSheet,
-                borderRadius: BorderRadius.circular(999),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '$flaggedScans need review',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-          if (_pendingSyncCount > 0) ...[
-            const SizedBox(height: 12),
-            Material(
-              color: Colors.white.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(999),
-              child: InkWell(
-                onTap: _isSyncing ? null : _handleSyncNow,
-                borderRadius: BorderRadius.circular(999),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.cloud_upload_rounded,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        !SupabaseService.hasActiveSession
-                            ? '$_pendingSyncCount waiting — sign in online to upload'
-                            : '$_pendingSyncCount waiting to sync — tap to upload',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-          const SizedBox(height: 14),
+          SizedBox(height: compact ? 12 : 14),
           Row(
             children: [
               Expanded(
-                child: _HeroActionButton(
-                  icon: Icons.qr_code_scanner_rounded,
-                  label: 'Start Scan',
-                  filled: true,
-                  onTap: _startScanning,
+                child: _HomePrepButton(
+                  icon: Icons.file_upload_rounded,
+                  label: 'Import',
+                  color: AppColors.brandGreenDark,
+                  isBusy: _isImporting,
+                  onTap: _handleImport,
+                  compact: compact,
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: _HeroActionButton(
-                  icon: secondaryActionIcon,
-                  label: secondaryActionLabel,
-                  onTap: secondaryActionTap,
+                child: _HomePrepButton(
+                  icon: Icons.edit_note_rounded,
+                  label: 'Keys',
+                  color: AppColors.brandGreenDark,
+                  onTap: _createNewSubject,
+                  compact: compact,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _HomePrepButton(
+                  icon: Icons.print_rounded,
+                  label: 'Print',
+                  color: const Color(0xFFB45309),
+                  onTap: _showBatchPrintModal,
+                  compact: compact,
                 ),
               ),
             ],
@@ -2865,47 +3351,14 @@ class _DashboardPageState extends State<DashboardPage> {
     final flaggedScans =
         globalScanResults.where((scan) => scan.requiresReview).length;
 
-    if (stats.students == 0) {
-      actions.add(
-        _HomePriorityAction(
-          tag: 'Start here',
-          title: 'Import your first roster',
-          subtitle:
-              'Load students from Excel or CSV so classes, IDs, and grading progress can appear.',
-          buttonLabel: 'Import roster',
-          icon: Icons.file_upload_rounded,
-          color: AppColors.brandGreenDark,
-          onTap: _handleImport,
-          isPrimary: true,
-        ),
-      );
-    }
-
-    if (stats.students > 0 && stats.subjects == 0) {
-      actions.add(
-        _HomePriorityAction(
-          tag: 'Required next step',
-          title: 'Create an answer key before scanning',
-          subtitle:
-              'Add a subject, assign sections, and keep the correct answers ready for review.',
-          buttonLabel: 'Create answer key',
-          icon: Icons.edit_note_rounded,
-          color: AppColors.brandGreenDark,
-          onTap: _createNewSubject,
-          isPrimary: actions.isEmpty,
-        ),
-      );
-    }
-
     if (flaggedScans > 0) {
       actions.add(
         _HomePriorityAction(
           tag: 'Needs review',
           title:
               '$flaggedScans scan${flaggedScans == 1 ? '' : 's'} need a manual check',
-          subtitle:
-              'Low-confidence or flagged scans are waiting in the review queue before final results are shared.',
-          buttonLabel: 'Open review queue',
+          subtitle: '',
+          buttonLabel: 'Review',
           icon: Icons.warning_amber_rounded,
           color: const Color(0xFFD97706),
           onTap: _showReviewQueueSheet,
@@ -2927,10 +3380,10 @@ class _DashboardPageState extends State<DashboardPage> {
       actions.add(
         _HomePriorityAction(
           tag: 'Continue',
-          title: 'Finish ${section.name}',
-          subtitle:
-              '${section.pending} sheet${section.pending == 1 ? '' : 's'} are still waiting, with ${section.scannedStudents} already graded.',
-          buttonLabel: 'Open class',
+          title:
+              '${section.name}: ${section.pending} sheet${section.pending == 1 ? '' : 's'} left',
+          subtitle: '',
+          buttonLabel: 'Open',
           icon: Icons.play_circle_rounded,
           color: const Color(0xFFF59E0B),
           onTap: () => _navigateToSection(section.name),
@@ -2962,10 +3415,9 @@ class _DashboardPageState extends State<DashboardPage> {
           tag: 'Share results',
           title: exportReadySections.length == 1
               ? '${exportReadySections.first.name} is ready to export'
-              : '${exportReadySections.length} classes are ready to export',
-          subtitle:
-              'Results are complete and can be shared as CSV or PDF while everything is still fresh.',
-          buttonLabel: 'Export results',
+              : '${exportReadySections.length} classes ready to export',
+          subtitle: '',
+          buttonLabel: 'Export',
           icon: Icons.download_rounded,
           color: AppColors.brandGreen,
           onTap: _handleExport,
@@ -2974,127 +3426,16 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    if (actions.isEmpty && stats.subjects > 0) {
-      actions.add(
-        _HomePriorityAction(
-          tag: 'Ready to go',
-          title: 'Start your next scan session',
-          subtitle:
-              'Your roster and answer keys are in place, so you can jump straight into scanning.',
-          buttonLabel: 'Start scan',
-          icon: Icons.qr_code_scanner_rounded,
-          color: AppColors.brandGreen,
-          onTap: _startScanning,
-          isPrimary: true,
-        ),
-      );
-      actions.add(
-        _HomePriorityAction(
-          tag: 'Prep materials',
-          title: 'Print answer sheets for another class',
-          subtitle:
-              'Generate clean sheets before the next exam block or make spares for students.',
-          buttonLabel: 'Print sheets',
-          icon: Icons.print_rounded,
-          color: const Color(0xFFB45309),
-          onTap: _showBatchPrintModal,
-        ),
-      );
-    }
-
-    return actions.take(3).toList();
-  }
-
-  Widget _buildActionCenter(List<_HomePriorityAction> actions) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final columns = constraints.maxWidth < 760 ? 1 : 2;
-        const spacing = 14.0;
-        final width =
-            (constraints.maxWidth - (spacing * (columns - 1))) / columns;
-
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
-          children: actions
-              .map(
-                (action) => SizedBox(
-                  width: width,
-                  child: _HomePriorityActionCard(action: action),
-                ),
-              )
-              .toList(),
-        );
-      },
-    );
-  }
-
-  Widget _buildHomeDualQuickActions() {
-    final actions = <_CompactActionData>[
-      _CompactActionData(
-        label: 'Import Roster',
-        subtitle: _isImporting ? 'Importing...' : 'Load students',
-        icon: Icons.file_upload_rounded,
-        color: AppColors.brandGreenDark,
-        onTap: _handleImport,
-        isBusy: _isImporting,
-      ),
-      _CompactActionData(
-        label: 'Answer Keys',
-        subtitle: 'Manage subjects',
-        icon: Icons.edit_note_rounded,
-        color: AppColors.brandGreenDark,
-        onTap: _createNewSubject,
-      ),
-    ];
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        const spacing = 12.0;
-        final cardWidth = (constraints.maxWidth - spacing) / 2;
-
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
-          children: actions
-              .map(
-                (action) => SizedBox(
-                  width: cardWidth,
-                  child: _CompactActionTile(action: action),
-                ),
-              )
-              .toList(),
-        );
-      },
-    );
-  }
-
-  Widget _buildNeedsAttentionSection(List<_HomePriorityAction> actions) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 10),
-          child: Text(
-            'Needs attention',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-              color: AppColors.brandText,
-            ),
-          ),
-        ),
-        _buildActionCenter(actions),
-      ],
-    );
+    return actions.take(2).toList();
   }
 
   Widget _buildClassesPage(List<_SectionSnapshot> sections) {
+    final programKeys = _distinctProgramKeys(sections);
     final filteredSections = _filteredClassSections(sections);
-    final useGroups = _shouldGroupClassSections(filteredSections);
-    final groupedSections = useGroups
-        ? _groupedClassSections(filteredSections)
-        : <String, List<_SectionSnapshot>>{};
+    final hasMixedPrograms = programKeys.length > 1;
+    final inProgressCount = sections
+        .where((section) => section.scannedStudents > 0 && section.pending > 0)
+        .length;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 100),
@@ -3103,10 +3444,14 @@ class _DashboardPageState extends State<DashboardPage> {
           title: 'Classes',
           subtitle: sections.isEmpty
               ? 'Import students to unlock class tracking and grading progress.'
-              : '${sections.length} ${sections.length == 1 ? 'class' : 'classes'} with ${globalStudentDatabase.length} students loaded.',
+              : hasMixedPrograms
+                  ? '${sections.length} classes across ${programKeys.length} programs · ${globalStudentDatabase.length} students · tap a class to open'
+                  : '${sections.length} ${sections.length == 1 ? 'class' : 'classes'} · ${globalStudentDatabase.length} students · tap to open roster',
         ),
-        const SizedBox(height: 20),
-        _buildClassesOverviewStrip(sections),
+        if (sections.isNotEmpty && inProgressCount > 0 && _classesStatusFilter == 0) ...[
+          const SizedBox(height: 14),
+          _buildClassesInProgressHint(inProgressCount),
+        ],
         if (sections.isNotEmpty) ...[
           const SizedBox(height: 16),
           ClassesSearchBar(
@@ -3118,90 +3463,81 @@ class _DashboardPageState extends State<DashboardPage> {
               setState(() => _classesSearchQuery = '');
             },
           ),
+          if (hasMixedPrograms) ...[
+            const SizedBox(height: 12),
+            ClassesProgramFilterChips(
+              programs: programKeys,
+              selectedProgram: _classesProgramFilter,
+              onSelected: (program) {
+                setState(() {
+                  _classesProgramFilter = program;
+                });
+              },
+            ),
+          ],
           const SizedBox(height: 12),
           ClassesFilterChips(
             selectedIndex: _classesStatusFilter,
             onSelected: (index) => setState(() => _classesStatusFilter = index),
           ),
         ],
-        const SizedBox(height: 18),
-        if (sections.isEmpty)
+        const SizedBox(height: 16),
+        if (_isLoadingData && sections.isEmpty)
+          const ClassesListSkeleton()
+        else if (sections.isEmpty)
           _buildEmptyClassesCard()
         else if (filteredSections.isEmpty)
           const ClassesNoMatchesCard()
-        else if (useGroups)
-          ...groupedSections.entries.expand((entry) {
-            final groupKey = entry.key;
-            final groupSections = entry.value;
-            final isExpanded = !_collapsedClassGroups.contains(groupKey);
-
-            return [
-              ClassGroupHeader(
-                groupKey: groupKey,
-                count: groupSections.length,
-                isExpanded: isExpanded,
-                onToggle: () => _toggleClassGroup(groupKey),
-              ),
-              if (isExpanded)
-                ...groupSections.map(_buildMinimalClassCard),
-            ];
-          })
         else
-          ...filteredSections.map(_buildMinimalClassCard),
+          ...filteredSections.map(_buildCompactClassRow),
       ],
     );
   }
 
-  Widget _buildClassesOverviewStrip(List<_SectionSnapshot> sections) {
-    final active = sections.where((section) => section.pending > 0).length;
-    final completed = sections
-        .where((section) => section.pending == 0 && section.totalStudents > 0)
-        .length;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: AppColors.brandBorder),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: _MiniStat(
-              label: 'Classes',
-              value: '${sections.length}',
-            ),
+  Widget _buildClassesInProgressHint(int count) {
+    return Material(
+      color: const Color(0xFFFFFBEB),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: () => setState(() => _classesStatusFilter = 1),
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFFDE68A)),
           ),
-          Container(width: 1, height: 42, color: AppColors.brandBorder),
-          Expanded(
-            child: _MiniStat(
-              label: 'Students',
-              value: '${globalStudentDatabase.length}',
-            ),
-          ),
-          Container(width: 1, height: 42, color: AppColors.brandBorder),
-          Expanded(
-            child: _MiniStat(
-              label: 'Active',
-              value: '$active',
-            ),
-          ),
-          if (sections.isNotEmpty) ...[
-            Container(width: 1, height: 42, color: AppColors.brandBorder),
-            Expanded(
-              child: _MiniStat(
-                label: 'Ready',
-                value: '$completed',
+          child: Row(
+            children: [
+              const Icon(
+                Icons.schedule_rounded,
+                size: 20,
+                color: Color(0xFFD97706),
               ),
-            ),
-          ],
-        ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '$count ${count == 1 ? 'class' : 'classes'} still grading — tap to show',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF92400E),
+                  ),
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: Color(0xFFD97706),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildClassListCard(_SectionSnapshot section) {
+  Widget _buildCompactClassRow(_SectionSnapshot section) {
     final isComplete = section.pending == 0 && section.totalStudents > 0;
     final hasStarted = section.scannedStudents > 0;
     final progressColor = isComplete
@@ -3226,59 +3562,47 @@ class _DashboardPageState extends State<DashboardPage> {
         : hasStarted
             ? const Color(0xFFFEF3C7)
             : AppColors.brandGreen.withValues(alpha: 0.12);
-    final progressLabel = section.totalStudents == 0
-        ? '0 students — import roster or assign an answer key'
-        : '${(section.progress * 100).round()}% graded';
-    final subjectLabel = section.totalSubjects == 0
-        ? 'No subjects linked yet'
-        : section.subjectProgressLabel;
+    final detailLine = section.totalStudents == 0
+        ? 'No students — import a roster'
+        : section.totalSubjects == 0
+            ? '${section.totalStudents} students · ${section.scannedStudents} graded'
+            : '${section.totalStudents} students · ${section.scannedStudents} graded · ${section.subjectProgressLabel}';
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 10),
       child: Material(
-        color: isComplete ? AppColors.brandSurface : Colors.white,
-        borderRadius: BorderRadius.circular(22),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
         child: InkWell(
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(18),
           onTap: () => _openSection(section.name),
           child: Container(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(
-                color: isComplete
-                    ? AppColors.brandGreen.withValues(alpha: 0.22)
-                    : AppColors.brandBorder,
-              ),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x0F0F172A),
-                  blurRadius: 16,
-                  offset: Offset(0, 8),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: AppColors.brandBorder),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
                   children: [
                     Container(
-                      width: 52,
-                      height: 52,
+                      width: 42,
+                      height: 42,
                       decoration: BoxDecoration(
                         color: progressColor.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                       child: Icon(
                         isComplete
                             ? Icons.check_circle_rounded
                             : Icons.groups_rounded,
                         color: progressColor,
-                        size: 26,
+                        size: 22,
                       ),
                     ),
-                    const SizedBox(width: 14),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3286,20 +3610,41 @@ class _DashboardPageState extends State<DashboardPage> {
                           Text(
                             section.name,
                             style: const TextStyle(
-                              fontSize: 17,
+                              fontSize: 16,
                               fontWeight: FontWeight.w800,
                               color: AppColors.brandText,
                             ),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 2),
                           Text(
-                            '${section.totalStudents} students - ${section.scannedStudents} graded',
+                            detailLine,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: AppColors.brandMuted,
-                              fontSize: 13,
+                              fontSize: 12,
+                              height: 1.3,
                             ),
                           ),
                         ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: statusBackground,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: statusColor,
+                        ),
                       ),
                     ),
                     PopupMenuButton<String>(
@@ -3319,105 +3664,39 @@ class _DashboardPageState extends State<DashboardPage> {
                         if (section.totalStudents == 0)
                           const PopupMenuItem(
                             value: 'delete_empty',
-                            child: Text('Delete empty section'),
+                            child: Text('Delete empty section permanently'),
                           ),
                         if (section.totalStudents > 0)
                           const PopupMenuItem(
                             value: 'delete_class',
-                            child: Text('Delete class'),
+                            child: Text('Delete class permanently'),
                           ),
                       ],
                       icon: Icon(
                         Icons.more_vert_rounded,
                         color: AppColors.brandMuted.withValues(alpha: 0.9),
+                        size: 20,
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: statusBackground,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        statusLabel,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: statusColor,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _ClassMetric(
-                        label: 'Pending',
-                        value: '${section.pending}',
-                        color: statusColor,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _ClassMetric(
-                        label: 'Subjects',
-                        value: section.totalSubjects == 0
-                            ? '0'
-                            : '${section.scannedSubjects}/${section.totalSubjects}',
-                        color: AppColors.brandGreenDark,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(999),
-                  child: LinearProgressIndicator(
-                    value: section.progress,
-                    minHeight: 8,
-                    backgroundColor: AppColors.brandSurface,
-                    valueColor: AlwaysStoppedAnimation<Color>(progressColor),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Text(
-                      progressLabel,
-                      style: TextStyle(
-                        color: progressColor,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        subjectLabel,
-                        textAlign: TextAlign.right,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.brandMuted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
                     Icon(
-                      Icons.arrow_forward_rounded,
+                      Icons.chevron_right_rounded,
                       color: AppColors.brandMuted.withValues(alpha: 0.7),
-                      size: 20,
+                      size: 22,
                     ),
                   ],
                 ),
+                if (section.totalStudents > 0) ...[
+                  const SizedBox(height: 10),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(999),
+                    child: LinearProgressIndicator(
+                      value: section.progress,
+                      minHeight: 4,
+                      backgroundColor: AppColors.brandSurface,
+                      valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -3488,8 +3767,8 @@ class _DashboardPageState extends State<DashboardPage> {
       if (!mounted) return;
       await Navigator.push<void>(
         context,
-        MaterialPageRoute<void>(
-          builder: (context) => ScannerPage(
+        AppPageTransitions.fadeSlide(
+          ScannerPage(
             availableCameras: cams,
             targetSubject: targetSubject,
           ),
@@ -3506,77 +3785,6 @@ class _DashboardPageState extends State<DashboardPage> {
         );
       }
     }
-  }
-
-  Widget _buildSetupChecklist() {
-    final hasStudents = globalStudentDatabase.isNotEmpty;
-    final hasSubjects = globalSubjects.isNotEmpty;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: AppColors.brandBorder),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Complete setup',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: AppColors.brandText,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _setupBullet(
-            done: hasStudents,
-            label: 'Import your student roster',
-          ),
-          _setupBullet(
-            done: hasSubjects,
-            label: 'Create an answer key',
-          ),
-          _setupBullet(
-            done: globalScanResults.isNotEmpty,
-            label: 'Scan your first answer sheet',
-          ),
-          const SizedBox(height: 8),
-          TextButton(
-            onPressed: hasStudents ? _createNewSubject : _handleImport,
-            child: const Text('Complete setup'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _setupBullet({required bool done, required String label}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Icon(
-            done ? Icons.check_circle_rounded : Icons.circle_outlined,
-            size: 18,
-            color: done ? AppColors.brandGreen : AppColors.brandMuted,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: done ? AppColors.brandMuted : AppColors.brandText,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   // ignore: unused_element
@@ -4027,54 +4235,39 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Widget _buildMinimalClassCard(_SectionSnapshot section) {
-    return _buildClassListCard(section);
-  }
-
-  Widget _buildToolsTab(_DashboardStats stats) {
+  Widget _buildPrepareTab(_DashboardStats stats) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
       children: [
         _buildTopBar(
-          title: 'Tools',
+          title: 'Prepare',
           subtitle: 'Set up answer keys, sheets, and rosters before scanning.',
         ),
-        const SizedBox(height: 20),
-        _buildToolsSection('Exam setup', _examSetupToolActions),
-        const SizedBox(height: 20),
-        _buildToolsSection('Roster & results', _dataToolActions),
+        const SizedBox(height: 16),
+        _buildCollapsibleSection(
+          expandedSet: _expandedPrepareSections,
+          sectionId: 'exam_setup',
+          icon: Icons.edit_note_rounded,
+          title: 'Exam setup',
+          summary:
+              '${globalSubjects.length} answer key${globalSubjects.length == 1 ? '' : 's'} · print sheets & OMR IDs',
+          child: _buildPrepareActionList(_examSetupToolActions),
+        ),
+        _buildCollapsibleSection(
+          expandedSet: _expandedPrepareSections,
+          sectionId: 'roster_results',
+          icon: Icons.groups_rounded,
+          title: 'Roster & results',
+          summary:
+              '${stats.students} students · ${globalScanResults.length} scan${globalScanResults.length == 1 ? '' : 's'}',
+          child: _buildPrepareActionList(_dataToolActions),
+        ),
       ],
     );
   }
 
-  Widget _buildSettingsSection({
-    required String title,
-    required Widget child,
-  }) {
+  Widget _buildPrepareActionList(List<_DashboardAction> actions) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 10),
-          child: Text(title, style: AppTextStyles.sectionLabel),
-        ),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: AppColors.brandBorder),
-          ),
-          child: child,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildToolsSection(String title, List<_DashboardAction> actions) {
-    return DashboardToolSection(
-      title: title,
       children: actions
           .map(
             (action) => Padding(
@@ -4089,6 +4282,207 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  Widget _buildCollapsibleSection({
+    required Set<String> expandedSet,
+    required String sectionId,
+    required IconData icon,
+    required String title,
+    required String summary,
+    required Widget child,
+  }) {
+    final expanded = expandedSet.contains(sectionId);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: AppColors.brandBorder),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              setState(() {
+                if (expanded) {
+                  expandedSet.remove(sectionId);
+                } else {
+                  expandedSet.add(sectionId);
+                }
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandGreen.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(icon, color: AppColors.brandGreen, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                            color: AppColors.brandText,
+                          ),
+                        ),
+                        if (!expanded) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            summary,
+                            style: const TextStyle(
+                              color: AppColors.brandMuted,
+                              fontSize: 12.5,
+                              height: 1.35,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  AnimatedRotation(
+                    turns: expanded ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(
+                      Icons.expand_more_rounded,
+                      color: AppColors.brandMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+              child: child,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollapsibleSettingsSection({
+    required String sectionId,
+    required IconData icon,
+    required String title,
+    required String summary,
+    required Widget child,
+  }) {
+    return _buildCollapsibleSection(
+      expandedSet: _expandedSettingsSections,
+      sectionId: sectionId,
+      icon: icon,
+      title: title,
+      summary: summary,
+      child: child,
+    );
+  }
+
+  Widget _buildSettingsTipBox(String text) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.brandGreen.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.brandGreen.withValues(alpha: 0.22),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.lightbulb_outline_rounded,
+            size: 20,
+            color: AppColors.brandGreen,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: AppColors.brandText,
+                fontSize: 13,
+                height: 1.4,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsBullet(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '• ',
+            style: TextStyle(
+              color: AppColors.brandMuted,
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: AppColors.brandMuted,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsSubheading(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.brandText,
+        fontWeight: FontWeight.w800,
+        fontSize: 14,
+      ),
+    );
+  }
+
+  String _cloudSyncSettingsSummary() {
+    if (_isSyncing) {
+      return 'Syncing now…';
+    }
+    if (_pendingSyncCount > 0) {
+      return '$_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting to upload';
+    }
+    if (_lastSyncAt != null) {
+      return 'Up to date · Last sync ${_formatLastSync(_lastSyncAt)}';
+    }
+    return 'Tap to manage online backup';
+  }
+
   Widget _buildSettingsTab(
     _DashboardStats stats,
     List<_SectionSnapshot> sections,
@@ -4098,11 +4492,15 @@ class _DashboardPageState extends State<DashboardPage> {
       children: [
         _buildTopBar(
           title: 'Settings',
-          subtitle: 'Workspace overview, cloud sync, backup, and account.',
+          subtitle: 'Tap a section to open it.',
         ),
-        const SizedBox(height: 20),
-        _buildSettingsSection(
+        const SizedBox(height: 16),
+        _buildCollapsibleSettingsSection(
+          sectionId: 'workspace',
+          icon: Icons.school_rounded,
           title: 'Workspace',
+          summary:
+              'PHINMA COC · ${sections.length} section${sections.length == 1 ? '' : 's'} · ${stats.students} students',
           child: Column(
             children: [
               const _SettingsRow(
@@ -4131,11 +4529,55 @@ class _DashboardPageState extends State<DashboardPage> {
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        _buildSettingsSection(
-          title: 'Cloud sync',
+        _buildCollapsibleSettingsSection(
+          sectionId: 'help',
+          icon: Icons.help_outline_rounded,
+          title: 'Help',
+          summary: 'Quick tour for new teachers',
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              const Text(
+                'New to the app? Open the short guide to learn how scanning, answer keys, and class lists work together.',
+                style: TextStyle(
+                  color: AppColors.brandMuted,
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _openHowItWorksGuide,
+                  icon: const Icon(Icons.menu_book_rounded),
+                  label: const Text('Open how-it-works guide'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.brandGreen,
+                    side: const BorderSide(color: AppColors.brandGreen),
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildCollapsibleSettingsSection(
+          sectionId: 'cloud',
+          icon: Icons.cloud_sync_rounded,
+          title: 'Cloud sync',
+          summary: _cloudSyncSettingsSummary(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSettingsTipBox(
+                'Cloud sync saves your grades online when you are signed in and connected. '
+                'Use it on your usual phone or tablet so your work is backed up automatically.',
+              ),
+              const SizedBox(height: 16),
               _SettingsRow(
                 icon: Icons.cloud_sync_rounded,
                 label: 'Pending upload',
@@ -4193,7 +4635,7 @@ class _DashboardPageState extends State<DashboardPage> {
                           ),
                         )
                       : const Icon(Icons.sync_rounded),
-                  label: Text(_isSyncing ? 'Syncing' : 'Sync Now'),
+                  label: Text(_isSyncing ? 'Syncing…' : 'Sync now'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.brandGreen,
                     disabledBackgroundColor: AppColors.brandGreen.withValues(alpha: 0.65),
@@ -4210,37 +4652,86 @@ class _DashboardPageState extends State<DashboardPage> {
                   SupabaseService.isReady) ...[
                 const SizedBox(height: 12),
                 const Text(
-                  'You are signed out. Sign in online to upload pending changes to the cloud.',
+                  'You are signed out. Sign in while online to upload your pending changes.',
                   style: TextStyle(color: Colors.orange, fontSize: 13, height: 1.35),
                 ),
               ],
               if (!SupabaseService.isReady) ...[
                 const SizedBox(height: 12),
                 const Text(
-                  'Cloud sync needs Supabase credentials. Scanning still works offline.',
+                  'Cloud sync is not set up on this build. Scanning and grading still work offline.',
                   style: TextStyle(color: AppColors.brandMuted, fontSize: 13, height: 1.35),
                 ),
               ],
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        _buildSettingsSection(
-          title: 'Backup & restore',
+        _buildCollapsibleSettingsSection(
+          sectionId: 'archive',
+          icon: Icons.inventory_2_outlined,
+          title: 'End of term',
+          summary: 'Archive finished classes to free phone space',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Export or restore a JSON backup when cloud sync is unavailable. Scan images stay on this device only.',
-                style: TextStyle(color: AppColors.brandMuted, fontSize: 13, height: 1.35),
+              _buildSettingsTipBox(
+                'When a semester ends, archive a section here. Scores stay in the cloud and on the web portal. '
+                'The section is removed from this phone only — sync first so nothing is lost.',
               ),
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
+                  onPressed: _isSyncing ? null : _handleArchiveSectionEndOfTerm,
+                  icon: const Icon(Icons.archive_outlined),
+                  label: const Text('Archive a section'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.brandGreenDark,
+                    side: const BorderSide(color: AppColors.brandGreen),
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildCollapsibleSettingsSection(
+          sectionId: 'backup',
+          icon: Icons.folder_special_rounded,
+          title: 'Backup & restore',
+          summary: 'Save or load a copy of your data',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSettingsTipBox(
+                'Think of a backup like photocopying your gradebook. You save a file to your phone '
+                'or Google Drive so you can recover your work later.',
+              ),
+              const SizedBox(height: 18),
+              _buildSettingsSubheading('Cloud sync vs backup file'),
+              const SizedBox(height: 8),
+              _buildSettingsBullet(
+                'Cloud sync (above) updates online when you tap Sync now or when Wi‑Fi auto-sync runs.',
+              ),
+              _buildSettingsBullet(
+                'A backup file is something you save and open yourself—helpful with no internet, a new phone, or extra safety.',
+              ),
+              const SizedBox(height: 18),
+              _buildSettingsSubheading('How to save a backup'),
+              const SizedBox(height: 8),
+              _buildSettingsBullet('Tap Save backup file below.'),
+              _buildSettingsBullet('Choose where to store it (Files, Drive, etc.).'),
+              _buildSettingsBullet('Keep the file private—anyone with it can see your class data.'),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
                   onPressed: _handleExportBackup,
-                  icon: const Icon(Icons.upload_rounded),
-                  label: const Text('Export JSON Backup'),
+                  icon: const Icon(Icons.save_alt_rounded),
+                  label: const Text('Save backup file'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.brandGreen,
                     side: const BorderSide(color: AppColors.brandGreen),
@@ -4251,13 +4742,47 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
               ),
+              const SizedBox(height: 22),
+              _buildSettingsSubheading('How to load a backup'),
+              const SizedBox(height: 8),
+              _buildSettingsBullet('Only use this if you need to recover from a file you saved earlier.'),
+              _buildSettingsBullet('It replaces your grades and keys on this device—not other teachers\' data.'),
               const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.orange.withValues(alpha: 0.25)),
+                ),
+                child: const Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.warning_amber_rounded, size: 20, color: Colors.orange),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Loading a backup replaces your current work on this device. '
+                        'Double-check that you picked the right file.',
+                        style: TextStyle(
+                          color: AppColors.brandText,
+                          fontSize: 12.5,
+                          height: 1.4,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   onPressed: _handleRestoreBackup,
-                  icon: const Icon(Icons.download_rounded),
-                  label: const Text('Restore JSON Backup'),
+                  icon: const Icon(Icons.upload_file_rounded),
+                  label: const Text('Load backup file'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.brandText,
                     side: const BorderSide(color: AppColors.brandBorder),
@@ -4268,29 +4793,54 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
               ),
+              const SizedBox(height: 12),
+              const Text(
+                'Scanned answer sheet photos are not included in backup files—they stay on this device only.',
+                style: TextStyle(color: AppColors.brandMuted, fontSize: 12, height: 1.35),
+              ),
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        _buildSettingsSection(
+        _buildCollapsibleSettingsSection(
+          sectionId: 'account',
+          icon: Icons.person_outline_rounded,
           title: 'Account',
-          child: SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () {
-                _handleSignOut();
-              },
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.brandGreen,
-                side: const BorderSide(color: AppColors.brandGreen),
-                minimumSize: const Size.fromHeight(52),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(18),
+          summary: SupabaseService.hasActiveSession
+              ? 'Signed in · Tap to sign out'
+              : 'Sign out of this device',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                SupabaseService.hasActiveSession
+                    ? 'You are signed in. Sign out if you are done on this device or switching accounts.'
+                    : 'You are using the app with your PIN on this device. Sign out to return to the login screen.',
+                style: const TextStyle(
+                  color: AppColors.brandMuted,
+                  fontSize: 13,
+                  height: 1.4,
                 ),
               ),
-              icon: const Icon(Icons.logout_rounded),
-              label: const Text('Sign Out'),
-            ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    _handleSignOut();
+                  },
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.brandGreen,
+                    side: const BorderSide(color: AppColors.brandGreen),
+                    minimumSize: const Size.fromHeight(52),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                  icon: const Icon(Icons.logout_rounded),
+                  label: const Text('Sign out'),
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -4472,144 +5022,6 @@ class _DashboardAction {
   final Future<void> Function() onTap;
 }
 
-class _DashboardDrawer extends StatelessWidget {
-  const _DashboardDrawer({
-    required this.selectedIndex,
-    required this.onSelectTab,
-    required this.onSignOut,
-  });
-
-  final int selectedIndex;
-  final ValueChanged<int> onSelectTab;
-  final VoidCallback onSignOut;
-
-  @override
-  Widget build(BuildContext context) {
-    return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [
-                    AppColors.brandGreenDark,
-                    AppColors.brandGreen,
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Row(
-                children: [
-                  const CocSealLogo(size: 56),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'COC OMR Hub',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Core dashboard shell',
-                          style: TextStyle(
-                            color: Color(0xFFE8F8EC),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Text(
-                'Use the bottom bar to switch tabs. This menu is for account actions.',
-                style: TextStyle(
-                  color: Colors.grey.shade600,
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            _DrawerTile(
-              icon: Icons.settings_rounded,
-              label: 'Open Settings',
-              selected: selectedIndex == 3,
-              onTap: () => onSelectTab(3),
-            ),
-            const Spacer(),
-            const Divider(height: 1),
-            _DrawerTile(
-              icon: Icons.logout_rounded,
-              label: 'Sign Out',
-              selected: false,
-              onTap: onSignOut,
-            ),
-            const SizedBox(height: 12),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DrawerTile extends StatelessWidget {
-  const _DrawerTile({
-    required this.icon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-      child: ListTile(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        selected: selected,
-        selectedTileColor: AppColors.brandGreen.withValues(
-          alpha: 0.08,
-        ),
-        leading: Icon(
-          icon,
-          color: selected
-              ? AppColors.brandGreen
-              : AppColors.brandMuted,
-        ),
-        title: Text(
-          label,
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: selected
-                ? AppColors.brandGreen
-                : AppColors.brandText,
-          ),
-        ),
-        onTap: onTap,
-      ),
-    );
-  }
-}
-
 class _ToolTile extends StatelessWidget {
   const _ToolTile({
     required this.action,
@@ -4683,40 +5095,6 @@ class _ToolTile extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _MiniStat extends StatelessWidget {
-  const _MiniStat({
-    required this.label,
-    required this.value,
-  });
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w800,
-            color: AppColors.brandText,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.brandMuted,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
     );
   }
 }
@@ -4797,155 +5175,48 @@ class _AnswerKeyRow {
   final String? sectionName;
 }
 
-class _CompactActionData {
-  const _CompactActionData({
-    required this.label,
-    required this.subtitle,
+class _HomePrepButton extends StatelessWidget {
+  const _HomePrepButton({
     required this.icon,
+    required this.label,
     required this.color,
     required this.onTap,
     this.isBusy = false,
+    this.compact = false,
   });
 
-  final String label;
-  final String subtitle;
   final IconData icon;
+  final String label;
   final Color color;
   final VoidCallback onTap;
   final bool isBusy;
-}
-
-class _CompactActionTile extends StatelessWidget {
-  const _CompactActionTile({required this.action});
-
-  final _CompactActionData action;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: action.isBusy ? null : action.onTap,
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: AppColors.brandBorder),
-          ),
-          child: Row(
+    return PressableScale(
+      onTap: isBusy ? null : onTap,
+      child: Material(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: compact ? 10 : 14),
+          child: Column(
             children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: action.color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: action.isBusy
-                    ? Padding(
-                        padding: const EdgeInsets.all(10),
-                        child: LoadingIndicators.primary(color: action.color),
-                      )
-                    : Icon(
-                        action.icon,
-                        color: action.color,
-                        size: 20,
-                      ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      action.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.brandText,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      action.subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.brandMuted,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Icon(
-                Icons.chevron_right_rounded,
-                color: action.color,
-                size: 20,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _HeroActionButton extends StatelessWidget {
-  const _HeroActionButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.filled = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool filled;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: filled ? Colors.white : Colors.transparent,
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color:
-                  filled ? Colors.white : Colors.white.withValues(alpha: 0.26),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                icon,
-                size: 18,
-                color:
-                    filled ? AppColors.brandGreenDark : Colors.white,
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: filled
-                        ? AppColors.brandGreenDark
-                        : Colors.white,
-                    fontWeight: FontWeight.w800,
-                  ),
+              if (isBusy)
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: LoadingIndicators.primary(color: color),
+                )
+              else
+                Icon(icon, color: color, size: compact ? 20 : 22),
+              SizedBox(height: compact ? 6 : 8),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: FontWeight.w800,
+                  fontSize: compact ? 12 : 13,
                 ),
               ),
             ],
@@ -4976,159 +5247,6 @@ class _HomePriorityAction {
   final Color color;
   final VoidCallback onTap;
   final bool isPrimary;
-}
-
-class _HomePriorityActionCard extends StatelessWidget {
-  const _HomePriorityActionCard({required this.action});
-
-  final _HomePriorityAction action;
-
-  @override
-  Widget build(BuildContext context) {
-    final foreground =
-        action.isPrimary ? Colors.white : AppColors.brandText;
-    final mutedForeground = action.isPrimary
-        ? const Color(0xFFE7FFF4)
-        : AppColors.brandMuted;
-
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(24),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(24),
-        onTap: action.onTap,
-        child: Ink(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            gradient: action.isPrimary
-                ? LinearGradient(
-                    colors: [
-                      action.color,
-                      AppColors.brandGreenDark,
-                    ],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  )
-                : null,
-            color: action.isPrimary ? null : Colors.white,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: action.isPrimary
-                  ? Colors.transparent
-                  : AppColors.brandBorder,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: action.isPrimary
-                    ? action.color.withValues(alpha: 0.18)
-                    : const Color(0x0F0F172A),
-                blurRadius: 18,
-                offset: const Offset(0, 10),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: action.isPrimary
-                          ? Colors.white.withValues(alpha: 0.16)
-                          : action.color.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      action.tag,
-                      style: TextStyle(
-                        color: action.isPrimary ? Colors.white : action.color,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    width: 42,
-                    height: 42,
-                    decoration: BoxDecoration(
-                      color: action.isPrimary
-                          ? Colors.white.withValues(alpha: 0.16)
-                          : action.color.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Icon(
-                      action.icon,
-                      color: action.isPrimary ? Colors.white : action.color,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Text(
-                action.title,
-                style: TextStyle(
-                  fontSize: 18,
-                  height: 1.15,
-                  fontWeight: FontWeight.w800,
-                  color: foreground,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                action.subtitle,
-                style: TextStyle(
-                  fontSize: 13,
-                  height: 1.45,
-                  color: mutedForeground,
-                ),
-              ),
-              const SizedBox(height: 18),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: action.isPrimary
-                      ? Colors.white
-                      : action.color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      action.buttonLabel,
-                      style: TextStyle(
-                        color: action.isPrimary
-                            ? AppColors.brandGreenDark
-                            : action.color,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.arrow_forward_rounded,
-                      size: 18,
-                      color: action.isPrimary
-                          ? AppColors.brandGreenDark
-                          : action.color,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _ActivitySummaryTile extends StatelessWidget {
@@ -5402,51 +5520,6 @@ class _ImportStatLine extends StatelessWidget {
   }
 }
 
-class _ClassMetric extends StatelessWidget {
-  const _ClassMetric({
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  final String label;
-  final String value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              color: color,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              color: AppColors.brandMuted,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // Review queue sheet for flagged scans
 class _ReviewQueueSheet extends StatefulWidget {
   final ScrollController scrollController;
@@ -5539,22 +5612,10 @@ class _ReviewQueueSheetState extends State<_ReviewQueueSheet> {
         ),
         Expanded(
           child: flaggedScans.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.check_circle_rounded,
-                          size: 48, color: AppColors.brandGreen),
-                      SizedBox(height: 16),
-                      Text('All clear!',
-                          style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.w600)),
-                      SizedBox(height: 8),
-                      Text('No scans need review',
-                          style:
-                              TextStyle(color: AppColors.brandMuted)),
-                    ],
-                  ),
+              ? const AppEmptyState(
+                  icon: Icons.check_circle_rounded,
+                  title: 'All clear!',
+                  message: 'No scans need review right now.',
                 )
               : ListView.builder(
                   controller: widget.scrollController,
@@ -5601,228 +5662,25 @@ class _ReviewQueueSheetState extends State<_ReviewQueueSheet> {
     required Future<void> Function(ScanResult scan) onRescan,
   }) {
     final student = findStudentByOmrId(scan.studentOmrId);
-    final confidencePercent = (scan.confidence * 100).round();
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.brandBorder),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: scan.isLowConfidence
-                        ? const Color(0xFFFEE2E2)
-                        : const Color(0xFFFEF3C7),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    scan.studentOmrId,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: scan.isLowConfidence
-                          ? const Color(0xFFDC2626)
-                          : const Color(0xFFD97706),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        student?.name ?? 'Unknown Student',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.brandText,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        scan.subjectName,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: AppColors.brandMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      '${scan.scoreDisplay}/${scan.totalQuestions}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.brandText,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          scan.isLowConfidence
-                              ? Icons.warning_rounded
-                              : Icons.flag_rounded,
-                          size: 14,
-                          color: scan.isLowConfidence
-                              ? const Color(0xFFDC2626)
-                              : const Color(0xFFD97706),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          scan.isLowConfidence
-                              ? '$confidencePercent%'
-                              : 'Flagged',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: scan.isLowConfidence
-                                ? const Color(0xFFDC2626)
-                                : const Color(0xFFD97706),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            if (scan.reviewReasons.isNotEmpty || scan.flaggedQuestions.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFFBEB),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFFDE68A)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (scan.reviewReasons.isNotEmpty)
-                      ...scan.reviewReasons.map(
-                        (reason) => Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('• ',
-                                  style: TextStyle(color: Color(0xFF92400E))),
-                              Expanded(
-                                child: Text(
-                                  reason,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Color(0xFF92400E),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    if (scan.flaggedQuestions.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 2),
-                        child: Text(
-                          'Check question${scan.flaggedQuestions.length == 1 ? '' : 's'}: '
-                          '${(scan.flaggedQuestions.toList()..sort()).join(', ')}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF92400E),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-            if (scan.scannedImagePath != null &&
-                scan.scannedImagePath!.isNotEmpty &&
-                File(scan.scannedImagePath!).existsSync()) ...[
-              const SizedBox(height: 12),
-              GestureDetector(
-                onTap: () => _showSnapshotPreview(context, scan.scannedImagePath!),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: Stack(
-                    children: [
-                      Image.file(
-                        File(scan.scannedImagePath!),
-                        height: 120,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      ),
-                      const Positioned(
-                        right: 8,
-                        bottom: 8,
-                        child: Icon(
-                          Icons.zoom_out_map_rounded,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () async {
-                      await onRescan(scan);
-                    },
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.brandGreen,
-                      side: const BorderSide(
-                          color: AppColors.brandGreen),
-                    ),
-                    child: const Text('Rescan'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      await LocalDataStore.instance.setScanReviewStatus(
-                        result: scan,
-                        needsReview: false,
-                      );
-                      setState(() {});
-                      widget.onReviewComplete();
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.brandGreen,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('Approve'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+    return ReviewQueueCard(
+      scan: scan,
+      studentName: student?.name ?? 'Unknown Student',
+      onRescan: () => onRescan(scan),
+      onApprove: () async {
+        await LocalDataStore.instance.setScanReviewStatus(
+          result: scan,
+          needsReview: false,
+        );
+        if (mounted) {
+          setState(() {});
+          widget.onReviewComplete();
+        }
+      },
+      onPreviewImage: scan.scannedImagePath != null &&
+              scan.scannedImagePath!.isNotEmpty
+          ? () => _showSnapshotPreview(context, scan.scannedImagePath!)
+          : null,
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:omr_app/theme/app_typography.dart';
 
 class ThemeService {
   ThemeService._();
@@ -22,35 +23,35 @@ class ThemeService {
         brightness: Brightness.light,
       ),
       fontFamilyFallback: const ['Roboto', 'Arial'],
+      textTheme: AppTypography.textTheme,
       scaffoldBackgroundColor: appCanvas,
-      appBarTheme: const AppBarTheme(
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        },
+      ),
+      appBarTheme: AppBarTheme(
         backgroundColor: appCanvas,
         foregroundColor: brandText,
         elevation: 0,
         centerTitle: false,
         surfaceTintColor: appCanvas,
-        titleTextStyle: TextStyle(
-          color: brandText,
-          fontSize: 20,
-          fontWeight: FontWeight.w800,
-        ),
+        titleTextStyle: AppTypography.sectionTitle.copyWith(fontSize: 20),
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         backgroundColor: brandText,
-        contentTextStyle: const TextStyle(
+        contentTextStyle: AppTypography.buttonLabel.copyWith(
           color: Colors.white,
-          fontWeight: FontWeight.w700,
+          fontSize: 14,
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.white,
-        labelStyle: const TextStyle(
-          color: brandMuted,
-          fontWeight: FontWeight.w700,
-        ),
+        labelStyle: AppTypography.chipLabel.copyWith(color: brandMuted),
         hintStyle: TextStyle(
           color: brandMuted.withValues(alpha: 0.72),
           fontWeight: FontWeight.w500,
@@ -168,18 +169,11 @@ class ThemeService {
           return const Color(0xFFE2E8F0);
         }),
       ),
-      listTileTheme: const ListTileThemeData(
+      listTileTheme: ListTileThemeData(
         iconColor: brandMuted,
         textColor: brandText,
-        titleTextStyle: TextStyle(
-          color: brandText,
-          fontWeight: FontWeight.w700,
-          fontSize: 15,
-        ),
-        subtitleTextStyle: TextStyle(
-          color: brandMuted,
-          fontSize: 13,
-        ),
+        titleTextStyle: AppTypography.listTitle,
+        subtitleTextStyle: AppTypography.captionMuted.copyWith(fontSize: 13),
       ),
       navigationBarTheme: NavigationBarThemeData(
         indicatorColor: brandGreen.withValues(alpha: 0.12),

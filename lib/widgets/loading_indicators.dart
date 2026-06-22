@@ -69,7 +69,7 @@ class LoadingIndicators {
             message,
             style: TextStyle(
               fontSize: 14,
-              color: Colors.grey.shade600,
+              color: AppColors.brandMuted,
             ),
           ),
         ],
@@ -81,9 +81,9 @@ class LoadingIndicators {
   static Widget linear({Color? color}) {
     return LinearProgressIndicator(
       minHeight: 2,
-      backgroundColor: Colors.grey.shade200,
+      backgroundColor: AppColors.neutralFill,
       valueColor: AlwaysStoppedAnimation<Color>(
-        color ?? const Color(0xFF10B981),
+        color ?? AppColors.brandGreen,
       ),
     );
   }
@@ -143,6 +143,93 @@ class LoadingOverlay extends StatelessWidget {
             child: LoadingIndicators.fullScreen(message: message),
           ),
       ],
+    );
+  }
+}
+
+/// Placeholder rows while class list data is loading.
+class ClassesListSkeleton extends StatelessWidget {
+  const ClassesListSkeleton({super.key, this.count = 3});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: List.generate(count, (index) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _ShimmerBox(
+            height: 88,
+            borderRadius: 22,
+            delayMs: index * 80,
+          ),
+        );
+      }),
+    );
+  }
+}
+
+class _ShimmerBox extends StatefulWidget {
+  const _ShimmerBox({
+    required this.height,
+    required this.borderRadius,
+    this.delayMs = 0,
+  });
+
+  final double height;
+  final double borderRadius;
+  final int delayMs;
+
+  @override
+  State<_ShimmerBox> createState() => _ShimmerBoxState();
+}
+
+class _ShimmerBoxState extends State<_ShimmerBox>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    );
+    Future<void>.delayed(Duration(milliseconds: widget.delayMs), () {
+      if (mounted) {
+        _controller.repeat();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Container(
+          height: widget.height,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+            gradient: LinearGradient(
+              begin: Alignment(-1 + (_controller.value * 2), 0),
+              end: Alignment(1 + (_controller.value * 2), 0),
+              colors: const [
+                Color(0xFFE2E8F0),
+                Color(0xFFF1F5F9),
+                Color(0xFFE2E8F0),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

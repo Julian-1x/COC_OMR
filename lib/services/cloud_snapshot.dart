@@ -1,4 +1,5 @@
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/utils/student_identity.dart';
 
 /// Rows downloaded from Supabase before merging into local SQLite.
 class CloudPullSnapshot {
@@ -71,16 +72,20 @@ class CloudSnapshotMerger {
     final scanResults =
         _mergeScanResults(localScanResults, cloud.scanResults);
     final deadlines = _mergeDeadlines(localDeadlines, cloud.deadlines);
+    final deduped = dedupeStudentRoster(
+      students: students.merged,
+      scanResults: scanResults.merged,
+    );
 
     return (
       sections: sections.merged,
-      students: students.merged,
+      students: deduped.students,
       subjects: subjects.merged,
-      scanResults: scanResults.merged,
+      scanResults: deduped.scanResults,
       deadlines: deadlines.merged,
       summary: CloudMergeSummary(
         sections: sections.applied,
-        students: students.applied,
+        students: students.applied + deduped.mergedCount,
         subjects: subjects.applied,
         scanResults: scanResults.applied,
         deadlines: deadlines.applied,
@@ -118,26 +123,56 @@ class CloudSnapshotMerger {
     List<Student> local,
     List<Student> cloud,
   ) {
-    final byOmrId = <String, Student>{
-      for (final entry in local) entry.omrId: entry,
-    };
+    final merged = <Student>[...local];
     var applied = 0;
 
     for (final cloudRow in cloud) {
-      final existing = byOmrId[cloudRow.omrId] ??
-          _findByCloudId(local, cloudRow.cloudId, (entry) => entry.cloudId);
-      final merged = _pickStudent(existing, cloudRow);
-      if (existing == null || existing.updatedAt != merged.updatedAt) {
+      final existing = _findMatchingStudent(merged, cloudRow);
+      if (existing == null) {
+        merged.add(cloudRow);
+        applied++;
+        continue;
+      }
+
+      final picked = _pickStudent(existing, cloudRow);
+      final index = merged.indexWhere((entry) => entry.omrId == existing.omrId);
+      if (index == -1) {
+        merged.add(picked);
+        applied++;
+        continue;
+      }
+
+      if (existing.updatedAt != picked.updatedAt ||
+          existing.omrId != picked.omrId ||
+          existing.name != picked.name ||
+          existing.section != picked.section) {
         applied++;
       }
-      byOmrId[cloudRow.omrId] = merged;
+      merged[index] = picked;
     }
 
     return _MergeResult(
-      merged: byOmrId.values.toList()
-        ..sort((a, b) => a.omrId.compareTo(b.omrId)),
+      merged: merged..sort((a, b) => a.omrId.compareTo(b.omrId)),
       applied: applied,
     );
+  }
+
+  static Student? _findMatchingStudent(
+    List<Student> students,
+    Student cloudRow,
+  ) {
+    final schoolMatch = findStudentBySchoolId(students, cloudRow.schoolId);
+    if (schoolMatch != null) {
+      return schoolMatch;
+    }
+
+    for (final entry in students) {
+      if (entry.omrId == cloudRow.omrId) {
+        return entry;
+      }
+    }
+
+    return _findByCloudId(students, cloudRow.cloudId, (entry) => entry.cloudId);
   }
 
   static _MergeResult<Subject> _mergeSubjects(
@@ -230,8 +265,10 @@ class CloudSnapshotMerger {
     if (local == null) {
       return cloud;
     }
-    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt) &&
-        local.cloudId != null) {
+    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt)) {
+      return local;
+    }
+    if (local.cloudId == null && local.updatedAt.isAfter(cloud.updatedAt)) {
       return local;
     }
     if (local.cloudId == null || !cloud.updatedAt.isBefore(local.updatedAt)) {
@@ -244,8 +281,10 @@ class CloudSnapshotMerger {
     if (local == null) {
       return cloud;
     }
-    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt) &&
-        local.cloudId != null) {
+    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt)) {
+      return local;
+    }
+    if (local.cloudId == null && local.updatedAt.isAfter(cloud.updatedAt)) {
       return local;
     }
     if (local.cloudId == null || !cloud.updatedAt.isBefore(local.updatedAt)) {
@@ -258,8 +297,10 @@ class CloudSnapshotMerger {
     if (local == null) {
       return cloud;
     }
-    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt) &&
-        local.cloudId != null) {
+    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt)) {
+      return local;
+    }
+    if (local.cloudId == null && local.updatedAt.isAfter(cloud.updatedAt)) {
       return local;
     }
     if (local.cloudId == null || !cloud.updatedAt.isBefore(local.updatedAt)) {
@@ -269,8 +310,10 @@ class CloudSnapshotMerger {
   }
 
   static ScanResult _pickScanResult(ScanResult local, ScanResult cloud) {
-    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt) &&
-        local.cloudId != null) {
+    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt)) {
+      return local;
+    }
+    if (local.cloudId == null && local.updatedAt.isAfter(cloud.updatedAt)) {
       return local;
     }
     if (local.cloudId == null || !cloud.updatedAt.isBefore(local.updatedAt)) {
@@ -283,8 +326,10 @@ class CloudSnapshotMerger {
     if (local == null) {
       return cloud;
     }
-    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt) &&
-        local.cloudId != null) {
+    if (_shouldKeepLocal(local.syncStatus, local.updatedAt, cloud.updatedAt)) {
+      return local;
+    }
+    if (local.cloudId == null && local.updatedAt.isAfter(cloud.updatedAt)) {
       return local;
     }
     if (local.cloudId == null || !cloud.updatedAt.isBefore(local.updatedAt)) {

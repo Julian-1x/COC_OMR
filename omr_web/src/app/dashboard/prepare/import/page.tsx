@@ -9,6 +9,12 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/input";
 import { commitRosterImport } from "@/lib/actions/roster";
 import { previewImportRows, parseCsvText, parseXlsxBuffer } from "@/lib/import/roster";
+import {
+  commonTermLabels,
+  defaultTermLabel,
+  schoolYearForDate,
+  schoolYearOptions,
+} from "@/lib/academic-term";
 import { downloadText } from "@/lib/utils";
 
 export default function ImportRosterPage() {
@@ -18,6 +24,9 @@ export default function ImportRosterPage() {
   const [loading, setLoading] = useState(false);
   const [previewCount, setPreviewCount] = useState(0);
   const [pendingRows, setPendingRows] = useState<ReturnType<typeof previewImportRows> | null>(null);
+  const [schoolYear, setSchoolYear] = useState(schoolYearForDate());
+  const [termLabel, setTermLabel] = useState(defaultTermLabel());
+  const yearOptions = schoolYearOptions();
 
   async function handleFile(file: File) {
     setError(null);
@@ -43,7 +52,7 @@ export default function ImportRosterPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await commitRosterImport(pendingRows.rows);
+      const result = await commitRosterImport(pendingRows.rows, { schoolYear, termLabel });
       setMessage(
         `Imported ${result.newCount} new, updated ${result.updatedCount}, unchanged ${result.unchanged}. Sync your phone to pull these changes.`,
       );
@@ -68,6 +77,41 @@ export default function ImportRosterPage() {
       </div>
 
       <Card>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="school-year">School year</Label>
+            <select
+              id="school-year"
+              value={schoolYear}
+              onChange={(e) => setSchoolYear(e.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+            >
+              {yearOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <Label htmlFor="term">Term</Label>
+            <select
+              id="term"
+              value={termLabel}
+              onChange={(e) => setTermLabel(e.target.value)}
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+            >
+              {commonTermLabels.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <p className="mb-4 text-xs font-medium text-slate-500">
+          New sections from this import are tagged with this school year and term.
+        </p>
         <Label htmlFor="roster">Roster file</Label>
         <input
           id="roster"

@@ -50,6 +50,7 @@ class SupabaseService {
         anonKey: _clientKey,
         authOptions: const FlutterAuthClientOptions(
           authFlowType: AuthFlowType.pkce,
+          detectSessionInUri: true,
         ),
       );
       _isReady = true;

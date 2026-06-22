@@ -1,26 +1,45 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
 import { workspaceName } from "@/lib/theme";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [school, setSchool] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const authError = searchParams.get("error");
+    if (authError === "confirm") {
+      setNotice(
+        "Your email may already be confirmed. Sign in below with the same email and password.",
+      );
+      setMode("login");
+      return;
+    }
+
+    if (searchParams.get("confirmed") === "1") {
+      setNotice("Email confirmed. Sign in to open your dashboard.");
+      setMode("login");
+    }
+  }, [searchParams]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setLoading(true);
 
     try {
@@ -42,9 +61,21 @@ export default function LoginPage() {
         }),
       });
 
-      const payload = (await response.json()) as { error?: string; ok?: boolean };
+      const payload = (await response.json()) as {
+        error?: string;
+        ok?: boolean;
+        needsEmailConfirmation?: boolean;
+      };
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? "Sign in failed.");
+      }
+
+      if (mode === "register" && payload.needsEmailConfirmation) {
+        setNotice(
+          "Account created. Open the confirmation email on this device, tap the link, and you will return here signed in.",
+        );
+        setMode("login");
+        return;
       }
 
       router.push("/dashboard");
@@ -132,6 +163,12 @@ export default function LoginPage() {
             />
           </div>
 
+          {notice ? (
+            <p className="mb-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+              {notice}
+            </p>
+          ) : null}
+
           {error ? (
             <p className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>
           ) : null}
@@ -142,5 +179,13 @@ export default function LoginPage() {
         </form>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>
+      <LoginForm />
+    </Suspense>
   );
 }

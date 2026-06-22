@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
@@ -75,14 +76,18 @@ class OpenCVBridge {
     }
   }
 
+  static const Duration _processOmrTimeout = Duration(seconds: 22);
+
   /// Process an image and return structured OMR scan result
   static Future<OmrScanResult> processOmr(Uint8List bytes,
       {int totalQuestions = 50}) async {
     try {
-      final result = await _channel.invokeMethod('processWithConfig', {
-        'image': bytes,
-        'totalQuestions': totalQuestions,
-      });
+      final result = await _channel
+          .invokeMethod('processWithConfig', {
+            'image': bytes,
+            'totalQuestions': totalQuestions,
+          })
+          .timeout(_processOmrTimeout);
 
       if (result == null) {
         return OmrScanResult(
@@ -96,6 +101,16 @@ class OpenCVBridge {
 
       final json = jsonDecode(result as String) as Map<String, dynamic>;
       return OmrScanResult.fromJson(json);
+    } on TimeoutException {
+      debugPrint('OpenCV processOmr timed out');
+      return OmrScanResult(
+        success: false,
+        answers: {},
+        confidence: 0.0,
+        errorMessage:
+            'Scan took too long. Hold steady, tap the paper to focus, and try again.',
+        debugInfo: {'timeout': true},
+      );
     } on PlatformException catch (e) {
       debugPrint('OpenCV bridge error: ${e.message}');
       return OmrScanResult(
@@ -134,6 +149,33 @@ class OpenCVBridge {
       return result == true;
     } catch (e) {
       return false;
+    }
+  }
+
+  /// Ask Android to restart OpenCV native load (after a failed start).
+  static Future<void> retryInit() async {
+    try {
+      await _channel.invokeMethod('retryInit');
+    } catch (e) {
+      debugPrint('OpenCV retryInit error: $e');
+    }
+  }
+
+  /// Block until native OpenCV is loaded (or timeout). Call at app start.
+  static Future<bool> ensureReady({
+    Duration timeout = const Duration(seconds: 12),
+  }) async {
+    if (await isReady()) {
+      return true;
+    }
+    try {
+      final result = await _channel
+          .invokeMethod<bool>('ensureReady')
+          .timeout(timeout);
+      return result == true;
+    } catch (e) {
+      debugPrint('OpenCV ensureReady error: $e');
+      return isReady();
     }
   }
 

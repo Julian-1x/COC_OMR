@@ -12,6 +12,7 @@ Offline-first OMR scanner for Cagayan de Oro College — **production software**
 | [RELEASE.md](RELEASE.md) | Building/installing APK |
 | [PRODUCTION.md](PRODUCTION.md) | Supabase, sync, operations |
 | [PRIVACY.md](PRIVACY.md) | Data handling |
+| [omr_web/README.md](omr_web/README.md) | Teacher web portal (desk companion) |
 
 ## Quick dev run
 

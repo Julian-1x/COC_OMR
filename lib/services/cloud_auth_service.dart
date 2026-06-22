@@ -28,12 +28,28 @@ class CloudAuthException implements Exception {
   String toString() => message;
 }
 
+class TeacherRegistrationResult {
+  const TeacherRegistrationResult({
+    this.account,
+    this.needsEmailConfirmation = false,
+    this.pendingEmail,
+    this.pendingName,
+    this.pendingSchool,
+  });
+
+  final CloudTeacherAccount? account;
+  final bool needsEmailConfirmation;
+  final String? pendingEmail;
+  final String? pendingName;
+  final String? pendingSchool;
+}
+
 class CloudAuthService {
   CloudAuthService._();
 
   static final CloudAuthService instance = CloudAuthService._();
 
-  Future<CloudTeacherAccount> registerTeacher({
+  Future<TeacherRegistrationResult> registerTeacher({
     required String name,
     required String email,
     required String password,
@@ -42,6 +58,7 @@ class CloudAuthService {
     final client = _clientOrThrow();
     final trimmedName = name.trim();
     final normalizedEmail = email.trim().toLowerCase();
+    final trimmedSchool = school.trim();
 
     try {
       final response = await client.auth.signUp(
@@ -50,20 +67,23 @@ class CloudAuthService {
         emailRedirectTo: kAuthRedirectUrl,
         data: {
           'full_name': trimmedName,
-          'school': school.trim(),
+          'school': trimmedSchool,
           'role': 'teacher',
         },
       );
       final user = response.user;
       if (user == null) {
         throw const CloudAuthException(
-          'Registration started. Check the teacher email to confirm the account, then sign in.',
+          'Registration could not start. Check your internet and try again.',
         );
       }
 
       if (response.session == null) {
-        throw const CloudAuthException(
-          'Account created. Open the confirmation email on this phone, tap the link, then return to the app and tap Login.',
+        return TeacherRegistrationResult(
+          needsEmailConfirmation: true,
+          pendingEmail: normalizedEmail,
+          pendingName: trimmedName,
+          pendingSchool: trimmedSchool,
         );
       }
 
@@ -71,16 +91,21 @@ class CloudAuthService {
         client: client,
         userId: user.id,
         fullName: trimmedName,
-        school: school.trim(),
+        school: trimmedSchool,
       );
 
-      return CloudTeacherAccount(
-        id: user.id,
-        email: normalizedEmail,
-        name: trimmedName,
-        isActive: true,
+      return TeacherRegistrationResult(
+        account: CloudTeacherAccount(
+          id: user.id,
+          email: normalizedEmail,
+          name: trimmedName,
+          isActive: true,
+        ),
       );
     } catch (error) {
+      if (error is CloudAuthException) {
+        rethrow;
+      }
       throw CloudAuthException(_friendlyError(error));
     }
   }

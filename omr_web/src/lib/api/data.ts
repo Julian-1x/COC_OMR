@@ -54,8 +54,25 @@ export async function fetchProfile(
   return fetchProfileFromTable(supabase, id);
 }
 
-export async function fetchSections(supabase: SupabaseClient): Promise<DbSection[]> {
-  const { data, error } = await supabase.from("sections").select("*").order("name");
+export type SectionListFilter = {
+  archived?: boolean;
+  schoolYear?: string;
+};
+
+export async function fetchSections(
+  supabase: SupabaseClient,
+  filter: SectionListFilter = {},
+): Promise<DbSection[]> {
+  let query = supabase.from("sections").select("*").order("name");
+  if (filter.archived === true) {
+    query = query.not("archived_at", "is", null);
+  } else if (filter.archived === false) {
+    query = query.is("archived_at", null);
+  }
+  if (filter.schoolYear) {
+    query = query.eq("school_year", filter.schoolYear);
+  }
+  const { data, error } = await query;
   if (error) throw error;
   return (data ?? []) as DbSection[];
 }
@@ -112,8 +129,17 @@ export async function upsertSection(
   ownerId: string,
   name: string,
   studentCount?: number,
+  meta?: { schoolYear?: string; termLabel?: string },
 ) {
-  const row = {
+  const { data: existing, error: existingError } = await supabase
+    .from("sections")
+    .select("school_year, term_label")
+    .eq("owner_teacher_id", ownerId)
+    .eq("name", name)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  const row: Record<string, unknown> = {
     owner_teacher_id: ownerId,
     name,
     student_count: studentCount ?? null,
@@ -121,6 +147,13 @@ export async function upsertSection(
     sync_status: "synced",
     updated_at: now(),
   };
+  if (meta?.schoolYear && !existing?.school_year) {
+    row.school_year = meta.schoolYear;
+  }
+  if (meta?.termLabel && !existing?.term_label) {
+    row.term_label = meta.termLabel;
+  }
+
   const { data, error } = await supabase
     .from("sections")
     .upsert(row, { onConflict: "owner_teacher_id,name" })
@@ -137,17 +170,17 @@ export async function upsertStudent(
 ) {
   const row = {
     owner_teacher_id: ownerId,
-    school_id: student.school_id,
+    school_id: student.school_id.trim().toUpperCase(),
     omr_id: student.omr_id,
-    name: student.name,
-    section_name: student.section_name,
+    name: student.name.trim(),
+    section_name: student.section_name.trim(),
     local_id: student.omr_id,
     sync_status: "synced",
     updated_at: now(),
   };
   const { data, error } = await supabase
     .from("students")
-    .upsert(row, { onConflict: "owner_teacher_id,omr_id" })
+    .upsert(row, { onConflict: "owner_teacher_id,school_id" })
     .select()
     .single();
   if (error) throw error;
@@ -217,7 +250,7 @@ export async function fetchDashboardStats(supabase: SupabaseClient): Promise<Das
     countRows(supabase, "sections"),
     countRows(supabase, "students"),
     countRows(supabase, "subjects"),
-    countRows(supabase, "scan_results", { column: "needs_review", value: false }),
+    countRows(supabase, "scan_results"),
     countRows(supabase, "scan_results", { column: "needs_review", value: true }),
   ]);
   return {
@@ -256,10 +289,10 @@ export async function upsertStudentsBatch(
   const ts = now();
   const rows = students.map((student) => ({
     owner_teacher_id: ownerId,
-    school_id: student.school_id,
+    school_id: student.school_id.trim().toUpperCase(),
     omr_id: student.omr_id,
-    name: student.name,
-    section_name: student.section_name,
+    name: student.name.trim(),
+    section_name: student.section_name.trim(),
     local_id: student.omr_id,
     sync_status: "synced",
     updated_at: ts,
@@ -269,7 +302,7 @@ export async function upsertStudentsBatch(
     const chunk = rows.slice(i, i + chunkSize);
     const { error } = await supabase
       .from("students")
-      .upsert(chunk, { onConflict: "owner_teacher_id,omr_id" });
+      .upsert(chunk, { onConflict: "owner_teacher_id,school_id" });
     if (error) throw error;
   }
 }

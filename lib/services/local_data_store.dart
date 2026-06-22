@@ -12,6 +12,7 @@ import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
 import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/utils/student_identity.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class LocalDataStore {
@@ -20,7 +21,7 @@ class LocalDataStore {
   static final LocalDataStore instance = LocalDataStore._();
 
   static const String _databaseName = 'omr_app.db';
-  static const int _databaseVersion = 4;
+  static const int _databaseVersion = 6;
   static const String _legacyFileName = 'omr_offline_store.json';
 
   Timer? _saveDebounce;
@@ -44,6 +45,7 @@ class LocalDataStore {
       await _migrateLegacyJsonIfNeeded(database);
       final snapshot = await _readSnapshotFromDatabase(database);
       _applySnapshotToMemory(snapshot);
+      await _dedupeCurrentTeacherRoster();
     } catch (error) {
       debugPrint('Local data load failed: $error');
     } finally {
@@ -98,42 +100,54 @@ class LocalDataStore {
 
   Future<bool> restoreFromBackupMap(Map<String, dynamic> decoded) async {
     try {
-      final snapshot = _restampSnapshotOwner(_snapshotFromBackupMap(decoded));
+      var restored = false;
+      await _enqueueDbWrite(() async {
+        final snapshot =
+            _restampSnapshotOwner(_snapshotFromBackupMap(decoded));
 
-      if (kIsWeb) {
-        _applySnapshotToMemory(_snapshotForCurrentTeacher(snapshot));
+        if (kIsWeb) {
+          _applySnapshotToMemory(_snapshotForCurrentTeacher(snapshot));
+          _loaded = true;
+          restored = true;
+          return;
+        }
+
+        final database = await _openDatabase();
+        await database.transaction((txn) async {
+          final allLocal = await _readSnapshotFromDatabase(
+            txn,
+            scopeToCurrentTeacher: false,
+          );
+          final otherOwners = _snapshotForOtherTeachers(allLocal);
+          final combined = _combineSnapshots(otherOwners, snapshot);
+          final withCounters = _AppSnapshot(
+            students: combined.students,
+            sections: combined.sections,
+            subjects: combined.subjects,
+            scanResults: combined.scanResults,
+            deadlines: combined.deadlines,
+            exportRecords: combined.exportRecords,
+            answerKeyTemplates: combined.answerKeyTemplates,
+            omrCounter: _maxCounter(allLocal.omrCounter, snapshot.omrCounter),
+            subjectCounter:
+                _maxCounter(allLocal.subjectCounter, snapshot.subjectCounter),
+            sheetCounter:
+                _maxCounter(allLocal.sheetCounter, snapshot.sheetCounter),
+          );
+
+          await _replaceDatabaseContents(txn, withCounters);
+          await txn.delete('pending_deletions');
+        });
+
+        final refreshed = await _readSnapshotFromDatabase(
+          database,
+          scopeToCurrentTeacher: false,
+        );
+        _applySnapshotToMemory(_snapshotForCurrentTeacher(refreshed));
         _loaded = true;
-        return true;
-      }
-
-      final database = await _openDatabase();
-      final allLocal = await _readSnapshotFromDatabase(
-        database,
-        scopeToCurrentTeacher: false,
-      );
-      final otherOwners = _snapshotForOtherTeachers(allLocal);
-      final combined = _combineSnapshots(otherOwners, snapshot);
-      final withCounters = _AppSnapshot(
-        students: combined.students,
-        sections: combined.sections,
-        subjects: combined.subjects,
-        scanResults: combined.scanResults,
-        deadlines: combined.deadlines,
-        exportRecords: combined.exportRecords,
-        answerKeyTemplates: combined.answerKeyTemplates,
-        omrCounter: _maxCounter(allLocal.omrCounter, snapshot.omrCounter),
-        subjectCounter:
-            _maxCounter(allLocal.subjectCounter, snapshot.subjectCounter),
-        sheetCounter: _maxCounter(allLocal.sheetCounter, snapshot.sheetCounter),
-      );
-
-      await database.transaction((txn) async {
-        await _replaceDatabaseContents(txn, withCounters);
+        restored = true;
       });
-
-      _applySnapshotToMemory(_snapshotForCurrentTeacher(withCounters));
-      _loaded = true;
-      return true;
+      return restored;
     } catch (error) {
       debugPrint('Backup restore failed: $error');
       return false;
@@ -477,7 +491,29 @@ class LocalDataStore {
       throw StateError('Cannot delete a section that still has students.');
     }
 
+    final subjects = globalSubjects
+        .where((subject) {
+          final names = subject.sectionNames ?? const <String>[];
+          return names.any(
+            (name) =>
+                normalizeSectionName(name) == normalizeSectionName(stored),
+          );
+        })
+        .map(
+          (subject) => _subjectWithUpdatedSections(
+            subject,
+            (name) =>
+                normalizeSectionName(name) == normalizeSectionName(stored)
+                    ? ''
+                    : name,
+          ),
+        )
+        .toList();
+
     if (kIsWeb) {
+      for (final subject in subjects) {
+        _upsertSubjectInMemory(subject);
+      }
       globalSections.removeWhere(
         (section) =>
             normalizeSectionName(section.name) == normalizeSectionName(stored),
@@ -494,13 +530,25 @@ class LocalDataStore {
 
     await _enqueueDbWrite(() async {
       final database = await _openDatabase();
-      await database.delete(
-        'sections',
-        where: 'name = ?',
-        whereArgs: <Object?>[stored],
-      );
+      await database.transaction((txn) async {
+        for (final subject in subjects) {
+          await txn.insert(
+            'subjects',
+            _subjectRow(subject),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await txn.delete(
+          'sections',
+          where: 'name = ?',
+          whereArgs: <Object?>[stored],
+        );
+      });
     });
 
+    for (final subject in subjects) {
+      _upsertSubjectInMemory(subject);
+    }
     _removeSectionFromMemory(stored);
 
     return const SectionDeletionSummary(
@@ -508,6 +556,112 @@ class LocalDataStore {
       removedScans: 0,
       removedDeadlines: 0,
       removedSection: true,
+    );
+  }
+
+  Future<SectionArchiveSummary> archiveSectionLocally(String sectionName) async {
+    final stored = _resolveStoredSectionName(sectionName);
+    if (stored == null) {
+      throw StateError('Section "$sectionName" was not found.');
+    }
+
+    final students = _studentsInSection(stored);
+    final omrIds = students.map((student) => student.omrId).toList();
+    final removal = await removeStudentsCascade(
+      omrIds,
+      queueCloudDeletions: false,
+      deleteReviewImages: true,
+    );
+
+    final subjects = globalSubjects
+        .where((subject) {
+          final names = subject.sectionNames ?? const <String>[];
+          return names.any(
+            (name) =>
+                normalizeSectionName(name) == normalizeSectionName(stored),
+          );
+        })
+        .map(
+          (subject) => _subjectWithUpdatedSections(
+            subject,
+            (name) =>
+                normalizeSectionName(name) == normalizeSectionName(stored)
+                    ? ''
+                    : name,
+          ),
+        )
+        .toList();
+    final deadlines = globalDeadlines
+        .where(
+          (deadline) =>
+              normalizeSectionName(deadline.sectionName ?? '') ==
+              normalizeSectionName(stored),
+        )
+        .toList();
+
+    if (kIsWeb) {
+      for (final subject in subjects) {
+        _upsertSubjectInMemory(subject);
+      }
+      globalDeadlines.removeWhere(
+        (deadline) =>
+            normalizeSectionName(deadline.sectionName ?? '') ==
+            normalizeSectionName(stored),
+      );
+      globalSections.removeWhere(
+        (section) =>
+            normalizeSectionName(section.name) == normalizeSectionName(stored),
+      );
+      return SectionArchiveSummary(
+        removedStudents: removal.removedStudents,
+        removedScans: removal.removedScans,
+        removedDeadlines: deadlines.length,
+        removedReviewImages: 0,
+        archivedSection: true,
+      );
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.transaction((txn) async {
+        for (final subject in subjects) {
+          await txn.insert(
+            'subjects',
+            _subjectRow(subject),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        for (final deadline in deadlines) {
+          await txn.delete(
+            'deadlines',
+            where: 'id = ?',
+            whereArgs: <Object?>[deadline.id],
+          );
+        }
+        await txn.delete(
+          'sections',
+          where: 'name = ?',
+          whereArgs: <Object?>[stored],
+        );
+      });
+    });
+
+    for (final subject in subjects) {
+      _upsertSubjectInMemory(subject);
+    }
+    globalDeadlines.removeWhere(
+      (deadline) =>
+          normalizeSectionName(deadline.sectionName ?? '') ==
+          normalizeSectionName(stored),
+    );
+    _removeSectionFromMemory(stored);
+
+    return SectionArchiveSummary(
+      removedStudents: removal.removedStudents,
+      removedScans: removal.removedScans,
+      removedDeadlines: deadlines.length,
+      removedReviewImages: removal.removedReviewImages,
+      archivedSection: true,
     );
   }
 
@@ -761,14 +915,17 @@ class LocalDataStore {
   }
 
   Future<SectionDeletionSummary> removeStudentsCascade(
-    List<String> omrIds,
-  ) async {
+    List<String> omrIds, {
+    bool queueCloudDeletions = true,
+    bool deleteReviewImages = false,
+  }) async {
     if (omrIds.isEmpty) {
       return const SectionDeletionSummary(
         removedStudents: 0,
         removedScans: 0,
         removedDeadlines: 0,
         removedSection: false,
+        removedReviewImages: 0,
       );
     }
 
@@ -776,6 +933,9 @@ class LocalDataStore {
     final removedScans = globalScanResults
         .where((result) => uniqueIds.contains(result.studentOmrId))
         .toList();
+    final removedReviewImages = deleteReviewImages
+        ? await _deleteLocalReviewImages(removedScans)
+        : 0;
 
     if (kIsWeb) {
       globalStudentDatabase
@@ -789,23 +949,26 @@ class LocalDataStore {
         removedScans: removedScans.length,
         removedDeadlines: 0,
         removedSection: false,
+        removedReviewImages: removedReviewImages,
       );
     }
 
-    for (final result in removedScans) {
-      await _queueCloudDeletion(
-        entityTable: 'scan_results',
-        cloudId: result.cloudId,
-        ownerTeacherId: result.ownerTeacherId,
-      );
-    }
-    for (final omrId in uniqueIds) {
-      final student = globalStudentIndex[omrId];
-      await _queueCloudDeletion(
-        entityTable: 'students',
-        cloudId: student?.cloudId,
-        ownerTeacherId: student?.ownerTeacherId,
-      );
+    if (queueCloudDeletions) {
+      for (final result in removedScans) {
+        await _queueCloudDeletion(
+          entityTable: 'scan_results',
+          cloudId: result.cloudId,
+          ownerTeacherId: result.ownerTeacherId,
+        );
+      }
+      for (final omrId in uniqueIds) {
+        final student = globalStudentIndex[omrId];
+        await _queueCloudDeletion(
+          entityTable: 'students',
+          cloudId: student?.cloudId,
+          ownerTeacherId: student?.ownerTeacherId,
+        );
+      }
     }
 
     await _enqueueDbWrite(() async {
@@ -838,7 +1001,32 @@ class LocalDataStore {
       removedScans: removedScans.length,
       removedDeadlines: 0,
       removedSection: false,
+      removedReviewImages: removedReviewImages,
     );
+  }
+
+  Future<int> _deleteLocalReviewImages(List<ScanResult> scans) async {
+    if (kIsWeb) {
+      return 0;
+    }
+
+    var removed = 0;
+    for (final scan in scans) {
+      final path = scan.scannedImagePath;
+      if (path == null || path.isEmpty) {
+        continue;
+      }
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+          removed++;
+        }
+      } catch (error) {
+        debugPrint('Failed to delete review image ($path): $error');
+      }
+    }
+    return removed;
   }
 
   Future<void> saveImportedStudents({
@@ -857,6 +1045,7 @@ class LocalDataStore {
         _replaceStudentInMemory(student);
       }
       rebuildStudentIndex();
+      await _dedupeCurrentTeacherRoster();
       return;
     }
 
@@ -888,6 +1077,7 @@ class LocalDataStore {
       _replaceStudentInMemory(student);
     }
     rebuildStudentIndex();
+    await _dedupeCurrentTeacherRoster();
   }
 
   Future<void> upsertSubject(Subject subject) async {
@@ -917,7 +1107,11 @@ class LocalDataStore {
         );
         await txn.update(
           'scan_results',
-          <String, Object?>{'subject_name': subject.name},
+          <String, Object?>{
+            'subject_name': subject.name,
+            'sync_status': SyncStatus.pending,
+            'updated_at': DateTime.now().toIso8601String(),
+          },
           where: 'subject_id = ?',
           whereArgs: <Object?>[subject.id],
         );
@@ -1024,6 +1218,146 @@ class LocalDataStore {
       removedScans: removedScans.length,
       removedDeadlines: removedDeadlines.length,
       affectedStudents: affectedStudents.length,
+    );
+  }
+
+  Future<SubjectDeletionSummary> deleteSubjectFromSection({
+    required Subject subject,
+    required String sectionName,
+  }) async {
+    final target = normalizeSectionName(sectionName);
+    final assigned = (subject.sectionNames ?? const <String>[])
+        .map(normalizeSectionName)
+        .toList();
+
+    if (!assigned.contains(target)) {
+      throw StateError(
+        'Section "$sectionName" is not assigned to this answer key.',
+      );
+    }
+
+    if (assigned.length <= 1) {
+      return deleteSubjectCascade(subject);
+    }
+
+    if (kIsWeb) {
+      return removeSubjectFromSectionInMemory(
+        subject: subject,
+        sectionName: sectionName,
+      );
+    }
+
+    final studentOmrIdsInSection = globalStudentDatabase
+        .where((student) => normalizeSectionName(student.section) == target)
+        .map((student) => student.omrId)
+        .toList();
+    final scansToRemove = globalScanResults
+        .where(
+          (result) =>
+              result.subjectId == subject.id &&
+              studentOmrIdsInSection.contains(result.studentOmrId),
+        )
+        .toList();
+    final deadlinesToRemove = globalDeadlines
+        .where(
+          (deadline) =>
+              deadline.subjectId == subject.id &&
+              deadline.sectionName != null &&
+              normalizeSectionName(deadline.sectionName!) == target,
+        )
+        .toList();
+    final remainingNames = (subject.sectionNames ?? const <String>[])
+        .where((name) => normalizeSectionName(name) != target)
+        .toList();
+    final updatedQrData = Map<String, String>.from(subject.sectionQrData)
+      ..removeWhere((key, _) => normalizeSectionName(key) == target);
+    final detachedSection = (subject.sectionNames ?? const <String>[])
+        .firstWhere((name) => normalizeSectionName(name) == target);
+    final updatedSubject = subject.copyWith(
+      sectionNames: remainingNames,
+      sectionQrData: updatedQrData,
+      syncStatus: SyncStatus.pending,
+      updatedAt: DateTime.now(),
+    );
+
+    for (final result in scansToRemove) {
+      await _queueCloudDeletion(
+        entityTable: 'scan_results',
+        cloudId: result.cloudId,
+        ownerTeacherId: result.ownerTeacherId,
+      );
+    }
+    for (final deadline in deadlinesToRemove) {
+      await _queueCloudDeletion(
+        entityTable: 'deadlines',
+        cloudId: deadline.cloudId,
+        ownerTeacherId: deadline.ownerTeacherId,
+      );
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.transaction((txn) async {
+        for (final omrId in studentOmrIdsInSection) {
+          await txn.delete(
+            'scan_results',
+            where: 'subject_id = ? AND student_omr_id = ?',
+            whereArgs: <Object?>[subject.id, omrId],
+          );
+        }
+        for (final deadline in deadlinesToRemove) {
+          await txn.delete(
+            'deadlines',
+            where: 'id = ?',
+            whereArgs: <Object?>[deadline.id],
+          );
+        }
+        await txn.insert(
+          'subjects',
+          _subjectRow(updatedSubject),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+
+        for (final omrId in studentOmrIdsInSection) {
+          final latestRows = await txn.query(
+            'scan_results',
+            columns: const <String>[
+              'detected_answers_json',
+              'score',
+              'confidence',
+              'scan_time',
+            ],
+            where: 'student_omr_id = ?',
+            whereArgs: <Object?>[omrId],
+            orderBy: 'scan_time DESC, id DESC',
+            limit: 1,
+          );
+          final latestRow = latestRows.isEmpty ? null : latestRows.first;
+          await txn.update(
+            'students',
+            <String, Object?>{
+              'answers_json': latestRow?['detected_answers_json'],
+              'score': latestRow?['score'],
+              'confidence': latestRow?['confidence'],
+              'scan_date': latestRow?['scan_time'],
+              'sync_status': SyncStatus.pending,
+              'updated_at': DateTime.now().toIso8601String(),
+            },
+            where: 'omr_id = ?',
+            whereArgs: <Object?>[omrId],
+          );
+        }
+      });
+    });
+
+    await _reloadMemoryFromDatabase();
+
+    return SubjectDeletionSummary(
+      removedSubjects: 0,
+      removedScans: scansToRemove.length,
+      removedDeadlines: deadlinesToRemove.length,
+      affectedStudents: scansToRemove.map((r) => r.studentOmrId).toSet().length,
+      detachedSectionName: detachedSection,
     );
   }
 
@@ -1556,49 +1890,78 @@ class LocalDataStore {
           sheetCounter: local.sheetCounter,
         ),
       );
+      await _dedupeCurrentTeacherRoster();
       return merged.summary;
     }
 
-    final database = await _openDatabase();
-    final allLocal = await _readSnapshotFromDatabase(
-      database,
-      scopeToCurrentTeacher: false,
-    );
-    final otherOwners = _snapshotForOtherTeachers(allLocal);
-    final localForMerge = _snapshotForCurrentTeacher(allLocal);
-    final excluded = await _fetchPendingDeletionCloudIds();
-    final filteredCloud = _filterCloudByDeletions(cloud, excluded);
+    CloudMergeSummary? summary;
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      final excluded = await _fetchPendingDeletionCloudIds();
+      final filteredCloud = _filterCloudByDeletions(cloud, excluded);
 
-    final merged = CloudSnapshotMerger.merge(
-      localSections: localForMerge.sections,
-      localStudents: localForMerge.students,
-      localSubjects: localForMerge.subjects,
-      localScanResults: localForMerge.scanResults,
-      localDeadlines: localForMerge.deadlines,
-      cloud: filteredCloud,
-    );
+      _AppSnapshot combined = _AppSnapshot(
+        students: const <Student>[],
+        sections: const <Section>[],
+        subjects: const <Subject>[],
+        scanResults: const <ScanResult>[],
+        deadlines: const <Deadline>[],
+        exportRecords: const <ExportRecord>[],
+        answerKeyTemplates: const <AnswerKeyTemplate>[],
+        omrCounter: 1,
+        subjectCounter: 1,
+        sheetCounter: 1,
+      );
 
-    final combined = _combineSnapshots(
-      otherOwners,
-      _AppSnapshot(
-        students: merged.students,
-        sections: merged.sections,
-        subjects: merged.subjects,
-        scanResults: merged.scanResults,
-        deadlines: merged.deadlines,
-        exportRecords: allLocal.exportRecords,
-        answerKeyTemplates: allLocal.answerKeyTemplates,
-        omrCounter: allLocal.omrCounter,
-        subjectCounter: allLocal.subjectCounter,
-        sheetCounter: allLocal.sheetCounter,
-      ),
-    );
+      await database.transaction((txn) async {
+        final allLocal = await _readSnapshotFromDatabase(
+          txn,
+          scopeToCurrentTeacher: false,
+        );
+        final otherOwners = _snapshotForOtherTeachers(allLocal);
+        final localForMerge = _snapshotForCurrentTeacher(allLocal);
 
-    await database.transaction((txn) async {
-      await _replaceDatabaseContents(txn, combined);
+        final merged = CloudSnapshotMerger.merge(
+          localSections: localForMerge.sections,
+          localStudents: localForMerge.students,
+          localSubjects: localForMerge.subjects,
+          localScanResults: localForMerge.scanResults,
+          localDeadlines: localForMerge.deadlines,
+          cloud: filteredCloud,
+        );
+
+        combined = _combineSnapshots(
+          otherOwners,
+          _AppSnapshot(
+            students: merged.students,
+            sections: merged.sections,
+            subjects: merged.subjects,
+            scanResults: merged.scanResults,
+            deadlines: merged.deadlines,
+            exportRecords: allLocal.exportRecords,
+            answerKeyTemplates: allLocal.answerKeyTemplates,
+            omrCounter: allLocal.omrCounter,
+            subjectCounter: allLocal.subjectCounter,
+            sheetCounter: allLocal.sheetCounter,
+          ),
+        );
+
+        await _replaceDatabaseContents(txn, combined);
+        summary = merged.summary;
+      });
+
+      _applySnapshotToMemory(_snapshotForCurrentTeacher(combined));
+      await _dedupeCurrentTeacherRoster();
     });
-    _applySnapshotToMemory(_snapshotForCurrentTeacher(combined));
-    return merged.summary;
+
+    return summary ??
+        const CloudMergeSummary(
+          sections: 0,
+          students: 0,
+          subjects: 0,
+          scanResults: 0,
+          deadlines: 0,
+        );
   }
 
   Future<void> markSectionSynced({
@@ -1699,6 +2062,12 @@ class LocalDataStore {
         if (oldVersion < 4) {
           await _upgradeToV4(db);
         }
+        if (oldVersion < 5) {
+          await _upgradeToV5(db);
+        }
+        if (oldVersion < 6) {
+          await _upgradeToV6(db);
+        }
       },
     );
 
@@ -1725,12 +2094,18 @@ class LocalDataStore {
     await db.execute(
       'CREATE INDEX idx_students_section ON students(section_name)',
     );
+    await db.execute(
+      'CREATE UNIQUE INDEX idx_students_school_id ON students(school_id)',
+    );
 
     await db.execute('''
       CREATE TABLE sections (
         name TEXT PRIMARY KEY,
         teacher TEXT,
         student_count INTEGER,
+        school_year TEXT,
+        term_label TEXT,
+        archived_at TEXT,
         owner_teacher_id TEXT,
         cloud_id TEXT,
         sync_status TEXT NOT NULL DEFAULT 'pending',
@@ -1900,6 +2275,61 @@ class LocalDataStore {
 
   Future<void> _upgradeToV4(Database db) async {
     await _createPendingDeletionsTable(db);
+  }
+
+  Future<void> _upgradeToV6(Database db) async {
+    await _addColumnIfMissing(db, 'sections', 'school_year TEXT');
+    await _addColumnIfMissing(db, 'sections', 'term_label TEXT');
+    await _addColumnIfMissing(db, 'sections', 'archived_at TEXT');
+  }
+
+  Future<void> _upgradeToV5(Database db) async {
+    final snapshot = await _readSnapshotFromDatabase(
+      db,
+      scopeToCurrentTeacher: false,
+    );
+    final deduped = dedupeStudentRoster(
+      students: snapshot.students,
+      scanResults: snapshot.scanResults,
+    );
+
+    if (deduped.removedOmrIds.isNotEmpty) {
+      for (final omrId in deduped.removedOmrIds) {
+        await db.delete(
+          'scan_results',
+          where: 'student_omr_id = ?',
+          whereArgs: <Object?>[omrId],
+        );
+        await db.delete(
+          'students',
+          where: 'omr_id = ?',
+          whereArgs: <Object?>[omrId],
+        );
+      }
+    }
+
+    for (final student in deduped.students) {
+      await db.insert(
+        'students',
+        _studentRow(student),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    for (final scan in deduped.scanResults) {
+      await db.insert(
+        'scan_results',
+        _scanResultRow(scan),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+
+    try {
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_students_school_id ON students(school_id)',
+      );
+    } catch (error) {
+      debugPrint('Student school_id unique index skipped: $error');
+    }
   }
 
   Future<void> _addColumnIfMissing(
@@ -2089,7 +2519,7 @@ class LocalDataStore {
   }
 
   Future<_AppSnapshot> _readSnapshotFromDatabase(
-    Database database, {
+    DatabaseExecutor database, {
     bool scopeToCurrentTeacher = true,
   }) async {
     final (ownerWhere, ownerArgs) =
@@ -2240,6 +2670,70 @@ class LocalDataStore {
     final database = await _openDatabase();
     final snapshot = await _readSnapshotFromDatabase(database);
     _applySnapshotToMemory(snapshot);
+    await _dedupeCurrentTeacherRoster();
+  }
+
+  /// Collapses duplicate students (same school ID) and persists the cleanup.
+  Future<int> _dedupeCurrentTeacherRoster() async {
+    final deduped = dedupeStudentRoster(
+      students: List<Student>.from(globalStudentDatabase),
+      scanResults: List<ScanResult>.from(globalScanResults),
+    );
+    if (deduped.mergedCount == 0) {
+      return 0;
+    }
+
+    debugPrint(
+      'Merged ${deduped.mergedCount} duplicate student(s) sharing a school ID.',
+    );
+
+    for (final omrId in deduped.removedOmrIds) {
+      final student = globalStudentIndex[omrId];
+      if (student != null && !kIsWeb) {
+        await _queueCloudDeletion(
+          entityTable: 'students',
+          cloudId: student.cloudId,
+          ownerTeacherId: student.ownerTeacherId,
+        );
+      }
+    }
+
+    globalStudentDatabase = deduped.students;
+    globalScanResults = deduped.scanResults;
+    rebuildStudentIndex();
+
+    if (kIsWeb) {
+      return deduped.mergedCount;
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.transaction((txn) async {
+        for (final omrId in deduped.removedOmrIds) {
+          await txn.delete(
+            'students',
+            where: 'omr_id = ?',
+            whereArgs: <Object?>[omrId],
+          );
+        }
+        for (final student in deduped.students) {
+          await txn.insert(
+            'students',
+            _studentRow(student),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        for (final scan in deduped.scanResults) {
+          await txn.insert(
+            'scan_results',
+            _scanResultRow(scan),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      });
+    });
+
+    return deduped.mergedCount;
   }
 
   Future<File> _resolveLegacyFile() async {
@@ -2272,6 +2766,9 @@ class LocalDataStore {
         'name': row['name'],
         'teacher': row['teacher'],
         'studentCount': row['student_count'],
+        'schoolYear': row['school_year'],
+        'termLabel': row['term_label'],
+        'archivedAt': row['archived_at'],
         'ownerTeacherId': row['owner_teacher_id'],
         'cloudId': row['cloud_id'],
         'syncStatus': row['sync_status'],
@@ -2700,7 +3197,7 @@ class LocalDataStore {
     final json = student.toJson();
     return <String, Object?>{
       'omr_id': student.omrId,
-      'school_id': student.schoolId,
+      'school_id': normalizeSchoolId(student.schoolId),
       'name': student.name,
       'section_name': student.section,
       'score': student.score,
@@ -2722,6 +3219,9 @@ class LocalDataStore {
       'name': section.name,
       'teacher': section.teacher,
       'student_count': section.studentCount,
+      'school_year': section.schoolYear,
+      'term_label': section.termLabel,
+      'archived_at': section.archivedAt?.toIso8601String(),
       ..._syncColumns(
         ownerTeacherId: section.ownerTeacherId,
         cloudId: section.cloudId,

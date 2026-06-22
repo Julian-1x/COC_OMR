@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
 import { deleteSubject, fetchSubjects } from "@/lib/api/data";
 import type { DbSubject } from "@/lib/types/database";
+import { formatPassingLabel } from "@/lib/omr/passing-score";
 
 export default function AnswerKeysPage() {
   const [subjects, setSubjects] = useState<DbSubject[]>([]);
@@ -72,7 +73,7 @@ export default function AnswerKeysPage() {
             <Card key={subject.id}>
               <h2 className="text-lg font-extrabold text-slate-800">{subject.name}</h2>
               <p className="mt-1 text-sm text-slate-500">
-                {subject.total_questions} items · Pass {subject.passing_score}%
+                {subject.total_questions} items · {formatPassingLabel(subject.passing_score, subject.total_questions)}
               </p>
               <p className="mt-1 text-xs text-slate-400">
                 Sections: {(subject.section_names ?? []).join(", ") || "None"}

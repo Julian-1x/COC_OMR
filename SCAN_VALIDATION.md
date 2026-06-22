@@ -21,6 +21,18 @@ Use the **same printer and paper** teachers will use on exam day.
 | 6 | Double mark on one question | | Should flag **needs review** |
 | 7 | Blank sheet | | Should reject or flag |
 | 8 | Low battery / older phone | | |
+| 9 | **Preview fills green frame** | | Live camera fills bracket area — not a letterboxed strip |
+| 10 | Seated, sheet flat on table | | |
+
+## Preview vs capture
+
+The in-app preview should **fill the green corner frame** edge-to-edge (like a normal camera viewfinder):
+
+- Hold phone **~30–40 cm** above a flat sheet with bright, even light
+- Tap the **paper** on screen → wait a moment → capture
+- Pass if preview fills the frame **and** **≥ 95%** of filled sheets score correctly
+
+If the in-app camera will not start at all, use **Advanced → Try system camera** in scanner settings (troubleshooting only).
 
 ## Score check
 

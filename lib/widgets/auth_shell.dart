@@ -174,7 +174,7 @@ class AuthShell extends StatelessWidget {
   String? get _badgeLabel {
     switch (badge) {
       case AuthBadgeType.offline:
-        return 'Offline mode';
+        return 'No internet';
       case AuthBadgeType.online:
         return 'Online sign-in';
       case AuthBadgeType.none:

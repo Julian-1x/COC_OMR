@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
+import 'package:omr_app/theme/app_typography.dart';
 import 'package:omr_app/widgets/app_primary_button.dart';
 
 class AppEmptyState extends StatelessWidget {
@@ -34,23 +35,12 @@ class AppEmptyState extends StatelessWidget {
             color: AppColors.brandMuted.withValues(alpha: 0.55),
           ),
           const SizedBox(height: 12),
-          Text(
-            title,
-            style: const TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
-              color: AppColors.brandText,
-            ),
-          ),
+          Text(title, style: AppTypography.sectionTitle),
           const SizedBox(height: 6),
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              color: AppColors.brandMuted,
-              fontSize: 14,
-              height: 1.4,
-            ),
+            style: AppTypography.body.copyWith(color: AppColors.brandMuted),
           ),
           if (actionLabel != null && onAction != null) ...[
             const SizedBox(height: 20),

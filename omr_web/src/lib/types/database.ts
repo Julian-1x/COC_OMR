@@ -4,6 +4,9 @@ export type DbSection = {
   name: string;
   teacher: string | null;
   student_count: number | null;
+  school_year: string | null;
+  term_label: string | null;
+  archived_at: string | null;
   local_id: string | null;
   sync_status: string;
   created_at: string;

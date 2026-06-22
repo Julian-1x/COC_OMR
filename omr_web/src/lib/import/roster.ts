@@ -22,8 +22,18 @@ export type ImportCommitResult = {
   sections: string[];
 };
 
+/** Canonical school ID form — must match Flutter `normalizeSchoolId`. */
+export function normalizeSchoolId(value: string): string {
+  return value.trim().toUpperCase();
+}
+
 function normalizeHeader(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function readCell(cell: unknown): string {
@@ -31,35 +41,81 @@ function readCell(cell: unknown): string {
   return String(cell).trim();
 }
 
+const schoolIdHeaderKeys = [
+  "student id",
+  "school id",
+  "student number",
+  "student no",
+  "lrn",
+  "id number",
+  "id",
+];
+
+const nameHeaderKeys = ["name", "student name", "full name", "learner name"];
+const firstNameHeaderKeys = ["first name", "firstname", "given name"];
+const lastNameHeaderKeys = ["last name", "lastname", "surname", "family name"];
+const sectionHeaderKeys = [
+  "section",
+  "section name",
+  "class",
+  "class section",
+  "year and section",
+  "block",
+  "strand",
+];
+
+function headerHasMatch(header: string[], keys: string[]): boolean {
+  for (const key of keys) {
+    if (header.includes(key)) return true;
+    if (header.some((cell) => cell.includes(key))) return true;
+  }
+  return false;
+}
+
 function detectHeaderRow(rows: unknown[][]): number {
-  for (let i = 0; i < Math.min(rows.length, 5); i++) {
-    const line = rows[i].map((c) => normalizeHeader(readCell(c))).join(" ");
+  let bestIndex = -1;
+  let bestScore = 0;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const header = rows[i].map((c) => normalizeHeader(readCell(c)));
+    let score = 0;
+    if (headerHasMatch(header, schoolIdHeaderKeys)) score++;
     if (
-      line.includes("student") ||
-      line.includes("name") ||
-      line.includes("section") ||
-      line.includes("id")
+      headerHasMatch(header, nameHeaderKeys) ||
+      (headerHasMatch(header, firstNameHeaderKeys) &&
+        headerHasMatch(header, lastNameHeaderKeys))
     ) {
-      return i;
+      score++;
+    }
+    if (headerHasMatch(header, sectionHeaderKeys)) score++;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = i;
     }
   }
-  return rows.length > 0 ? 0 : -1;
+  return bestScore >= 2 ? bestIndex : rows.length > 0 ? 0 : -1;
 }
 
 function mapHeaders(header: string[]): Record<string, number> {
   const find = (keys: string[]) => {
     for (const key of keys) {
-      const idx = header.indexOf(key);
-      if (idx !== -1) return idx;
+      const exact = header.indexOf(key);
+      if (exact !== -1) return exact;
+    }
+    for (let i = 0; i < header.length; i++) {
+      const cell = header[i];
+      if (!cell) continue;
+      for (const key of keys) {
+        if (cell === key || cell.includes(key)) return i;
+      }
     }
     return -1;
   };
   return {
-    schoolId: find(["student id", "school id", "id", "student_id", "school_id"]),
-    name: find(["name", "student name", "full name", "student"]),
-    firstName: find(["first name", "firstname", "given name"]),
-    lastName: find(["last name", "lastname", "surname", "family name"]),
-    section: find(["section", "class", "block", "section name"]),
+    schoolId: find(schoolIdHeaderKeys),
+    name: find(nameHeaderKeys),
+    firstName: find(firstNameHeaderKeys),
+    lastName: find(lastNameHeaderKeys),
+    section: find(sectionHeaderKeys),
   };
 }
 
@@ -117,19 +173,21 @@ export function previewImportRows(rawRows: unknown[][]): ImportPreview {
       name = readCell(row[nameIdx]);
     }
 
-    if (!schoolId || !name || !section) {
+    if (!schoolId || !name) {
       skipped++;
       continue;
     }
 
-    const key = `${schoolId.toLowerCase()}|${section.toLowerCase()}`;
+    const resolvedSection = section.trim() || "UNASSIGNED";
+
+    const key = normalizeSchoolId(schoolId);
     if (seen.has(key)) {
       duplicates++;
       continue;
     }
     seen.add(key);
 
-    rows.push({ schoolId, name, section });
+    rows.push({ schoolId, name, section: resolvedSection });
   }
 
   if (rows.length === 0 && errors.length === 0) {
@@ -156,14 +214,14 @@ export function buildImportPlan(
   existing: DbStudent[],
 ): { toUpsert: Array<ImportRow & { omrId: string; isNew: boolean }>; unchanged: number } {
   const bySchoolId = new Map(
-    existing.map((s) => [s.school_id.toLowerCase(), s]),
+    existing.map((s) => [normalizeSchoolId(s.school_id), s]),
   );
   const reserved = new Set<string>();
   const toUpsert: Array<ImportRow & { omrId: string; isNew: boolean }> = [];
   let unchanged = 0;
 
   for (const row of preview) {
-    const match = bySchoolId.get(row.schoolId.toLowerCase());
+    const match = bySchoolId.get(normalizeSchoolId(row.schoolId));
     if (
       match &&
       match.name === row.name &&

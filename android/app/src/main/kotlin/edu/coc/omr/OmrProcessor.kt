@@ -2,7 +2,9 @@ package edu.coc.omr
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.util.Log
+import androidx.exifinterface.media.ExifInterface
 import org.opencv.android.Utils
 import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
@@ -10,6 +12,7 @@ import org.opencv.objdetect.QRCodeDetector
 import org.json.JSONObject
 import org.json.JSONArray
 import kotlin.math.*
+import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -90,7 +93,7 @@ class OmrProcessor {
         private const val ROW_MARK_SIZE = 4.0
         
         // Low-end device optimization constants
-        private const val MAX_IMAGE_DIMENSION = 1600  // Max dimension before downscaling
+        private const val MAX_IMAGE_DIMENSION = 2400  // Max dimension before downscaling
         private const val LOW_MEMORY_THRESHOLD_MB = 150  // Consider device low-memory if < 150MB free
         private const val PROCESSING_TIMEOUT_MS = 15000L  // 15 second timeout
         private const val MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  // 20MB max input
@@ -316,41 +319,15 @@ class OmrProcessor {
         var bitmap: Bitmap? = null
         
         try {
-            // Step 1: Decode image with memory-efficient options
-            val options = BitmapFactory.Options().apply {
-                // For very large images, sample down during decode
-                inJustDecodeBounds = true
-            }
-            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
-            
-            val imageWidth = options.outWidth
-            val imageHeight = options.outHeight
-            
-            // Calculate sample size for very large images (>4000px)
-            var sampleSize = 1
-            val maxDim = maxOf(imageWidth, imageHeight)
-            if (maxDim > 4000) {
-                sampleSize = 2
-            } else if (maxDim > 6000) {
-                sampleSize = 4
-            }
-            
-            options.inJustDecodeBounds = false
-            options.inSampleSize = sampleSize
-            options.inPreferredConfig = Bitmap.Config.RGB_565  // Use less memory (2 bytes vs 4)
-            
-            bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
+            // Step 1: Decode image (respect EXIF rotation from camera capture)
+            bitmap = decodeBitmapForAnalysis(imageBytes, MAX_IMAGE_DIMENSION)
             if (bitmap == null) {
                 return errorResult("Failed to decode image", debugInfo)
             }
-            
-            // Further downscale if still too large
-            bitmap = downscaleIfNeeded(bitmap, MAX_IMAGE_DIMENSION)
-            
+
             debugInfo["imageWidth"] = bitmap.width
             debugInfo["imageHeight"] = bitmap.height
-            debugInfo["sampleSize"] = sampleSize
-            Log.d(TAG, "Image decoded: ${bitmap.width}x${bitmap.height} (sampled: $sampleSize)")
+            Log.d(TAG, "Image decoded: ${bitmap.width}x${bitmap.height}")
             
             // Check timeout
             if (System.currentTimeMillis() - startTime > PROCESSING_TIMEOUT_MS / 3) {
@@ -726,7 +703,61 @@ class OmrProcessor {
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
             ?: return null
 
-        return downscaleIfNeeded(bitmap, maxDimension)
+        val oriented = applyExifOrientation(bitmap, imageBytes)
+        return downscaleIfNeeded(oriented, maxDimension)
+    }
+
+    /**
+     * Camera JPEGs often store sensor orientation in EXIF. BitmapFactory ignores it,
+     * which breaks corner/timing-mark detection when preview and pixels disagree.
+     */
+    private fun applyExifOrientation(bitmap: Bitmap, imageBytes: ByteArray): Bitmap {
+        val orientation = try {
+            ExifInterface(ByteArrayInputStream(imageBytes)).getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL,
+            )
+        } catch (error: Exception) {
+            Log.w(TAG, "EXIF read failed: ${error.message}")
+            ExifInterface.ORIENTATION_NORMAL
+        }
+
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.preScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.preScale(-1f, 1f)
+            }
+            else -> return bitmap
+        }
+
+        return try {
+            val rotated = Bitmap.createBitmap(
+                bitmap,
+                0,
+                0,
+                bitmap.width,
+                bitmap.height,
+                matrix,
+                true,
+            )
+            if (rotated != bitmap) {
+                bitmap.recycle()
+            }
+            rotated
+        } catch (error: Exception) {
+            Log.w(TAG, "EXIF rotation failed: ${error.message}")
+            bitmap
+        }
     }
 
     private fun normalizedBrightness(brightnessScore: Double): Double {

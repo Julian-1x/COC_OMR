@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_text_styles.dart';
+import 'package:omr_app/utils/section_program.dart';
 import 'package:omr_app/widgets/app_empty_state.dart';
 import 'package:omr_app/widgets/app_filter_chip.dart';
 
@@ -24,7 +25,7 @@ class ClassesSearchBar extends StatelessWidget {
       controller: controller,
       onChanged: onChanged,
       decoration: InputDecoration(
-        hintText: 'Search section (e.g. BSIT-01)',
+        hintText: 'Search section (e.g. BSIT-01, BSECE-02)',
         prefixIcon: const Icon(Icons.search_rounded, color: AppColors.brandMuted),
         suffixIcon: searchQuery.isEmpty
             ? null
@@ -91,17 +92,72 @@ class ClassesFilterChips extends StatelessWidget {
   }
 }
 
+class ClassesProgramFilterChips extends StatelessWidget {
+  const ClassesProgramFilterChips({
+    super.key,
+    required this.programs,
+    required this.selectedProgram,
+    required this.onSelected,
+  });
+
+  final List<String> programs;
+  final String? selectedProgram;
+  final ValueChanged<String?> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Program',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: AppColors.brandMuted,
+          ),
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              AppFilterChip(
+                label: 'All programs',
+                selected: selectedProgram == null,
+                onTap: () => onSelected(null),
+              ),
+              for (final program in programs) ...[
+                const SizedBox(width: 8),
+                AppFilterChip(
+                  label: SectionProgram.chipLabel(program),
+                  selected: selectedProgram == program,
+                  onTap: () => onSelected(program),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class ClassGroupHeader extends StatelessWidget {
   const ClassGroupHeader({
     super.key,
     required this.groupKey,
+    required this.programTitle,
     required this.count,
+    required this.studentCount,
     required this.isExpanded,
     required this.onToggle,
   });
 
   final String groupKey;
+  final String programTitle;
   final int count;
+  final int studentCount;
   final bool isExpanded;
   final VoidCallback onToggle;
 
@@ -131,10 +187,16 @@ class ClassGroupHeader extends StatelessWidget {
                     color: AppColors.brandGreen.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(
-                    Icons.folder_rounded,
-                    color: AppColors.brandGreenDark,
-                    size: 18,
+                  child: Center(
+                    child: Text(
+                      SectionProgram.chipLabel(groupKey),
+                      style: const TextStyle(
+                        color: AppColors.brandGreenDark,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -143,15 +205,15 @@ class ClassGroupHeader extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        groupKey,
+                        programTitle,
                         style: const TextStyle(
-                          fontSize: 15,
+                          fontSize: 14,
                           fontWeight: FontWeight.w800,
                           color: AppColors.brandText,
                         ),
                       ),
                       Text(
-                        '$count ${count == 1 ? 'section' : 'sections'}',
+                        '$count ${count == 1 ? 'section' : 'sections'} · $studentCount students',
                         style: AppTextStyles.caption,
                       ),
                     ],

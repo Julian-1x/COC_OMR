@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
+import 'package:omr_app/widgets/app_primary_button.dart';
 
 /// PIN entry with dot display and on-screen numeric keypad.
 class AppPinInput extends StatefulWidget {
@@ -216,6 +217,137 @@ class _AppPinInputState extends State<AppPinInput> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Choose + confirm PIN on one screen — one keypad, no second page.
+class AppPinSetupFlow extends StatefulWidget {
+  const AppPinSetupFlow({
+    super.key,
+    required this.onConfirmed,
+    this.enabled = true,
+    this.isLoading = false,
+  });
+
+  final Future<void> Function(String pin) onConfirmed;
+  final bool enabled;
+  final bool isLoading;
+
+  @override
+  State<AppPinSetupFlow> createState() => _AppPinSetupFlowState();
+}
+
+class _AppPinSetupFlowState extends State<AppPinSetupFlow> {
+  final TextEditingController _controller = TextEditingController();
+  String? _firstPin;
+  bool _confirming = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onPinChanged);
+  }
+
+  void _onPinChanged() {
+    setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onPinChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  bool get _pinReady {
+    final pin = _controller.text.trim();
+    return RegExp(r'^\d{4,6}$').hasMatch(pin);
+  }
+
+  void _startOver() {
+    setState(() {
+      _firstPin = null;
+      _confirming = false;
+      _controller.clear();
+    });
+  }
+
+  Future<void> _onPrimaryPressed() async {
+    final pin = _controller.text.trim();
+    if (!RegExp(r'^\d{4,6}$').hasMatch(pin)) {
+      return;
+    }
+
+    if (!_confirming) {
+      setState(() {
+        _firstPin = pin;
+        _confirming = true;
+        _controller.clear();
+      });
+      return;
+    }
+
+    if (pin != _firstPin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('PINs do not match. Try again.'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      _startOver();
+      return;
+    }
+
+    await widget.onConfirmed(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = _confirming ? 'Enter PIN again' : 'Choose a PIN';
+    final hint = _confirming
+        ? 'Same digits as before — backs up to your account for new phones.'
+        : '4–6 digits for exam-day unlock.';
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          hint,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: AppColors.brandMuted,
+            fontSize: 13,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        AppPinInput(
+          key: ValueKey(_confirming ? 'pin-confirm' : 'pin-enter'),
+          controller: _controller,
+          label: label,
+          enabled: widget.enabled && !widget.isLoading,
+          compact: true,
+        ),
+        const SizedBox(height: AppSpacing.md),
+        AppPrimaryButton(
+          label: _confirming ? 'Save PIN' : 'Continue',
+          icon: _confirming ? Icons.verified_rounded : Icons.arrow_forward_rounded,
+          isLoading: widget.isLoading,
+          onPressed: widget.enabled && !widget.isLoading && _pinReady
+              ? () => _onPrimaryPressed()
+              : null,
+        ),
+        if (_confirming) ...[
+          const SizedBox(height: AppSpacing.xs),
+          TextButton(
+            onPressed: widget.isLoading ? null : _startOver,
+            child: const Text('Start over'),
+          ),
+        ],
+      ],
     );
   }
 }

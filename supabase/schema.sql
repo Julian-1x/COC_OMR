@@ -7,6 +7,8 @@ create table if not exists public.teacher_profiles (
   role text not null default 'teacher',
   is_active boolean not null default true,
   school_name text,
+  pin_hash text,
+  pin_salt text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -78,6 +80,9 @@ create table if not exists public.sections (
   name text not null,
   teacher text,
   student_count integer,
+  school_year text,
+  term_label text,
+  archived_at timestamptz,
   local_id text,
   sync_status text not null default 'synced',
   created_at timestamptz not null default now(),
@@ -100,7 +105,8 @@ create table if not exists public.students (
   sync_status text not null default 'synced',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique(owner_teacher_id, omr_id)
+  unique(owner_teacher_id, omr_id),
+  unique(owner_teacher_id, school_id)
 );
 
 create table if not exists public.subjects (
@@ -216,6 +222,12 @@ create policy "Teachers manage own scan warnings"
 on public.scan_warnings for all to authenticated
 using (auth.uid() = owner_teacher_id)
 with check (auth.uid() = owner_teacher_id);
+
+create index if not exists idx_sections_owner_archived
+on public.sections(owner_teacher_id, archived_at);
+
+create index if not exists idx_sections_owner_school_year
+on public.sections(owner_teacher_id, school_year);
 
 create index if not exists idx_students_owner_section
 on public.students(owner_teacher_id, section_name);

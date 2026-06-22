@@ -12,6 +12,7 @@ import {
   type QuestionAnalysis,
 } from "@/lib/pdf/exports";
 import { downloadText } from "@/lib/utils";
+import { scanPassed } from "@/lib/omr/passing-score";
 
 function difficultyLabel(analysis: QuestionAnalysis): string {
   const rate = analysis.totalAttempts > 0 ? analysis.correctCount / analysis.totalAttempts : 0;
@@ -65,10 +66,9 @@ export function AnalysisContent({
   const passRate =
     relevantScans.length > 0 && subject
       ? Math.round(
-          (relevantScans.filter((s) => {
-            const pct = (s.score / Math.max(s.total_questions, 1)) * 100;
-            return pct >= subject.passing_score;
-          }).length /
+          (relevantScans.filter((s) =>
+            scanPassed(s.score, s.total_questions, subject.passing_score),
+          ).length /
             relevantScans.length) *
             100,
         )
@@ -86,7 +86,7 @@ export function AnalysisContent({
           ← Results
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Item analysis</h1>
-        <p className="mt-1 text-sm text-slate-500">Per-question performance from synced scans.</p>
+        <p className="mt-1 text-sm text-slate-500">See which questions students missed most.</p>
       </div>
 
       <Card className="mb-4">

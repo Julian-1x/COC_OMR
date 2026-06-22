@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
+import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/opencv_bridge.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
@@ -14,8 +17,15 @@ import 'package:omr_app/pages/scan_review_page.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/theme/app_page_transitions.dart';
+import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_spacing.dart';
+import 'package:omr_app/theme/app_typography.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
+import 'package:omr_app/services/native_scanner_camera.dart';
+import 'package:omr_app/services/scanner_engine.dart';
+import 'package:omr_app/services/scanner_camera.dart';
+import 'package:omr_app/services/scanner_camera_factory.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class ScannerPage extends StatefulWidget {
@@ -35,17 +45,36 @@ class ScannerPage extends StatefulWidget {
 class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   static const Color _scannerAccent = AppColors.brandGreen;
   static const Color _scannerAccentDark = AppColors.brandGreenDark;
-  static const Color _scannerOverlay = Color(0xCC04130B);
+  static const Color _scannerOverlay = AppColors.scannerOverlay;
 
-  /// Android/iOS: OpenCV can answer `not_ready` briefly after activity start — retry before showing errors.
-  static const int _openCvMaxRetries = 15;
-  static const Duration _openCvRetryDelay = Duration(milliseconds: 400);
+  String? get _displayStatusHint {
+    if (_isProcessing || !_opencvAvailable) {
+      return null;
+    }
+    if (_isContinuousMode) {
+      if (_sheetAligned) {
+        return 'Keep all four corners inside the frame';
+      }
+      return 'Move closer until the sheet fills the guide';
+    }
+    if (_status == 'Align Answer Sheet' || _status == 'Ready to scan...') {
+      return 'Tap the paper to focus, wait a moment, then capture';
+    }
+    return null;
+  }
 
-  CameraController? _controller;
+  bool get _showFrameGlow =>
+      !_isProcessing &&
+      _isContinuousMode &&
+      _sheetDetected &&
+      _sheetAligned;
+
+  ScannerCamera? _scannerCamera;
   bool _isInitialized = false;
   bool _isProcessing = false;
   String _status = "Align Answer Sheet";
-  bool _opencvAvailable = false;
+  bool _opencvAvailable = ScannerEngine.isReady;
+  bool _opencvInitFailed = false;
   final List<ScanResult> _batchResults = [];
 
   // Device capability detection
@@ -53,6 +82,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   // Review mode - show answers for correction before saving
   bool _reviewBeforeSave = true;
+
+  // Last tap-to-focus point (normalized 0–1)
+  Offset _lastFocusPoint = const Offset(0.5, 0.55);
+  static const Duration _preCaptureFocusDelay = Duration(milliseconds: 800);
+
+  bool _cameraInitFailed = false;
 
   // Continuous scanning mode
   bool _isContinuousMode = false;
@@ -92,7 +127,20 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _detectDeviceCapabilities();
     _initCamera();
-    _checkOpenCVWithRetries();
+    if (!_opencvAvailable) {
+      unawaited(_bootstrapScannerEngine());
+    }
+  }
+
+  Future<void> _bootstrapScannerEngine() async {
+    final ready = await ScannerEngine.warmUp();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _opencvAvailable = ready;
+      _opencvInitFailed = !ready;
+    });
   }
 
   @override
@@ -102,7 +150,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     _stopQualityCheck();
     _cooldownTimer?.cancel();
     _autoScanTimer?.cancel();
-    _controller?.dispose();
+    _scannerCamera?.dispose();
     super.dispose();
   }
 
@@ -119,17 +167,21 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   Future<void> _releaseCameraForBackground() async {
     _stopContinuousScanning();
     _stopQualityCheck();
-    final controller = _controller;
-    _controller = null;
+    final camera = _scannerCamera;
+    _scannerCamera = null;
     if (mounted) {
       setState(() => _isInitialized = false);
     }
-    await controller?.dispose();
+    await camera?.dispose();
   }
 
   Future<void> _resumeCameraAfterBackground() async {
     await _initCamera();
-    await _checkOpenCVWithRetries();
+    if (!ScannerEngine.isReady) {
+      await _bootstrapScannerEngine();
+    } else if (mounted) {
+      setState(() => _opencvAvailable = true);
+    }
     _resumeContinuousPollingIfNeeded();
   }
 
@@ -156,37 +208,60 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     }
   }
 
-  /// Get optimal camera resolution based on device capability
-  ResolutionPreset _getOptimalResolution() {
-    if (_isLowEndDevice) {
-      return ResolutionPreset.medium; // 720p - good balance
-    }
-    return ResolutionPreset.high; // 1080p for better devices
+  Future<void> _applyFocusAtPoint(Offset normalizedPoint) async {
+    _lastFocusPoint = normalizedPoint;
+    await _scannerCamera?.setFocusPoint(normalizedPoint);
   }
 
-  Future<void> _checkOpenCVWithRetries() async {
-    final bool retry = _isMobileNative;
-    final int maxAttempts = retry ? _openCvMaxRetries : 1;
+  Future<void> _prepareCaptureFocus() async {
+    await _scannerCamera?.prepareCaptureFocus(_preCaptureFocusDelay);
+  }
 
-    for (var attempt = 0; attempt < maxAttempts; attempt++) {
-      if (!mounted) return;
-      try {
-        final pingOk = await OpenCVBridge.checkAvailability();
-        final readyOk = await OpenCVBridge.isReady();
-        final available = pingOk || readyOk;
-        if (mounted) {
-          setState(() => _opencvAvailable = available);
-        }
-        if (available) return;
-      } catch (e) {
-        debugPrint("OpenCV check failed: $e");
-        if (mounted) {
-          setState(() => _opencvAvailable = false);
-        }
-      }
-      if (!retry || attempt == maxAttempts - 1) break;
-      await Future<void>.delayed(_openCvRetryDelay);
+  Future<void> _configureCameraForScanning() async {
+    await _scannerCamera?.configureForScanning();
+  }
+
+  Future<void> _handlePreviewTap(TapDownDetails details, Size previewSize) async {
+    final camera = _scannerCamera;
+    if (camera == null || !camera.isCaptureReady || _isProcessing) {
+      return;
     }
+
+    final point = tapToNormalizedFocusCover(
+      details.localPosition,
+      previewSize,
+      camera.previewAspectRatio,
+    );
+
+    if (mounted && !_isProcessing) {
+      setState(() {
+        _status = 'Focusing… hold steady, then capture';
+      });
+    }
+
+    await _applyFocusAtPoint(point);
+  }
+
+  Future<bool> _waitForOpenCvReady({bool forceRetry = false}) async {
+    if (_opencvAvailable || ScannerEngine.isReady) {
+      if (mounted && !_opencvAvailable) {
+        setState(() => _opencvAvailable = true);
+      }
+      return true;
+    }
+    if (forceRetry) {
+      await OpenCVBridge.retryInit();
+    }
+    final ready = await OpenCVBridge.ensureReady(
+      timeout: const Duration(seconds: 8),
+    );
+    if (mounted) {
+      setState(() {
+        _opencvAvailable = ready;
+        _opencvInitFailed = !ready;
+      });
+    }
+    return ready;
   }
 
   Future<bool> _ensureCameraPermission() async {
@@ -266,8 +341,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   }
 
   String get _displayStatusLine {
-    if (!_opencvAvailable && !_isProcessing) {
-      return 'Starting scanner…';
+    if (_opencvInitFailed && !_isProcessing) {
+      return 'Scan engine failed — open Settings → Retry';
     }
     if (_isProcessing) {
       return _status;
@@ -282,7 +357,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       return 'Auto-scanning… align sheet';
     }
     if (_status == 'Align Answer Sheet' || _status == 'Ready to scan...') {
-      return 'Align sheet · tap capture';
+      return 'Fit full sheet — corners + timing marks aligned';
     }
     return _status;
   }
@@ -318,23 +393,70 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     return 3;
   }
 
-  _ViewfinderGeometry _viewfinderGeometry(BoxConstraints constraints) {
-    const horizontalInset = 24.0;
-    final top = constraints.maxHeight * 0.14;
-    final width = constraints.maxWidth - (horizontalInset * 2);
-    final height = width / 1.05;
+  /// 3:4 viewfinder aligned to the camera sensor — centered, nudged down for reach.
+  _ViewfinderGeometry _scanAreaGeometry(
+    BoxConstraints constraints,
+    BuildContext context,
+  ) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    const bottomBarReserve = 16 + 88;
+    const topReserve = 16.0;
+    const downwardNudge = 40.0;
+    final maxWidth = constraints.maxWidth;
+    final maxHeight =
+        constraints.maxHeight - bottomBarReserve - bottomInset - topReserve;
+
+    var width = maxWidth;
+    var height = width * 4 / 3;
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * 3 / 4;
+    }
+
+    final left = (maxWidth - width) / 2;
+    var top = topReserve + (maxHeight - height) / 2 + downwardNudge;
+    final maxTop = topReserve + maxHeight - height;
+    if (top > maxTop) {
+      top = maxTop;
+    }
+
     return _ViewfinderGeometry(
       top: top,
-      left: horizontalInset,
+      left: left,
       width: width,
       height: height,
+    );
+  }
+
+  /// Phone-shaped preview via [ScannerCamera] (native CameraX on Android when available).
+  Widget _buildCameraPreview() {
+    final camera = _scannerCamera!;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final geometry = _scanAreaGeometry(constraints, context);
+        final viewSize = Size(geometry.width, geometry.height);
+
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: Colors.black),
+            Positioned.fromRect(
+              rect: geometry.rect,
+              child: camera.buildPreview(
+                viewSize: viewSize,
+                onTapDown: _handlePreviewTap,
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
   Widget _buildScanViewport() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final geometry = _viewfinderGeometry(constraints);
+        final geometry = _scanAreaGeometry(constraints, context);
         final accent = _frameAccentColor;
 
         return Stack(
@@ -343,7 +465,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               size: Size(constraints.maxWidth, constraints.maxHeight),
               painter: _ViewfinderDimPainter(
                 cutout: geometry.rect,
-                dimColor: Colors.black.withValues(alpha: 0.55),
+                dimColor: Colors.black.withValues(alpha: 0.38),
                 cornerRadius: 20,
               ),
             ),
@@ -352,6 +474,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               child: _buildScanFrame(
                 accentColor: accent,
                 strokeWidth: _frameAccentStrokeWidth,
+                showGlow: _showFrameGlow,
               ),
             ),
           ],
@@ -408,7 +531,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         IconButton(
           onPressed: _showScannerSettingsSheet,
           icon: Badge(
-            isLabelVisible: !_opencvAvailable,
+            isLabelVisible: _opencvInitFailed,
             backgroundColor: Colors.amber.shade700,
             smallSize: 8,
             child: const Icon(Icons.tune_rounded),
@@ -440,7 +563,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 8),
-              if (!_opencvAvailable)
+              if (_opencvInitFailed)
                 Container(
                   width: double.infinity,
                   margin: const EdgeInsets.only(bottom: 12),
@@ -458,7 +581,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                       Expanded(
                         child: Text(
                           Platform.isAndroid
-                              ? 'Scanner engine is still starting. Wait a moment, then try again.'
+                              ? 'Scanner engine could not start. Tap Retry, or fully close and reopen the app.'
                               : 'Demo mode — real scanning needs a phone build.',
                           style: TextStyle(
                             color: Colors.amber.shade900,
@@ -467,11 +590,10 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
-                      if (!_opencvAvailable)
-                        TextButton(
+                      TextButton(
                           onPressed: () {
                             Navigator.pop(sheetContext);
-                            unawaited(_checkOpenCVWithRetries());
+                            unawaited(_bootstrapScannerEngine());
                           },
                           child: const Text('Retry'),
                         ),
@@ -544,6 +666,44 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                   height: 1.35,
                 ),
               ),
+              if (_isMobileNative) ...[
+                const Divider(height: 24),
+                const Text(
+                  'Advanced',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.brandText,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Only if the in-app camera will not start or you are troubleshooting.',
+                  style: TextStyle(
+                    color: AppColors.brandMuted,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _isProcessing
+                        ? null
+                        : () {
+                            Navigator.pop(sheetContext);
+                            unawaited(_captureFromNativeCamera());
+                          },
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text('Try system camera'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.brandGreenDark,
+                      side: const BorderSide(color: AppColors.brandGreen),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -553,76 +713,122 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   Widget _buildBottomBar(ColorScheme colorScheme) {
     final bottomInset = MediaQuery.of(context).padding.bottom;
-    final captureReady = !_isProcessing && _opencvAvailable;
+    final cameraReady = _scannerCamera?.isCaptureReady ?? false;
+    final captureReady = !_isProcessing && cameraReady;
 
     return Positioned(
       left: 16,
       right: 16,
       bottom: 16 + bottomInset,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-        decoration: BoxDecoration(
-          color: _scannerOverlay,
-          borderRadius: BorderRadius.circular(AppSpacing.radiusXl),
-          border: Border.all(color: Colors.white10),
-          boxShadow: captureReady && !_isContinuousMode
-              ? [
-                  BoxShadow(
-                    color: _scannerAccent.withValues(alpha: 0.18),
-                    blurRadius: 18,
-                    offset: const Offset(0, 6),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppSpacing.radiusXl),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+            decoration: BoxDecoration(
+              color: AppColors.scannerGlass,
+              borderRadius: BorderRadius.circular(AppSpacing.radiusXl),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+              boxShadow: captureReady && !_isContinuousMode
+                  ? AppShadows.glow(_scannerAccent, alpha: 0.22)
+                  : AppShadows.floatingBar,
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _displayStatusLine,
+                        style: AppTypography.scannerStatus,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (_displayStatusHint != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          _displayStatusHint!,
+                          style: AppTypography.scannerHint,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ],
                   ),
-                ]
+                ),
+                if (!_isContinuousMode) ...[
+                  const SizedBox(width: 12),
+                  _buildCaptureButton(
+                    colorScheme: colorScheme,
+                    captureReady: captureReady,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCaptureButton({
+    required ColorScheme colorScheme,
+    required bool captureReady,
+  }) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 1, end: captureReady ? 1.04 : 1),
+      duration: const Duration(milliseconds: 900),
+      curve: Curves.easeInOut,
+      onEnd: () {
+        if (mounted && captureReady && !_isProcessing) {
+          setState(() {});
+        }
+      },
+      builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
+      child: Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: captureReady
+              ? Border.all(
+                  color: _scannerAccent.withValues(alpha: 0.85),
+                  width: 2.5,
+                )
+              : null,
+          boxShadow: captureReady
+              ? AppShadows.glow(_scannerAccent, alpha: 0.28)
               : null,
         ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                _displayStatusLine,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                  height: 1.3,
-                ),
-              ),
+        child: Material(
+          color: _isProcessing
+              ? AppColors.neutralMuted
+              : captureReady
+                  ? colorScheme.primary
+                  : Colors.white24,
+          borderRadius: BorderRadius.circular(28),
+          child: InkWell(
+            onTap: _isProcessing || !captureReady ? null : _captureAndProcess,
+            borderRadius: BorderRadius.circular(28),
+            child: SizedBox(
+              width: 56,
+              height: 56,
+              child: _isProcessing
+                  ? const Padding(
+                      padding: EdgeInsets.all(15),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.camera_alt_rounded,
+                      color: Colors.white,
+                      size: 28,
+                    ),
             ),
-            if (!_isContinuousMode) ...[
-              const SizedBox(width: 12),
-              Material(
-                color: _isProcessing
-                    ? Colors.grey
-                    : captureReady
-                        ? colorScheme.primary
-                        : Colors.white24,
-                borderRadius: BorderRadius.circular(18),
-                child: InkWell(
-                  onTap: _isProcessing || !captureReady
-                      ? null
-                      : _captureAndProcess,
-                  borderRadius: BorderRadius.circular(18),
-                  child: SizedBox(
-                    width: 52,
-                    height: 52,
-                    child: _isProcessing
-                        ? const Padding(
-                            padding: EdgeInsets.all(14),
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(
-                            Icons.camera_alt_rounded,
-                            color: Colors.white,
-                            size: 28,
-                          ),
-                  ),
-                ),
-              ),
-            ],
-          ],
+          ),
         ),
       ),
     );
@@ -651,9 +857,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               const SizedBox(height: 12),
               ...[
                 'Lay the sheet flat on a table with even lighting.',
-                'Hold the phone at arm\'s length — whole page visible.',
+                'Hold the phone about 30–40 cm above the sheet (seated or standing).',
+                'Tap the preview on the paper to focus, wait a second, then capture.',
+                'Match the printed timing marks on the sheet to the green ticks on each edge.',
+                'Keep all four corner squares inside the green brackets.',
+                'One scan reads the QR code, student ID bubbles, and all answers.',
                 'Use a dark pencil (HB or 2B) and fill bubbles completely.',
-                'In manual mode, align the OMR ID zone first, then tap capture.',
                 'In auto mode, wait for the green border, then hold steady.',
                 if (_isLowEndDevice)
                   'On slower phones, auto-scan runs less often to stay cool.',
@@ -781,7 +990,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   }
 
   void _startContinuousScanning() {
-    if (!_isInitialized || _controller == null || _isStreamingFrames) return;
+    if (!_isInitialized || _scannerCamera == null || _isStreamingFrames) return;
 
     setState(() {
       _isStreamingFrames = true;
@@ -817,8 +1026,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   void _resumeContinuousPollingIfNeeded() {
     if (!_isContinuousMode ||
         !_isInitialized ||
-        _controller == null ||
-        !_controller!.value.isInitialized ||
+        _scannerCamera == null ||
+        !_scannerCamera!.isCaptureReady ||
         _isProcessing ||
         _autoScanTimer != null) {
       return;
@@ -839,8 +1048,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     if (!mounted ||
         _isProcessing ||
         _isCheckingFrame ||
-        _controller == null ||
-        !_controller!.value.isInitialized) {
+        _scannerCamera == null ||
+        !_scannerCamera!.isCaptureReady) {
       return;
     }
 
@@ -854,8 +1063,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       }
 
       // Take a quick picture for detection
-      final image = await _controller!.takePicture();
-      final bytes = await File(image.path).readAsBytes();
+      await _prepareCaptureFocus();
+      final bytes = await _scannerCamera!.capture();
 
       // Quick sheet detection
       final detection = await OpenCVBridge.detectSheet(bytes);
@@ -901,10 +1110,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         }
       }
 
-      // Clean up temp file
-      try {
-        await File(image.path).delete();
-      } catch (_) {}
     } catch (e) {
       debugPrint("Sheet detection error: $e");
       _stableFrameCount = 0;
@@ -924,12 +1129,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     try {
       // Optimize image if needed
       var processBytes = bytes;
-      if (_isLowEndDevice || bytes.length > 2 * 1024 * 1024) {
+      if (_isLowEndDevice) {
         processBytes = await _optimizeImageForProcessing(bytes);
       }
 
       if (!_opencvAvailable) {
-        await _checkOpenCVWithRetries();
+        await _waitForOpenCvReady(forceRetry: true);
       }
       if (!_opencvAvailable) {
         if (mounted) {
@@ -1019,6 +1224,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
           sheetId: sheetId,
           scanSafety: duplicateSafety,
           sourceBytes: processBytes,
+          replaceExisting: existingScan,
         );
         if (mounted) {
           setState(() {
@@ -1101,6 +1307,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     String? sheetId,
     required _ScanSafetyAssessment scanSafety,
     Uint8List? sourceBytes,
+    ScanResult? replaceExisting,
   }) async {
     final score = subject.calculateSmartScore(answers);
     final scanTime = DateTime.now();
@@ -1134,10 +1341,18 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     );
 
     try {
-      await LocalDataStore.instance.saveAcceptedScan(
-        updatedStudent: updatedStudent,
-        result: result,
-      );
+      if (replaceExisting != null) {
+        await LocalDataStore.instance.replaceAcceptedScan(
+          updatedStudent: updatedStudent,
+          previousResult: replaceExisting,
+          replacementResult: result,
+        );
+      } else {
+        await LocalDataStore.instance.saveAcceptedScan(
+          updatedStudent: updatedStudent,
+          result: result,
+        );
+      }
     } catch (error) {
       throw _ScanPersistenceException(error);
     }
@@ -1260,18 +1475,10 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     }
 
     try {
-      final controller = _controller;
-      if (controller == null || !controller.value.isInitialized) return;
+      final camera = _scannerCamera;
+      if (camera == null || !camera.isCaptureReady) return;
 
-      // Capture a preview frame for quality analysis
-      final file = await controller.takePicture();
-      final bytes = await file.readAsBytes();
-
-      // Delete temp file
-      try {
-        await File(file.path).delete();
-      } catch (_) {}
-
+      final bytes = await camera.capture();
       await _analyzeImageQuality(bytes);
 
       if (!mounted) return;
@@ -1375,11 +1582,33 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   // ==================== END REAL-TIME QUALITY ====================
 
+  Future<void> _handleNativeCameraBindFailed(String message) async {
+    debugPrint('Native camera bind failed: $message');
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isInitialized = false;
+      _cameraInitFailed = true;
+      _status = 'Camera could not start';
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Camera failed: $message'),
+        action: SnackBarAction(
+          label: 'Retry',
+          onPressed: () => unawaited(_initCamera()),
+        ),
+      ),
+    );
+  }
+
   Future<void> _initCamera() async {
-    if (widget.availableCameras.isEmpty) {
+    if (!Platform.isAndroid && widget.availableCameras.isEmpty) {
       if (mounted) {
         setState(() {
-          _status = "No camera available";
+          _status = 'No camera available';
+          _cameraInitFailed = true;
         });
       }
       return;
@@ -1390,60 +1619,79 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       if (!allowed) {
         if (mounted) {
           setState(() {
-            _status = "Allow camera in Settings to scan";
+            _status = 'Allow camera in Settings to scan';
+            _cameraInitFailed = true;
           });
         }
         return;
       }
     }
 
-    await _controller?.dispose();
-    _controller = null;
+    await _scannerCamera?.dispose();
+    _scannerCamera = null;
     if (mounted) {
-      setState(() => _isInitialized = false);
+      setState(() {
+        _isInitialized = false;
+        _cameraInitFailed = false;
+      });
     }
 
-    _controller = CameraController(
-      widget.availableCameras[0],
-      _getOptimalResolution(),
-      enableAudio: false,
-    );
-
     try {
-      await _controller!.initialize();
-
-      if (mounted) {
-        setState(() => _isInitialized = true);
-        // Start real-time quality checking after camera is ready
-        _startQualityCheck();
+      _scannerCamera = await ScannerCameraFactory.create(
+        cameras: widget.availableCameras,
+      );
+      if (_scannerCamera is NativeScannerCamera) {
+        final native = _scannerCamera as NativeScannerCamera;
+        native.onViewReady = () {
+          if (mounted) {
+            setState(() {});
+          }
+        };
+        native.onBindFailed = (message) {
+          unawaited(_handleNativeCameraBindFailed(message));
+        };
       }
-    } catch (e) {
-      debugPrint("Camera Error: $e");
+      await _scannerCamera!.configureForScanning();
+
       if (mounted) {
         setState(() {
-          _status = "Camera error — check permission";
+          _isInitialized = true;
+          _cameraInitFailed = false;
         });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              Platform.isAndroid
-                  ? 'Camera error. If you denied permission, enable Camera in Settings and return.'
-                  : UserErrorMessages.friendlyError(e),
-            ),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5),
-          ),
-        );
+        _startQualityCheck();
       }
+      return;
+    } catch (error) {
+      debugPrint('Camera init failed: $error');
+    }
+
+    if (mounted) {
+      setState(() {
+        _isInitialized = false;
+        _cameraInitFailed = true;
+        _status = 'Camera could not start';
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'In-app camera could not start. You can try the system camera instead.',
+          ),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 8),
+          action: SnackBarAction(
+            label: 'System camera',
+            textColor: Colors.white,
+            onPressed: () => unawaited(_captureFromNativeCamera()),
+          ),
+        ),
+      );
     }
   }
 
   /// Compress and optimize image for processing (runs in isolate for UI responsiveness)
   Future<Uint8List> _optimizeImageForProcessing(Uint8List bytes) async {
-    // If image is small enough, skip optimization
-    if (bytes.length < 1.5 * 1024 * 1024) {
-      // < 1.5MB
+    if (bytes.length < 2.5 * 1024 * 1024) {
       return bytes;
     }
 
@@ -1465,8 +1713,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     final image = img.decodeImage(bytes);
     if (image == null) return bytes;
 
-    // Target max dimension of 1600px (good for OMR detection)
-    const maxDim = 1600;
+    // Keep enough detail for bubble detection on high-res phone captures.
+    const maxDim = 2400;
     img.Image resized;
 
     if (image.width > maxDim || image.height > maxDim) {
@@ -1479,8 +1727,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       resized = image;
     }
 
-    // Encode as JPEG with 85% quality (good balance of size and quality)
-    return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 92));
   }
 
   /// Static function for isolate - reads file bytes
@@ -1488,41 +1735,82 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     return await File(path).readAsBytes();
   }
 
-  Future<void> _captureAndProcess() async {
-    if (_isProcessing ||
-        _controller == null ||
-        !_controller!.value.isInitialized) {
+  Future<void> _captureFromNativeCamera() async {
+    if (_isProcessing || !mounted) {
       return;
     }
 
-    // Pause quality checking during processing
     _stopQualityCheck();
-
     setState(() {
       _isProcessing = true;
-      _status = "Capturing...";
+      _status = 'Opening camera…';
     });
 
     try {
-      final image = await _controller!.takePicture();
+      final picker = ImagePicker();
+      final picked = await picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 95,
+        preferredCameraDevice: CameraDevice.rear,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (picked == null) {
+        setState(() {
+          _isProcessing = false;
+          _status = 'Ready to scan...';
+        });
+        _resumeQualityCheckIfNeeded();
+        return;
+      }
 
-      setState(() => _status = "Reading image...");
+      final bytes = await picked.readAsBytes();
+      await _processCapturedBytes(bytes);
+    } catch (error) {
+      debugPrint('Native camera capture failed: $error');
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _status = 'Camera cancelled';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(UserErrorMessages.friendlyError(error)),
+            backgroundColor: Colors.red,
+          ),
+        );
+        _resumeQualityCheckIfNeeded();
+      }
+    }
+  }
 
-      // Read bytes (this can be slow on low-end devices)
-      var bytes = await compute(_readBytesInIsolate, image.path);
+  Future<void> _processCapturedBytes(Uint8List rawBytes) async {
+    if (!mounted) {
+      return;
+    }
 
-      // Optimize image for low-end devices
+    setState(() {
+      _isProcessing = true;
+      _status = 'Reading image...';
+    });
+
+    try {
+      var bytes = rawBytes;
+
       if (_isLowEndDevice || bytes.length > 2 * 1024 * 1024) {
-        setState(() => _status = "Optimizing...");
+        setState(() => _status = 'Optimizing...');
         bytes = await _optimizeImageForProcessing(bytes);
       }
 
-      setState(() => _status = "Processing with OpenCV...");
-
       if (!_opencvAvailable) {
-        await _checkOpenCVWithRetries();
+        setState(() => _status = 'Starting scan engine...');
+      } else {
+        setState(() => _status = 'Processing with OpenCV...');
       }
-      if (!_opencvAvailable) {
+
+      final engineReady = await _waitForOpenCvReady(forceRetry: true);
+      if (!engineReady) {
         if (mounted) {
           setState(() {
             _isProcessing = false;
@@ -1542,31 +1830,31 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         return;
       }
 
-      // Use the new structured OMR processing
+      if (mounted) {
+        setState(() => _status = 'Processing with OpenCV...');
+      }
+
       final omrResult = await OpenCVBridge.processOmr(
         bytes,
         totalQuestions: widget.targetSubject.totalQuestions,
       );
 
-      debugPrint("OMR Result: $omrResult");
+      debugPrint('OMR Result: $omrResult');
 
-      // Log quality info if available
       if (omrResult.debugInfo.isNotEmpty) {
         final blurScore = omrResult.debugInfo['blurScore'];
         final contrastScore = omrResult.debugInfo['contrastScore'];
         final qualityIssues = omrResult.debugInfo['qualityIssues'];
         if (blurScore != null) {
           debugPrint(
-              "Image quality - blur: $blurScore, contrast: $contrastScore, issues: $qualityIssues");
+              'Image quality - blur: $blurScore, contrast: $contrastScore, issues: $qualityIssues');
         }
       }
 
       if (!omrResult.success) {
         if (mounted) {
-          // Build helpful error message with quality tips
-          String errorMsg = omrResult.errorMessage ?? "Scan failed";
-          String helpTip = _getQualityHelpTip(omrResult.debugInfo);
-
+          final errorMsg = omrResult.errorMessage ?? 'Scan failed';
+          final helpTip = _getQualityHelpTip(omrResult.debugInfo);
           setState(() {
             _status = errorMsg;
             _isProcessing = false;
@@ -1576,16 +1864,15 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         return;
       }
 
-      // Resolve student from OMR ID
       if (omrResult.omrId == null) {
         if (mounted) {
           setState(() {
-            _status = "Could not read OMR ID";
+            _status = 'Could not read OMR ID';
             _isProcessing = false;
           });
-          _showScanError("Could not read the 4-digit OMR ID.\n\n"
-              "Fill those bubbles with a dark pencil (HB or 2B), one digit per column, "
-              "then try again with good light and the ID area in focus.");
+          _showScanError('Could not read the 4-digit OMR ID.\n\n'
+              'Fill those bubbles with a dark pencil (HB or 2B), one digit per column, '
+              'then try again with good light and the ID area in focus.');
         }
         return;
       }
@@ -1594,7 +1881,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       if (student == null) {
         if (mounted) {
           setState(() {
-            _status = "Student not found: ${omrResult.omrId}";
+            _status = 'Student not found: ${omrResult.omrId}';
             _isProcessing = false;
           });
           _showScanError(
@@ -1603,7 +1890,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         return;
       }
 
-      // Try to resolve subject from QR code if available
       Subject resolvedSubject = widget.targetSubject;
       String? sheetId;
       SubjectSheetQrPayload? qrPayload;
@@ -1617,11 +1903,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             if (qrSubject != null) {
               resolvedSubject = qrSubject;
               debugPrint(
-                  "Subject resolved from QR: ${resolvedSubject.displayName}");
+                  'Subject resolved from QR: ${resolvedSubject.displayName}');
             }
           }
         } catch (e) {
-          debugPrint("QR parsing error: $e");
+          debugPrint('QR parsing error: $e');
         }
       }
 
@@ -1634,12 +1920,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         qrPayload: qrPayload,
       );
 
-      // Check if already scanned - offer to update
       final existingScan = _findExistingScan(student, resolvedSubject);
       if (existingScan != null) {
         if (mounted) {
           setState(() {
-            _status = "Already scanned: ${student.name}";
+            _status = 'Already scanned: ${student.name}';
             _isProcessing = false;
           });
           _showRescanDialog(
@@ -1657,7 +1942,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         return;
       }
 
-      // Record the scan with actual detected answers
       await _recordScan(
         student: student,
         subject: resolvedSubject,
@@ -1670,22 +1954,22 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     } on _ScanPersistenceException catch (e) {
       _handleScanPersistenceError(e);
     } on PlatformException catch (e) {
-      debugPrint("OpenCV platform error: ${e.message}");
+      debugPrint('OpenCV platform error: ${e.message}');
 
       if (mounted) {
         setState(() {
-          _status = "Scan failed — see message";
+          _status = 'Scan failed — see message';
           _isProcessing = false;
         });
 
-        _showOpenCVErrorDialog(e.message ?? "Unknown error");
+        _showOpenCVErrorDialog(e.message ?? 'Unknown error');
       }
     } catch (e) {
-      debugPrint("Processing error: $e");
+      debugPrint('Processing error: $e');
 
       if (mounted) {
         setState(() {
-          _status = "Scan failed — try again";
+          _status = 'Scan failed — try again';
           _isProcessing = false;
         });
 
@@ -1704,6 +1988,38 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             debugDetail: e.toString(),
           );
         }
+      }
+    } finally {
+      _resumeQualityCheckIfNeeded();
+    }
+  }
+
+  Future<void> _captureAndProcess() async {
+    if (_isProcessing ||
+        _scannerCamera == null ||
+        !_scannerCamera!.isCaptureReady) {
+      return;
+    }
+
+    _stopQualityCheck();
+
+    setState(() {
+      _isProcessing = true;
+      _status = 'Capturing...';
+    });
+
+    try {
+      await _prepareCaptureFocus();
+      final bytes = await _scannerCamera!.capture();
+      await _processCapturedBytes(bytes);
+    } catch (e) {
+      debugPrint('Capture error: $e');
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _status = 'Capture failed — try again';
+        });
+        _resumeQualityCheckIfNeeded();
       }
     }
   }
@@ -2088,8 +2404,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
     final result = await Navigator.push<ScanReviewResult>(
       context,
-      MaterialPageRoute(
-        builder: (context) => ScanReviewPage(
+      AppPageTransitions.fadeSlide(
+        ScanReviewPage(
           student: student,
           subject: subject,
           detectedAnswers: answers,
@@ -2335,8 +2651,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
     final reviewResult = await Navigator.push<ScanReviewResult>(
       context,
-      MaterialPageRoute(
-        builder: (context) => ScanReviewPage(
+      AppPageTransitions.fadeSlide(
+        ScanReviewPage(
           student: student,
           subject: subject,
           detectedAnswers: newAnswers,
@@ -2768,17 +3084,25 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 20),
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: AppColors.brandGreen.withValues(alpha: 0.12),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.check_rounded,
-                  color: AppColors.brandGreen,
-                  size: 32,
+              TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: 1),
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutBack,
+                builder: (context, scale, child) {
+                  return Transform.scale(scale: scale, child: child);
+                },
+                child: Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: AppColors.brandGreen.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    color: AppColors.brandGreen,
+                    size: 32,
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
@@ -2924,6 +3248,69 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     final colorScheme = Theme.of(context).colorScheme;
 
     if (!_isInitialized) {
+      if (_cameraInitFailed) {
+        return Scaffold(
+          backgroundColor: Colors.black,
+          appBar: _buildScannerAppBar(colorScheme),
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.videocam_off_outlined,
+                    color: Colors.white54,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _status,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Scanning stays in the app when the camera starts normally.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70, height: 1.4),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_isMobileNative)
+                    FilledButton.icon(
+                      onPressed: _isProcessing
+                          ? null
+                          : () => unawaited(_captureFromNativeCamera()),
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text('Try system camera'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.brandGreen,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 14,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () => unawaited(_initCamera()),
+                    child: const Text(
+                      'Retry in-app camera',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
       return const Scaffold(
         backgroundColor: Colors.black,
         body: Center(
@@ -2951,8 +3338,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          if (_controller != null && _controller!.value.isInitialized)
-            Center(child: CameraPreview(_controller!))
+          if (_scannerCamera != null && _scannerCamera!.isInitialized)
+            _buildCameraPreview()
           else
             const Center(
               child: Text(
@@ -2970,6 +3357,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   Widget _buildScanFrame({
     required Color accentColor,
     required double strokeWidth,
+    required bool showGlow,
   }) {
     return Stack(
       fit: StackFit.expand,
@@ -2978,7 +3366,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
           painter: _CornerBracketPainter(
             color: accentColor,
             strokeWidth: strokeWidth,
-            bracketLength: 32,
+            bracketLength: 36,
+            showGlow: showGlow,
+            showEdgeGuides: true,
           ),
         ),
         if (_isContinuousMode && _stableFrameCount > 0)
@@ -2998,22 +3388,35 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               ),
             ),
           ),
-        if (!_isContinuousMode)
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: Text(
-                'OMR ID',
-                style: TextStyle(
-                  color: accentColor.withValues(alpha: 0.92),
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.8,
-                  fontSize: 11,
+        Align(
+          alignment: Alignment.bottomCenter,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Align timing marks to green ticks',
+                  style: TextStyle(
+                    color: accentColor.withValues(alpha: 0.95),
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.4,
+                    fontSize: 12,
+                  ),
                 ),
-              ),
+                const SizedBox(height: 2),
+                Text(
+                  'Four corner squares visible · tap paper to focus',
+                  style: TextStyle(
+                    color: accentColor.withValues(alpha: 0.72),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 10,
+                  ),
+                ),
+              ],
             ),
           ),
+        ),
       ],
     );
   }
@@ -3060,6 +3463,18 @@ class _ViewfinderDimPainter extends CustomPainter {
       overlay,
       Paint()..color = dimColor,
     );
+
+    final edgeVignette = Paint()
+      ..shader = RadialGradient(
+        center: Alignment.center,
+        radius: 1.05,
+        colors: [
+          Colors.transparent,
+          Colors.black.withValues(alpha: 0.18),
+        ],
+        stops: const [0.62, 1.0],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), edgeVignette);
   }
 
   @override
@@ -3075,20 +3490,93 @@ class _CornerBracketPainter extends CustomPainter {
     required this.color,
     required this.strokeWidth,
     required this.bracketLength,
+    this.showGlow = false,
+    this.showEdgeGuides = false,
   });
 
   final Color color;
   final double strokeWidth;
   final double bracketLength;
+  final bool showGlow;
+  final bool showEdgeGuides;
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (showGlow) {
+      final glowPaint = Paint()
+        ..color = color.withValues(alpha: 0.28)
+        ..strokeWidth = strokeWidth + 5
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+      _drawCorners(canvas, size, glowPaint);
+    }
+
     final paint = Paint()
       ..color = color
       ..strokeWidth = strokeWidth
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
+    _drawCorners(canvas, size, paint);
+
+    if (showEdgeGuides) {
+      _drawTimingMarkGuides(canvas, size, paint);
+    }
+  }
+
+  /// Green ticks on all four edges — align with printed timing marks on the sheet.
+  void _drawTimingMarkGuides(Canvas canvas, Size size, Paint basePaint) {
+    const pageW = OmrPageConstants.pageWidth;
+    const pageH = OmrPageConstants.pageHeight;
+    const startX = OmrPageConstants.timingMarkStartX;
+    const endX = OmrPageConstants.timingMarkEndX;
+    const startY = OmrPageConstants.timingMarkStartY;
+    const endY = OmrPageConstants.timingMarkEndY;
+    const spacing = OmrPageConstants.timingMarkSpacing;
+    const edgeInset = 6.0;
+    const tickLen = 11.0;
+
+    final guidePaint = Paint()
+      ..color = basePaint.color.withValues(alpha: 0.75)
+      ..strokeWidth = basePaint.strokeWidth * 0.7
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    var x = startX;
+    while (x <= endX + 0.5) {
+      final fx = size.width * (x / pageW);
+      canvas.drawLine(
+        Offset(fx, edgeInset),
+        Offset(fx, edgeInset + tickLen),
+        guidePaint,
+      );
+      canvas.drawLine(
+        Offset(fx, size.height - edgeInset),
+        Offset(fx, size.height - edgeInset - tickLen),
+        guidePaint,
+      );
+      x += spacing;
+    }
+
+    var y = startY;
+    while (y <= endY + 0.5) {
+      final fy = size.height * (y / pageH);
+      canvas.drawLine(
+        Offset(edgeInset, fy),
+        Offset(edgeInset + tickLen, fy),
+        guidePaint,
+      );
+      canvas.drawLine(
+        Offset(size.width - edgeInset, fy),
+        Offset(size.width - edgeInset - tickLen, fy),
+        guidePaint,
+      );
+      y += spacing;
+    }
+  }
+
+  void _drawCorners(Canvas canvas, Size size, Paint paint) {
     void drawCorner({
       required Offset origin,
       required double dx,
@@ -3111,7 +3599,9 @@ class _CornerBracketPainter extends CustomPainter {
   bool shouldRepaint(covariant _CornerBracketPainter oldDelegate) {
     return oldDelegate.color != color ||
         oldDelegate.strokeWidth != strokeWidth ||
-        oldDelegate.bracketLength != bracketLength;
+        oldDelegate.bracketLength != bracketLength ||
+        oldDelegate.showGlow != showGlow ||
+        oldDelegate.showEdgeGuides != showEdgeGuides;
   }
 }
 

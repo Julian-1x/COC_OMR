@@ -31,6 +31,34 @@ void main() {
     expect(auth.isUnlocked, isTrue);
   });
 
+  test('installCloudProfile stays locked until the synced PIN is entered',
+      () async {
+    await auth.createProfile(
+      name: 'Ava Teacher',
+      school: 'COC',
+      pin: '1234',
+      cloudUserId: 'teacher-123',
+    );
+    final credentials = await auth.storedPinCredentials();
+    expect(credentials, isNotNull);
+
+    await auth.clearProfile();
+    await auth.installCloudProfile(
+      name: 'Ava Teacher',
+      school: 'COC',
+      pinHash: credentials!.hash,
+      pinSalt: credentials.salt,
+      cloudUserId: 'teacher-123',
+    );
+
+    expect(await auth.hasProfile(), isTrue);
+    expect(auth.isUnlocked, isFalse);
+
+    final result = await auth.verifyPin('1234');
+    expect(result.success, isTrue);
+    expect(auth.isUnlocked, isTrue);
+  });
+
   test('lock keeps the offline PIN profile for the next unlock', () async {
     await auth.createProfile(
       name: 'Ava Teacher',

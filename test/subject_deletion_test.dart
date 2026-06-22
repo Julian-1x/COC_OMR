@@ -140,4 +140,73 @@ void main() {
     expect(updatedBen.scanDate, isNull);
     expect(updatedBen.confidence, isNull);
   });
+
+  test('removing a shared answer key from one section keeps other sections', () {
+    final sharedMath = Subject(
+      id: 'SUB-0001',
+      name: 'Math',
+      answerKey: {1: ['A']},
+      totalQuestions: 30,
+      sectionNames: ['BSIT-01', 'BSIT-02'],
+      sectionQrData: {
+        'BSIT-01': '{"sheet":"01"}',
+        'BSIT-02': '{"sheet":"02"}',
+      },
+    );
+
+    globalSubjects = [sharedMath];
+    globalStudentDatabase = [
+      Student(
+        schoolId: '2024-001',
+        omrId: '0001',
+        name: 'Ana',
+        section: 'BSIT-01',
+      ),
+      Student(
+        schoolId: '2024-002',
+        omrId: '0002',
+        name: 'Ben',
+        section: 'BSIT-02',
+      ),
+    ];
+    globalScanResults = [
+      ScanResult(
+        studentOmrId: '0001',
+        subjectId: sharedMath.id,
+        subjectName: sharedMath.name,
+        detectedAnswers: {1: 'A'},
+        correctnessMap: {1: 1.0},
+        score: 1,
+        totalQuestions: 30,
+        confidence: 0.95,
+        scanTime: DateTime(2026, 4, 8),
+      ),
+      ScanResult(
+        studentOmrId: '0002',
+        subjectId: sharedMath.id,
+        subjectName: sharedMath.name,
+        detectedAnswers: {1: 'A'},
+        correctnessMap: {1: 1.0},
+        score: 1,
+        totalQuestions: 30,
+        confidence: 0.91,
+        scanTime: DateTime(2026, 4, 8, 10),
+      ),
+    ];
+    rebuildStudentIndex();
+
+    final summary = removeSubjectFromSectionInMemory(
+      subject: sharedMath,
+      sectionName: 'BSIT-01',
+    );
+
+    expect(summary.removedSubjects, 0);
+    expect(summary.removedScans, 1);
+    expect(summary.detachedSectionName, 'BSIT-01');
+    expect(globalSubjects, hasLength(1));
+    expect(globalSubjects.single.sectionNames, ['BSIT-02']);
+    expect(globalSubjects.single.sectionQrData.containsKey('BSIT-01'), isFalse);
+    expect(findScansBySubject(sharedMath.id), hasLength(1));
+    expect(findScansBySubject(sharedMath.id).single.studentOmrId, '0002');
+  });
 }

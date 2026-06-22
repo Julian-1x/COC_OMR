@@ -1,10 +1,14 @@
 import 'package:omr_app/services/cloud_auth_service.dart';
+import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Maps technical failures to short, teacher-friendly English.
 abstract final class UserErrorMessages {
   static String friendlyError(Object error) {
+    if (error is PinSyncException) {
+      return error.message;
+    }
     if (error is CloudAuthException) {
       return error.message;
     }
@@ -48,8 +52,14 @@ abstract final class UserErrorMessages {
     if (detail == null || detail.trim().isEmpty) {
       return 'Import failed. Check the file format and try again.';
     }
+    if (detail.contains('Null check operator used on a null value')) {
+      return 'Could not read that roster file. Save it as .xlsx or .csv with Student ID, Name, and Section columns, then try again.';
+    }
     if (_looksLikeSqlite(detail) || _looksLikePolicy(detail)) {
       return friendlyError(detail);
+    }
+    if (detail.startsWith('FormatException:')) {
+      return detail.replaceFirst('FormatException:', '').trim();
     }
     return detail.length > 120
         ? 'Import failed. Check the file format and try again.'

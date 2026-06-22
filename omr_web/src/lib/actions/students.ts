@@ -9,7 +9,7 @@ import {
   upsertSection,
   upsertStudent,
 } from "@/lib/api/data";
-import { nextOmrId } from "@/lib/import/roster";
+import { nextOmrId, normalizeSchoolId } from "@/lib/import/roster";
 
 export async function saveStudent(input: {
   school_id: string;
@@ -19,20 +19,33 @@ export async function saveStudent(input: {
 }) {
   const { user, supabase } = await requireTeacherSession();
   const existing = await fetchStudents(supabase);
-  const omrId = input.omr_id ?? nextOmrId(existing, new Set());
+  const schoolId = normalizeSchoolId(input.school_id);
+  if (!schoolId) {
+    throw new Error("Student ID is required.");
+  }
+
+  const match = existing.find(
+    (student) => normalizeSchoolId(student.school_id) === schoolId,
+  );
+  const omrId = input.omr_id ?? match?.omr_id ?? nextOmrId(existing, new Set());
 
   await upsertStudent(supabase, user.id, {
-    school_id: input.school_id.trim(),
+    school_id: schoolId,
     omr_id: omrId,
     name: input.name.trim(),
-    section_name: input.section_name,
+    section_name: input.section_name.trim(),
   });
 
   const counts = await fetchSectionStudentCounts(supabase);
-  await upsertSection(supabase, user.id, input.section_name, counts.get(input.section_name) ?? 0);
+  await upsertSection(
+    supabase,
+    user.id,
+    input.section_name.trim(),
+    counts.get(input.section_name.trim()) ?? 0,
+  );
 
   revalidatePath("/dashboard/classes");
-  revalidatePath(`/dashboard/classes/${encodeURIComponent(input.section_name)}`);
+  revalidatePath(`/dashboard/classes/${encodeURIComponent(input.section_name.trim())}`);
   revalidatePath("/dashboard");
   return { omr_id: omrId };
 }

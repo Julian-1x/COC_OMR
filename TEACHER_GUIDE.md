@@ -28,7 +28,7 @@ You **must** sign in or register once so your data is tied to your account and b
 
 1. Sign in online with the same email and password.
 2. Wait for data to download.
-3. Set your PIN again.
+3. Enter your **same PIN** from your old phone (not a new one).
 
 ## Before a big exam
 
@@ -36,6 +36,21 @@ You **must** sign in or register once so your data is tied to your account and b
 - Print sheets at **100% scale** (Actual size, not Fit to page).
 - Do a **trial scan** on 3–5 printed samples.
 - Export a backup in Settings.
+
+## After the semester (end of term)
+
+1. Open **Settings** → **End of term** → **Archive a section**.
+2. **Sync first** if the app asks — scores must be in the cloud.
+3. Pick the finished class (e.g. BSIT-01). It is **removed from this phone only**.
+4. View old grades anytime on the **web portal** (Classes → **Archived**).
+
+Use **Delete permanently** only if you want to erase data from the cloud too (rare).
+
+## School year and returning students
+
+- When you **create a section** or **import a roster**, pick the **school year** and **term** (e.g. 2025-2026 · 1st Sem).
+- **Archive** last term’s section before reusing the same name (e.g. BSIT-01) for a new roster.
+- **Returning students** are matched by **Student ID** (`school_id`) on import — names and sections can update; assign a **new OMR ID** if the sheet number changed.
 
 ## Need help?
 

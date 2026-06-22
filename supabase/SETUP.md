@@ -17,12 +17,16 @@ Wait until the project status is **Healthy**.
 2. Turn **Email** ON.
 3. You can keep **Confirm email** **ON** (recommended). The app uses a phone deep link — configure step 4.
 4. **Authentication** → **URL Configuration**:
-   - **Site URL:** `edu.coc.omr://login-callback`
-   - **Redirect URLs** — add:
+   - **Site URL:** `https://omrweb.vercel.app` (web portal — used when redirect is missing)
+   - **Redirect URLs** — add every line (Supabase only allows listed URLs):
      ```
      edu.coc.omr://login-callback
+     https://omrweb.vercel.app/auth/callback
+     http://localhost:3000/auth/callback
      ```
-   - Remove or do not rely on `http://localhost:3000` for teachers on phones.
+   - **How redirects work:**
+     - Register on **phone** → confirmation link opens the app (`edu.coc.omr://login-callback`)
+     - Register on **web** → confirmation link returns to `/auth/callback` on the same site
 5. Save.
 
 ## 3. Run the database schema
@@ -32,6 +36,11 @@ Wait until the project status is **Healthy**.
 3. Click **Run**.
 
 You should see tables: `teacher_profiles`, `sections`, `students`, `subjects`, `scan_results`, `deadlines`, `scan_warnings`.
+
+**Already deployed?** Run these once in order:
+
+1. `supabase/add_pin_sync.sql` — offline PIN restore on new phones
+2. `supabase/add_section_archive.sql` — end-of-term archive columns on `sections`
 
 ## 4. Copy API keys for the app
 
@@ -102,5 +111,20 @@ In Cursor/VS Code, use the **OMR App - Supabase** launch config (also uses `secr
 |---------|-----|
 | Sign-in disabled in app | `secrets.json` missing or wrong; rebuild APK with `build_release.ps1` |
 | Row-level security error | Re-run `schema.sql` |
-| Email not confirmed | Disable confirm email in Auth settings, or confirm test inbox |
+| Email not confirmed | Open the confirmation email; phone links open the app, web links return to the portal. If you see **localhost** on the phone, fix **URL Configuration** in step 2.4 |
 | Registration works, sync fails | Check internet; verify tables exist in Table Editor |
+| Web portal empty but phone has data | Same email on phone + web; tap **Sync Now** on phone; use web **Settings → Open sync check** |
+
+## School admin (web portal)
+
+1. Run `supabase/add_admin_rls.sql` in the SQL Editor (after `schema.sql`).
+2. Promote an IT lead or coordinator:
+
+```sql
+update public.teacher_profiles
+set role = 'school_admin'
+where id = 'YOUR-AUTH-USER-UUID';
+```
+
+3. Ensure `school_name` matches for all teachers at your campus (same string in profile).
+4. Sign in at the web portal → **Admin** in the sidebar (read-only school overview).

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:omr_app/pages/login_page.dart';
 import 'package:omr_app/services/crash_reporting_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/supabase_service.dart';
 import 'package:omr_app/services/theme_service.dart';
@@ -19,6 +20,9 @@ Future<void> main() async {
   await LocalDataStore.instance.loadIntoMemory();
 
   rebuildStudentIndex();
+
+  // Load OMR scan engine early so the scanner works immediately when opened.
+  await ScannerEngine.warmUp();
 
   await CrashReportingService.initAndRun(() => runApp(const MyApp()));
 }

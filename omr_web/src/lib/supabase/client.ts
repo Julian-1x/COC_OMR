@@ -1,4 +1,4 @@
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 import { getSupabaseClientEnv, isSupabaseConfigured } from "@/lib/supabase/env";
 
 export { isSupabaseConfigured };
@@ -10,5 +10,5 @@ export function createClient() {
       "Supabase is not configured. Add omr_web/.env.local, then restart: npm run dev",
     );
   }
-  return createSupabaseClient(url, key);
+  return createBrowserClient(url, key);
 }

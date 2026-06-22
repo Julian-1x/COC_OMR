@@ -188,7 +188,7 @@ abstract final class ExamSummaryService {
         }
 
         attempts++;
-        if (answerKey[qNum]?.contains(studentAnswer) == true) {
+        if (subject.calculateQuestionScore(qNum, studentAnswer) >= 1.0) {
           correctCount++;
         }
       }

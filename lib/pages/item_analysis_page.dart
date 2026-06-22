@@ -2,49 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
-import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/export_service.dart';
+import 'package:omr_app/services/item_analysis_service.dart';
+import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/loading_indicators.dart';
-
-/// A question's analysis data
-class QuestionAnalysis {
-  final int questionNumber;
-  final String correctAnswer;
-  final int totalAttempts;
-  final int correctCount;
-  final Map<String, int> answerDistribution; // A: 5, B: 12, C: 3, etc.
-
-  QuestionAnalysis({
-    required this.questionNumber,
-    required this.correctAnswer,
-    required this.totalAttempts,
-    required this.correctCount,
-    required this.answerDistribution,
-  });
-
-  double get difficulty => totalAttempts > 0 ? correctCount / totalAttempts : 0;
-
-  /// Difficulty category based on percentage correct
-  String get difficultyLabel {
-    if (difficulty >= 0.8) return 'Easy';
-    if (difficulty >= 0.5) return 'Medium';
-    if (difficulty >= 0.3) return 'Hard';
-    return 'Very Hard';
-  }
-
-  Color get difficultyColor {
-    if (difficulty >= 0.8) return Colors.green;
-    if (difficulty >= 0.5) return Colors.orange;
-    if (difficulty >= 0.3) return Colors.deepOrange;
-    return Colors.red;
-  }
-
-  /// Discrimination index - simplified version
-  /// Higher values mean the question better separates high/low performers
-  double? discriminationIndex;
-}
 
 class ItemAnalysisPage extends StatefulWidget {
   final Subject subject;
@@ -61,6 +24,7 @@ class ItemAnalysisPage extends StatefulWidget {
 }
 
 class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
+  ItemAnalysisReport? _report;
   List<QuestionAnalysis> _questionAnalyses = <QuestionAnalysis>[];
   bool _isLoading = true;
   int _sortMode =
@@ -88,7 +52,7 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
     }
 
     try {
-      final relevantResults = await LocalDataStore.instance.fetchScanResults(
+      final results = await LocalDataStore.instance.fetchScanResults(
         subjectId: widget.subject.id,
         sectionName: widget.sectionFilter,
       );
@@ -96,106 +60,36 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
         return;
       }
 
+      final pendingReviewCount =
+          results.where((result) => result.requiresReview).length;
+      final report = ItemAnalysisService.buildFromData(
+        subject: widget.subject,
+        results: results,
+      );
+
       setState(() {
-        _computeAnalysis(relevantResults);
+        _report = report ??
+            (pendingReviewCount > 0
+                ? ItemAnalysisReport(
+                    questions: const <QuestionAnalysis>[],
+                    gradedStudentCount: 0,
+                    pendingReviewCount: pendingReviewCount,
+                    supersededScanCount: 0,
+                  )
+                : null);
+        _questionAnalyses = report?.questions ?? <QuestionAnalysis>[];
+        _sortAnalyses();
         _isLoading = false;
       });
     } catch (error) {
       debugPrint('Item analysis load failed: $error');
       if (mounted) {
         setState(() {
+          _report = null;
           _questionAnalyses = <QuestionAnalysis>[];
           _isLoading = false;
         });
       }
-    }
-  }
-
-  void _computeAnalysis(List<ScanResult> relevantResults) {
-    final answerKey = widget.subject.answerKey;
-    final totalQuestions = widget.subject.totalQuestions;
-
-    // Initialize analyses for each question
-    _questionAnalyses = List.generate(totalQuestions, (index) {
-      final qNum = index + 1;
-      final correctAns =
-          answerKey[qNum]?.isNotEmpty == true ? answerKey[qNum]!.first : '?';
-
-      return QuestionAnalysis(
-        questionNumber: qNum,
-        correctAnswer: correctAns,
-        totalAttempts: 0,
-        correctCount: 0,
-        answerDistribution: {},
-      );
-    });
-
-    // Tally results
-    for (final result in relevantResults) {
-      final studentAnswers = result.detectedAnswers;
-
-      for (int qNum = 1; qNum <= totalQuestions; qNum++) {
-        final analysis = _questionAnalyses[qNum - 1];
-        final studentAnswer = studentAnswers[qNum] ?? '';
-        final correctAns = answerKey[qNum];
-
-        // Only count if student answered
-        if (studentAnswer.isNotEmpty) {
-          // Update distribution
-          final currentDist =
-              Map<String, int>.from(analysis.answerDistribution);
-          currentDist[studentAnswer] = (currentDist[studentAnswer] ?? 0) + 1;
-
-          // Check if correct
-          final isCorrect = correctAns?.contains(studentAnswer) == true;
-
-          _questionAnalyses[qNum - 1] = QuestionAnalysis(
-            questionNumber: qNum,
-            correctAnswer: analysis.correctAnswer,
-            totalAttempts: analysis.totalAttempts + 1,
-            correctCount: analysis.correctCount + (isCorrect ? 1 : 0),
-            answerDistribution: currentDist,
-          );
-        }
-      }
-    }
-
-    // Compute discrimination index
-    _computeDiscrimination(relevantResults);
-
-    _sortAnalyses();
-  }
-
-  void _computeDiscrimination(List<ScanResult> results) {
-    if (results.length < 4) return;
-
-    // Sort by percentage
-    results.sort((a, b) => b.percentage.compareTo(a.percentage));
-
-    // Top 27% and bottom 27%
-    final groupSize =
-        (results.length * 0.27).ceil().clamp(1, results.length ~/ 2);
-    final topGroup = results.take(groupSize).toList();
-    final bottomGroup =
-        results.skip(results.length - groupSize).take(groupSize).toList();
-
-    for (int qNum = 1; qNum <= widget.subject.totalQuestions; qNum++) {
-      final correctAns = widget.subject.answerKey[qNum];
-
-      int topCorrect = 0;
-      int bottomCorrect = 0;
-
-      for (final result in topGroup) {
-        final ans = result.detectedAnswers[qNum] ?? '';
-        if (correctAns?.contains(ans) == true) topCorrect++;
-      }
-      for (final result in bottomGroup) {
-        final ans = result.detectedAnswers[qNum] ?? '';
-        if (correctAns?.contains(ans) == true) bottomCorrect++;
-      }
-
-      final discrimination = (topCorrect - bottomCorrect) / groupSize;
-      _questionAnalyses[qNum - 1].discriminationIndex = discrimination;
     }
   }
 
@@ -214,22 +108,12 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
     }
   }
 
-  int get _totalAttempts {
-    if (_questionAnalyses.isEmpty) return 0;
-    return _questionAnalyses.first.totalAttempts;
-  }
+  int get _totalAttempts => _report?.gradedStudentCount ?? 0;
 
-  double get _overallDifficulty {
-    if (_questionAnalyses.isEmpty) return 0;
-    final avg =
-        _questionAnalyses.fold<double>(0, (sum, q) => sum + q.difficulty) /
-            _questionAnalyses.length;
-    return avg;
-  }
+  double get _overallDifficulty => _report?.overallDifficulty ?? 0;
 
-  List<QuestionAnalysis> get _hardestQuestions => List.from(_questionAnalyses)
-    ..sort((a, b) => a.difficulty.compareTo(b.difficulty))
-    ..take(5);
+  List<QuestionAnalysis> get _hardestQuestions =>
+      _report?.hardestQuestions ?? const <QuestionAnalysis>[];
 
   @override
   Widget build(BuildContext context) {
@@ -240,7 +124,9 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
           children: [
             const Text('Item Analysis'),
             Text(
-              widget.subject.displayName,
+              widget.sectionFilter == null
+                  ? widget.subject.displayName
+                  : '${widget.subject.displayName} · ${widget.sectionFilter}',
               style:
                   const TextStyle(fontSize: 12, fontWeight: FontWeight.normal),
             ),
@@ -371,7 +257,13 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
       ),
       body: _totalAttempts == 0
           ? (_isLoading ? _buildLoadingView() : _buildNoDataView())
-          : _buildAnalysisView(),
+          : Column(
+              children: [
+                if (_report != null && _report!.pendingReviewCount > 0)
+                  _buildPendingReviewBanner(_report!),
+                Expanded(child: _buildAnalysisView()),
+              ],
+            ),
     );
   }
 
@@ -379,7 +271,36 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
     return LoadingIndicators.inline(message: 'Analyzing exam results...');
   }
 
+  Widget _buildPendingReviewBanner(ItemAnalysisReport report) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: AppColors.statusWarningBg,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline_rounded,
+              size: 18, color: AppColors.statusWarning),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${report.pendingReviewCount} scan${report.pendingReviewCount == 1 ? '' : 's'} '
+              'still need review and are excluded. '
+              'Blanks count as incorrect among approved scans.',
+              style: const TextStyle(
+                fontSize: 12,
+                color: AppColors.warningText,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNoDataView() {
+    final pending = _report?.pendingReviewCount ?? 0;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -390,9 +311,9 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
               Icon(Icons.analytics_outlined,
                   size: 64, color: AppColors.brandMuted.withValues(alpha: 0.55)),
               const SizedBox(height: 16),
-              const Text(
-                'No scan data yet',
-                style: TextStyle(
+              Text(
+                pending > 0 ? 'No approved scans yet' : 'No scan data yet',
+                style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                   color: AppColors.brandText,
@@ -400,7 +321,12 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Scan some answer sheets for "${widget.subject.displayName}" to see question analysis.',
+                pending > 0
+                    ? '$pending scan${pending == 1 ? '' : 's'} still need review. '
+                        'Approve them in Review Queue, then open item analysis again.'
+                    : 'Scan some answer sheets for "${widget.subject.displayName}" '
+                        '${widget.sectionFilter != null ? 'in ${widget.sectionFilter}' : ''} '
+                        'to see question analysis.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: AppColors.brandMuted),
               ),
@@ -426,7 +352,7 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
                   children: [
                     Expanded(
                       child: _SummaryCard(
-                        label: 'Responses',
+                        label: 'Students',
                         value: '$_totalAttempts',
                         icon: Icons.people,
                       ),
@@ -454,13 +380,14 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.red.shade50,
+                      color: AppColors.statusDangerBg,
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.red.shade200),
+                      border: Border.all(color: AppColors.statusDangerBorder),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.warning_amber, color: Colors.red.shade700),
+                        const Icon(Icons.warning_amber_rounded,
+                            color: AppColors.statusDanger),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Column(
@@ -470,7 +397,7 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
                                 'Hardest Questions',
                                 style: TextStyle(
                                   fontWeight: FontWeight.bold,
-                                  color: Colors.red.shade700,
+                                  color: AppColors.statusDanger,
                                 ),
                               ),
                               Text(
@@ -499,6 +426,7 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
             itemBuilder: (context, index) {
               final q = _questionAnalyses[index];
               return _QuestionAnalysisCard(
+                subject: widget.subject,
                 analysis: q,
                 showDistribution: _showDistribution,
               );
@@ -550,7 +478,7 @@ class _SummaryCard extends StatelessWidget {
             label,
             style: TextStyle(
               fontSize: 11,
-              color: Colors.grey.shade600,
+              color: AppColors.brandMuted,
             ),
           ),
         ],
@@ -560,10 +488,12 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _QuestionAnalysisCard extends StatelessWidget {
+  final Subject subject;
   final QuestionAnalysis analysis;
   final bool showDistribution;
 
   const _QuestionAnalysisCard({
+    required this.subject,
     required this.analysis,
     required this.showDistribution,
   });
@@ -640,10 +570,11 @@ class _QuestionAnalysisCard extends StatelessWidget {
                       Row(
                         children: [
                           Text(
-                            '${analysis.correctCount}/${analysis.totalAttempts} correct',
+                            '${analysis.correctCount}/${analysis.totalAttempts} correct'
+                            '${analysis.partialCount > 0 ? ' · ${analysis.partialCount} partial' : ''}',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.grey.shade600,
+                              color: AppColors.brandMuted,
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -653,8 +584,8 @@ class _QuestionAnalysisCard extends StatelessWidget {
                               style: TextStyle(
                                 fontSize: 12,
                                 color: analysis.discriminationIndex! >= 0.3
-                                    ? Colors.green.shade700
-                                    : Colors.grey.shade600,
+                                    ? AppColors.statusSuccess
+                                    : AppColors.brandMuted,
                               ),
                             ),
                         ],
@@ -672,7 +603,7 @@ class _QuestionAnalysisCard extends StatelessWidget {
                     children: [
                       CircularProgressIndicator(
                         value: analysis.difficulty,
-                        backgroundColor: Colors.grey.shade200,
+                        backgroundColor: AppColors.neutralFill,
                         valueColor:
                             AlwaysStoppedAnimation(analysis.difficultyColor),
                         strokeWidth: 4,
@@ -696,8 +627,9 @@ class _QuestionAnalysisCard extends StatelessWidget {
               const Divider(height: 1),
               const SizedBox(height: 8),
               _AnswerDistributionBar(
+                subject: subject,
+                questionNumber: analysis.questionNumber,
                 distribution: analysis.answerDistribution,
-                correctAnswer: analysis.correctAnswer,
                 totalAttempts: analysis.totalAttempts,
               ),
             ],
@@ -709,13 +641,15 @@ class _QuestionAnalysisCard extends StatelessWidget {
 }
 
 class _AnswerDistributionBar extends StatelessWidget {
+  final Subject subject;
+  final int questionNumber;
   final Map<String, int> distribution;
-  final String correctAnswer;
   final int totalAttempts;
 
   const _AnswerDistributionBar({
+    required this.subject,
+    required this.questionNumber,
     required this.distribution,
-    required this.correctAnswer,
     required this.totalAttempts,
   });
 
@@ -737,7 +671,11 @@ class _AnswerDistributionBar extends StatelessWidget {
       children: sortedAnswers.map((answer) {
         final count = distribution[answer] ?? 0;
         final pct = totalAttempts > 0 ? count / totalAttempts : 0.0;
-        final isCorrect = answer == correctAnswer;
+        final isCorrect = ItemAnalysisService.isDistributionChoiceCorrect(
+          subject,
+          questionNumber,
+          answer,
+        );
 
         return Expanded(
           child: Padding(
@@ -750,10 +688,10 @@ class _AnswerDistributionBar extends StatelessWidget {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(4),
                     color: isCorrect
-                        ? Colors.green.shade100
-                        : Colors.grey.shade100,
+                        ? AppColors.statusSuccessBg
+                        : AppColors.neutralFill,
                     border: Border.all(
-                      color: isCorrect ? Colors.green : Colors.grey.shade300,
+                      color: isCorrect ? AppColors.statusSuccess : AppColors.borderSubtle,
                     ),
                   ),
                   child: Stack(
@@ -766,7 +704,7 @@ class _AnswerDistributionBar extends StatelessWidget {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(3),
                             color:
-                                isCorrect ? Colors.green : Colors.grey.shade400,
+                                isCorrect ? AppColors.statusSuccess : AppColors.neutralMuted,
                           ),
                         ),
                       ),
@@ -784,18 +722,18 @@ class _AnswerDistributionBar extends StatelessWidget {
                         fontSize: 11,
                         fontWeight:
                             isCorrect ? FontWeight.bold : FontWeight.normal,
-                        color: isCorrect ? Colors.green.shade700 : null,
+                        color: isCorrect ? AppColors.statusSuccess : null,
                       ),
                     ),
                     if (isCorrect)
-                      const Icon(Icons.check, size: 10, color: Colors.green),
+                      const Icon(Icons.check, size: 10, color: AppColors.statusSuccess),
                   ],
                 ),
                 Text(
                   '${(pct * 100).round()}%',
                   style: TextStyle(
                     fontSize: 10,
-                    color: Colors.grey.shade600,
+                    color: AppColors.brandMuted,
                   ),
                 ),
               ],

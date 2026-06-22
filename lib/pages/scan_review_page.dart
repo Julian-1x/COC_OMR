@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_spacing.dart';
+import 'package:omr_app/theme/app_typography.dart';
+import 'package:omr_app/widgets/animated_percent_text.dart';
 
 /// A page that shows scan results with the ability to review and correct answers.
 /// This allows teachers to fix any misreads before saving.
@@ -245,12 +248,13 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
 
   Widget _buildHeader(ColorScheme colorScheme, double percentage, bool passed) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppSpacing.md),
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
-        border: Border(
-          bottom: BorderSide(color: colorScheme.outlineVariant),
+        color: Colors.white,
+        border: const Border(
+          bottom: BorderSide(color: AppColors.borderLight),
         ),
+        boxShadow: AppShadows.soft,
       ),
       child: Row(
         children: [
@@ -258,60 +262,52 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Text(widget.student.name, style: AppTypography.sectionTitle),
+                const SizedBox(height: 4),
                 Text(
-                  widget.student.name,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'Section: ${widget.student.section} | OMR: ${widget.student.omrId}',
-                  style: TextStyle(
-                    color: colorScheme.onSurfaceVariant,
-                    fontSize: 13,
-                  ),
+                  'Section: ${widget.student.section} · OMR ${widget.student.omrId}',
+                  style: AppTypography.captionMuted,
                 ),
                 Text(
                   widget.subject.displayName,
-                  style: TextStyle(
-                    color: colorScheme.primary,
-                    fontWeight: FontWeight.w500,
+                  style: AppTypography.chipLabel.copyWith(
+                    color: AppColors.brandGreenDark,
                   ),
                 ),
               ],
             ),
           ),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
               color: passed
-                  ? AppColors.brandSurface
-                  : AppColors.warningBg,
+                  ? AppColors.statusSuccessBg
+                  : AppColors.statusWarningBg,
               borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
               border: Border.all(
-                color: passed ? AppColors.brandBorder : AppColors.warningBorder,
+                color: passed
+                    ? AppColors.statusSuccessBorder
+                    : AppColors.statusWarningBorder,
               ),
             ),
             child: Column(
               children: [
                 Text(
                   '${formatScoreValue(_score)}/${widget.subject.totalQuestions}',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
+                  style: AppTypography.statValue.copyWith(
+                    fontSize: 22,
                     color: passed
-                        ? AppColors.brandGreenDark
-                        : AppColors.warningText,
+                        ? AppColors.statusSuccess
+                        : AppColors.statusWarning,
                   ),
                 ),
-                Text(
-                  '${percentage.toStringAsFixed(1)}%',
-                  style: TextStyle(
-                    fontSize: 12,
+                AnimatedPercentText(
+                  value: percentage.round(),
+                  style: AppTypography.captionMuted.copyWith(
+                    fontWeight: FontWeight.w700,
                     color: passed
                         ? AppColors.brandGreen
-                        : AppColors.warningAccent,
+                        : AppColors.statusWarning,
                   ),
                 ),
               ],
@@ -325,25 +321,36 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
   Widget _buildReviewWarning() {
     final confidencePercent = (widget.confidence * 100).toStringAsFixed(0);
     final warningText = widget.reviewReasons.isEmpty
-        ? 'Scan confidence: $confidencePercent% - Please review highlighted answers'
+        ? 'Scan confidence: $confidencePercent% — please review highlighted answers'
         : [
             'Scan confidence: $confidencePercent%',
             ...widget.reviewReasons,
           ].join('\n');
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      color: Colors.amber.shade50,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.statusWarningBg,
+        border: const Border(
+          bottom: BorderSide(color: AppColors.statusWarningBorder),
+        ),
+      ),
       child: Row(
         children: [
-          Icon(Icons.warning_amber_rounded,
-              color: Colors.amber.shade700, size: 20),
+          const Icon(
+            Icons.warning_amber_rounded,
+            color: AppColors.statusWarning,
+            size: 20,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               warningText,
-              style: TextStyle(
-                color: Colors.amber.shade900,
+              style: AppTypography.captionMuted.copyWith(
+                color: AppColors.warningText,
                 fontSize: 13,
               ),
             ),
@@ -391,35 +398,38 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
     Color answerColor;
 
     if (!hasAnswer) {
-      backgroundColor = Colors.grey.shade100;
-      borderColor = Colors.grey.shade300;
-      answerColor = Colors.grey.shade400;
+      backgroundColor = AppColors.neutralFill;
+      borderColor = AppColors.borderSubtle;
+      answerColor = AppColors.neutralMuted;
     } else if (isFullyCorrect) {
-      backgroundColor = AppColors.brandSurface;
+      backgroundColor = AppColors.statusSuccessBg;
       borderColor =
-          wasEdited ? AppColors.brandGreen : AppColors.brandBorder;
-      answerColor = AppColors.brandGreenDark;
+          wasEdited ? AppColors.brandGreen : AppColors.statusSuccessBorder;
+      answerColor = AppColors.statusSuccess;
     } else if (isPartiallyCorrect) {
-      backgroundColor = Colors.amber.shade50;
-      borderColor = wasEdited ? AppColors.brandGreen : Colors.amber.shade300;
-      answerColor = Colors.amber.shade800;
+      backgroundColor = AppColors.statusWarningBg;
+      borderColor =
+          wasEdited ? AppColors.brandGreen : AppColors.statusWarningBorder;
+      answerColor = AppColors.warningText;
     } else {
-      backgroundColor = Colors.red.shade50;
-      borderColor = wasEdited ? AppColors.brandGreen : Colors.red.shade300;
-      answerColor = Colors.red.shade700;
+      backgroundColor = AppColors.statusDangerBg;
+      borderColor =
+          wasEdited ? AppColors.brandGreen : AppColors.statusDangerBorder;
+      answerColor = AppColors.statusDanger;
     }
 
     return GestureDetector(
       onTap: () => _showAnswerPicker(questionNumber),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         decoration: BoxDecoration(
           color: backgroundColor,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
           border: Border.all(
             color: borderColor,
             width: wasEdited ? 2 : 1,
           ),
+          boxShadow: isFlagged ? AppShadows.glow(AppColors.cautionAccent, alpha: 0.15) : null,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -430,19 +440,17 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
               children: [
                 Text(
                   'Q$questionNumber',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey.shade600,
-                    fontWeight: FontWeight.w500,
+                  style: AppTypography.captionMuted.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
                 if (isFlagged)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 2),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 2),
                     child: Icon(
-                      Icons.flag,
+                      Icons.flag_rounded,
                       size: 10,
-                      color: Colors.amber.shade700,
+                      color: AppColors.statusWarning,
                     ),
                   ),
                 if (wasEdited)
@@ -469,18 +477,17 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
               isPartiallyCorrect
                   ? Text(
                       '${awardedCredit.toStringAsFixed(1)} pt',
-                      style: TextStyle(
-                        fontSize: 10,
+                      style: AppTypography.captionMuted.copyWith(
                         fontWeight: FontWeight.w700,
-                        color: Colors.amber.shade800,
+                        color: AppColors.statusWarning,
                       ),
                     )
                   : Icon(
-                      isFullyCorrect ? Icons.check : Icons.close,
+                      isFullyCorrect ? Icons.check_rounded : Icons.close_rounded,
                       size: 14,
                       color: isFullyCorrect
-                          ? Colors.green.shade600
-                          : Colors.red.shade600,
+                          ? AppColors.statusSuccess
+                          : AppColors.statusDanger,
                     ),
           ],
         ),
@@ -529,15 +536,14 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.green.shade50,
-                        borderRadius: BorderRadius.circular(4),
+                        color: AppColors.statusSuccessBg,
+                        borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
                         'Key: ${correctAnswers.join(", ")}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.green.shade700,
-                          fontWeight: FontWeight.w500,
+                        style: AppTypography.captionMuted.copyWith(
+                          color: AppColors.statusSuccess,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
@@ -554,7 +560,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                 const SizedBox(height: 4),
                 const Text(
                   'Tap all shaded choices, then apply.',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                  style: AppTypography.captionMuted,
                 ),
               ],
               const SizedBox(height: 12),
@@ -637,14 +643,18 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
         decoration: BoxDecoration(
           color: isSelected
               ? (isCorrect
-                  ? Colors.green.shade100
+                  ? AppColors.statusSuccessBg
                   : AppColors.brandSurface)
-              : (isCorrect ? Colors.green.shade50 : Colors.grey.shade100),
+              : (isCorrect
+                  ? AppColors.statusSuccessBg
+                  : AppColors.neutralFill),
           shape: BoxShape.circle,
           border: Border.all(
             color: isSelected
-                ? (isCorrect ? Colors.green : AppColors.brandGreen)
-                : (isCorrect ? Colors.green.shade300 : Colors.grey.shade300),
+                ? (isCorrect ? AppColors.statusSuccess : AppColors.brandGreen)
+                : (isCorrect
+                    ? AppColors.statusSuccessBorder
+                    : AppColors.borderSubtle),
             width: isSelected ? 3 : 1,
           ),
         ),
@@ -653,8 +663,10 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
             letter,
             style: TextStyle(
               fontSize: 22,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              color: isCorrect ? Colors.green.shade700 : Colors.grey.shade700,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+              color: isCorrect
+                  ? AppColors.statusSuccess
+                  : AppColors.brandMuted,
             ),
           ),
         ),
@@ -674,16 +686,10 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
     final blank = widget.subject.totalQuestions - _editedAnswers.length;
 
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.1),
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        boxShadow: AppShadows.soft,
       ),
       child: SafeArea(
         child: Column(
@@ -694,13 +700,14 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
               spacing: 16,
               runSpacing: 8,
               children: [
+                _buildStatChip(Icons.check_circle_rounded, '$correct',
+                    'Correct', AppColors.statusSuccess),
+                _buildStatChip(Icons.adjust_rounded, '$partial', 'Partial',
+                    AppColors.statusWarning),
                 _buildStatChip(
-                    Icons.check_circle, '$correct', 'Correct', Colors.green),
-                _buildStatChip(
-                    Icons.adjust_rounded, '$partial', 'Partial', Colors.amber),
-                _buildStatChip(Icons.cancel, '$wrong', 'Wrong', Colors.red),
-                _buildStatChip(Icons.remove_circle_outline, '$blank', 'Blank',
-                    Colors.grey),
+                    Icons.cancel_rounded, '$wrong', 'Wrong', AppColors.statusDanger),
+                _buildStatChip(Icons.remove_circle_outline_rounded, '$blank',
+                    'Blank', AppColors.neutralMuted),
                 if (_hasChanges)
                   _buildStatChip(
                       Icons.edit, '', 'Edited', AppColors.brandGreen),
@@ -756,10 +763,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
         ),
         Text(
           label,
-          style: TextStyle(
-            fontSize: 11,
-            color: Colors.grey.shade600,
-          ),
+          style: AppTypography.captionMuted,
         ),
       ],
     );

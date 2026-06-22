@@ -1,13 +1,17 @@
-import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:csv/csv.dart';
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/utils/academic_term.dart';
+import 'package:omr_app/utils/roster_columns.dart';
+import 'package:omr_app/utils/roster_spreadsheet.dart';
+import 'package:omr_app/utils/student_identity.dart';
 
 /// Progress callback for import operations
 typedef ImportProgressCallback = void Function(
@@ -89,7 +93,60 @@ class ImportPreview {
   ImportPreview replaceRosterPreview() => ImportService._replaceRosterPreview(this);
 }
 
+Section _importSection(String name, {String? ownerTeacherId}) {
+  return Section(
+    name: name,
+    ownerTeacherId: ownerTeacherId,
+    schoolYear: AcademicTerm.schoolYearForDate(),
+    termLabel: AcademicTerm.defaultTermLabel(),
+  );
+}
+
 class ImportService {
+  static String _extensionFromName(String fileName) {
+    final dot = fileName.lastIndexOf('.');
+    if (dot <= 0 || dot >= fileName.length - 1) {
+      return '';
+    }
+    return fileName.substring(dot + 1).toLowerCase();
+  }
+
+  static Future<Uint8List?> _readPickedFileBytes(PlatformFile file) async {
+    if (file.bytes != null) {
+      return file.bytes;
+    }
+
+    if (!kIsWeb && file.path != null && file.path!.isNotEmpty) {
+      return File(file.path!).readAsBytes();
+    }
+
+    return null;
+  }
+
+  static Future<List<List<dynamic>>> _rowsFromPickedFile(PlatformFile file) async {
+    final bytes = await _readPickedFileBytes(file);
+    if (bytes == null || bytes.isEmpty) {
+      throw const FormatException(
+        'Could not read the selected file. Try saving as .xlsx or .csv and pick it again.',
+      );
+    }
+
+    try {
+      return RosterSpreadsheetDecoder.decode(
+        bytes: bytes,
+        extension: file.extension?.toLowerCase() ?? _extensionFromName(file.name),
+        fileName: file.name,
+      );
+    } on FormatException {
+      rethrow;
+    } catch (error) {
+      debugPrint('Roster file decode failed: $error');
+      throw const FormatException(
+        'Could not read that roster file. Save as .xlsx or .csv with Student ID, Name, and Section.',
+      );
+    }
+  }
+
   static String _buildOmrId(
     String schoolId, {
     required Set<String> reservedOmrIds,
@@ -103,6 +160,7 @@ class ImportService {
     ImportProgressCallback? onProgress,
   }) async {
     try {
+      await LocalDataStore.instance.reloadForCurrentTeacher();
       final result = await FilePicker.platform.pickFiles(
         dialogTitle: 'Select Student Roster (.xlsx or .csv)',
         type: FileType.custom,
@@ -115,31 +173,25 @@ class ImportService {
       }
 
       final file = result.files.first;
-      final extension = file.extension?.toLowerCase();
-      final bytes = file.bytes;
+      final bytes = await _readPickedFileBytes(file);
 
-      if (bytes == null || extension == null) {
+      if (bytes == null || bytes.isEmpty) {
         return ImportSummary(
           imported: 0,
           skipped: 1,
           duplicates: 0,
           fileName: file.name,
+          errors: const [
+            'Could not read the selected file. Try saving as .xlsx or .csv and pick it again.',
+          ],
         );
       }
 
-      if (extension == 'csv') {
-        return await _importCsv(bytes, file.name, onProgress: onProgress);
-      }
-
-      if (extension == 'xlsx') {
-        return await _importExcel(bytes, file.name, onProgress: onProgress);
-      }
-
-      return ImportSummary(
-        imported: 0,
-        skipped: 1,
-        duplicates: 0,
+      return await _importFromBytes(
+        bytes,
         fileName: file.name,
+        extension: file.extension?.toLowerCase() ?? _extensionFromName(file.name),
+        onProgress: onProgress,
       );
     } catch (error) {
       debugPrint('Import error: $error');
@@ -162,34 +214,14 @@ class ImportService {
     }
 
     final file = result.files.first;
-    final extension = file.extension?.toLowerCase();
-    final bytes = file.bytes;
 
-    if (bytes == null || extension == null) {
-      throw const FormatException('Could not read the selected file.');
+    try {
+      final rows = await _rowsFromPickedFile(file);
+      final batch = _prepareImportRows(rows, fileName: file.name);
+      return ImportPreview._(batch);
+    } on FormatException catch (error) {
+      throw FormatException(error.message);
     }
-
-    List<List<dynamic>> rows;
-    if (extension == 'csv') {
-      final csvString = utf8.decode(bytes);
-      rows = const CsvToListConverter(shouldParseNumbers: false)
-          .convert(csvString);
-    } else if (extension == 'xlsx') {
-      final excel = Excel.decodeBytes(bytes);
-      rows = const <List<dynamic>>[];
-      for (final tableName in excel.tables.keys) {
-        final sheet = excel.tables[tableName];
-        if (sheet != null && sheet.rows.isNotEmpty) {
-          rows = sheet.rows;
-          break;
-        }
-      }
-    } else {
-      throw const FormatException('Unsupported file type.');
-    }
-
-    final batch = _prepareImportRows(rows, fileName: file.name);
-    return ImportPreview._(batch);
   }
 
   static ImportPreview _replaceRosterPreview(ImportPreview preview) {
@@ -203,13 +235,25 @@ class ImportService {
     );
   }
 
+  static ImportPreview refreshPreview(ImportPreview preview) {
+    return ImportPreview._(
+      _prepareImportRows(
+        preview._batch.rows,
+        fileName: preview._batch.summary.fileName,
+        hasHeader: preview._batch.hasHeader,
+      ),
+    );
+  }
+
   /// Commits a previously prepared import to local storage and memory.
   static Future<ImportSummary> commitImport(
     ImportPreview preview, {
     bool replaceRoster = false,
   }) async {
     await LocalDataStore.instance.reloadForCurrentTeacher();
-    final effective = replaceRoster ? preview.replaceRosterPreview() : preview;
+    final effective = replaceRoster
+        ? preview.replaceRosterPreview()
+        : refreshPreview(preview);
     await LocalDataStore.instance.saveImportedStudents(
       students: effective._batch.students,
       sections: effective._batch.sections,
@@ -252,29 +296,18 @@ class ImportService {
       if (result == null || result.files.isEmpty) return null;
 
       final file = result.files.first;
-      final extension = file.extension?.toLowerCase();
-      final bytes = file.bytes;
+      final bytes = await _readPickedFileBytes(file);
 
-      if (bytes == null) return null;
+      if (bytes == null || bytes.isEmpty) return null;
 
-      if (extension == 'csv') {
-        final csvString = utf8.decode(bytes);
-        final rows = const CsvToListConverter(shouldParseNumbers: false)
-            .convert(csvString);
-        return rows.length - 1; // Subtract header
-      }
-
-      if (extension == 'xlsx') {
-        final excel = Excel.decodeBytes(bytes);
-        for (final tableName in excel.tables.keys) {
-          final sheet = excel.tables[tableName];
-          if (sheet != null) {
-            return sheet.rows.length - 1;
-          }
-        }
-      }
-
-      return null;
+      final rows = RosterSpreadsheetDecoder.decode(
+        bytes: bytes,
+        extension: file.extension?.toLowerCase() ?? _extensionFromName(file.name),
+        fileName: file.name,
+      );
+      final headerIndex = RosterColumnMap.detectHeaderRow(rows, _readCell);
+      final dataRows = headerIndex == -1 ? rows.length : rows.length - headerIndex - 1;
+      return dataRows > 0 ? dataRows : rows.length;
     } catch (e) {
       debugPrint('Preview error: $e');
       return null;
@@ -318,7 +351,7 @@ class ImportService {
     final ownerTeacherId = SupabaseService.currentUserId;
 
     final existingStudentIds = globalStudentDatabase
-        .map((student) => _normalizeStudentId(student.schoolId))
+        .map((student) => normalizeSchoolId(student.schoolId))
         .where((value) => value.isNotEmpty)
         .toSet();
     final assignedOmrIds = globalStudentDatabase
@@ -340,79 +373,27 @@ class ImportService {
     int startIndex = hasHeader ? 1 : 0;
     int headerRowIndex = -1;
     List<String> header = const [];
+    RosterColumnMap? columnMap;
 
     if (hasHeader && rowList.isNotEmpty) {
-      headerRowIndex = _detectHeaderRow(rowList);
+      headerRowIndex = RosterColumnMap.detectHeaderRow(rowList, _readCell);
       if (headerRowIndex != -1) {
         header = rowList[headerRowIndex]
-            .map((cell) => _normalizeHeader(_readCell(cell)))
+            .map((cell) => RosterColumnMap.normalizeHeader(_readCell(cell)))
             .toList();
         startIndex = headerRowIndex + 1;
+        columnMap = RosterColumnMap.fromHeader(header);
       }
     }
 
-    if (header.isNotEmpty) {
-      int findIndex(List<String> keys) {
-        for (final key in keys) {
-          final idx = header.indexOf(key);
-          if (idx != -1) {
-            return idx;
-          }
-        }
-        return -1;
-      }
+    columnMap ??= RosterColumnMap.inferFromRows(rowList, _readCell, startIndex: startIndex);
 
-      final idIdx = findIndex(const [
-        'student id',
-        'studentid',
-        'school id',
-        'schoolid',
-        'id',
-        'student number',
-        'studentno',
-        'student no',
-      ]);
-      final nameIdx = findIndex(const [
-        'name',
-        'student name',
-        'fullname',
-        'full name',
-      ]);
-      final sectionIdx = findIndex(const [
-        'section',
-        'section name',
-        'class',
-        'class section',
-        'year & section',
-        'year and section',
-        'yr & section',
-        'yr and section',
-        'course',
-        'block',
-        'group',
-      ]);
-      firstNameIndex = findIndex(const [
-        'first name',
-        'firstname',
-        'given name',
-        'given',
-      ]);
-      lastNameIndex = findIndex(const [
-        'last name',
-        'lastname',
-        'surname',
-        'family name',
-      ]);
-
-      if (idIdx != -1) {
-        schoolIdIndex = idIdx;
-      }
-      if (nameIdx != -1) {
-        nameIndex = nameIdx;
-      }
-      if (sectionIdx != -1) {
-        sectionIndex = sectionIdx;
-      }
+    if (columnMap != null) {
+      schoolIdIndex = columnMap.schoolIdIndex;
+      nameIndex = columnMap.nameIndex;
+      sectionIndex = columnMap.sectionIndex;
+      firstNameIndex = columnMap.firstNameIndex;
+      lastNameIndex = columnMap.lastNameIndex;
     }
 
     for (int index = startIndex; index < rowList.length; index++) {
@@ -423,9 +404,8 @@ class ImportService {
         onProgress(index - startIndex, totalRows - startIndex, null);
       }
 
-      if (row.length < 3 ||
+      if (row.length < 2 ||
           schoolIdIndex >= row.length ||
-          sectionIndex >= row.length ||
           (nameIndex >= row.length &&
               (firstNameIndex == -1 || lastNameIndex == -1))) {
         skipped++;
@@ -440,7 +420,9 @@ class ImportService {
           ? _readCell(row[nameIndex])
           : '${_readCell(row[firstNameIndex])} ${_readCell(row[lastNameIndex])}'
               .trim();
-      final section = _normalizeSectionName(_readCell(row[sectionIndex]));
+      final section = sectionIndex < row.length
+          ? _normalizeSectionName(_readCell(row[sectionIndex]))
+          : '';
 
       if (schoolId.isEmpty || name.isEmpty) {
         skipped++;
@@ -452,7 +434,7 @@ class ImportService {
 
       final resolvedSection = section.isEmpty ? 'UNASSIGNED' : section;
 
-      final studentKey = _normalizeStudentId(schoolId);
+      final studentKey = normalizeSchoolId(schoolId);
       fileSchoolIds.add(studentKey);
 
       // Match roster rows by Student ID (school ID). OMR IDs are app-assigned
@@ -464,7 +446,7 @@ class ImportService {
 
       final existingMatches = globalStudentDatabase
           .where(
-            (student) => _normalizeStudentId(student.schoolId) == studentKey,
+            (student) => normalizeSchoolId(student.schoolId) == studentKey,
           )
           .toList();
       final existingStudent =
@@ -473,7 +455,7 @@ class ImportService {
       if (existingStudent != null) {
         sectionsByName.putIfAbsent(
           resolvedSection,
-          () => Section(name: resolvedSection, ownerTeacherId: ownerTeacherId),
+          () => _importSection(resolvedSection, ownerTeacherId: ownerTeacherId),
         );
 
         final sameName = existingStudent.name.trim() == name.trim();
@@ -517,7 +499,7 @@ class ImportService {
       importedStudents.add(newStudent);
       sectionsByName.putIfAbsent(
         resolvedSection,
-        () => Section(name: resolvedSection, ownerTeacherId: ownerTeacherId),
+        () => _importSection(resolvedSection, ownerTeacherId: ownerTeacherId),
       );
       existingStudentIds.add(studentKey);
       assignedOmrIds.add(newStudent.omrId);
@@ -533,7 +515,7 @@ class ImportService {
         ? globalStudentDatabase
             .where(
               (student) =>
-                  !fileSchoolIds.contains(_normalizeStudentId(student.schoolId)),
+                  !fileSchoolIds.contains(normalizeSchoolId(student.schoolId)),
             )
             .toList()
         : const <Student>[];
@@ -559,78 +541,49 @@ class ImportService {
     );
   }
 
-  static Future<ImportSummary> _importCsv(
-    Uint8List bytes,
-    String fileName, {
-    ImportProgressCallback? onProgress,
-  }) async {
-    final csvString = utf8.decode(bytes);
-    final rows = const CsvToListConverter(
-      shouldParseNumbers: false,
-    ).convert(csvString);
-
-    if (rows.isEmpty) {
-      return ImportSummary(
-        imported: 0,
-        skipped: 0,
-        duplicates: 0,
-        fileName: fileName,
-      );
-    }
-
-    final batch = _prepareImportRows(
-      rows,
-      fileName: fileName,
-      onProgress: onProgress,
-    );
-    await LocalDataStore.instance.saveImportedStudents(
-      students: batch.students,
-      sections: batch.sections,
-    );
-    debugPrint(
-      'Import complete (${batch.summary.fileName}): ${batch.summary.feedbackMessage}',
-    );
-    return batch.summary;
-  }
-
-  static Future<ImportSummary> _importExcel(
-    Uint8List bytes,
-    String fileName, {
+  static Future<ImportSummary> _importFromBytes(
+    Uint8List bytes, {
+    required String fileName,
+    required String extension,
     ImportProgressCallback? onProgress,
   }) async {
     try {
-      final excel = Excel.decodeBytes(bytes);
-
-      for (final tableName in excel.tables.keys) {
-        final sheet = excel.tables[tableName];
-        if (sheet == null) {
-          continue;
-        }
-
-        final batch = _prepareImportRows(
-          sheet.rows,
-          fileName: fileName,
-          onProgress: onProgress,
-        );
-        await LocalDataStore.instance.saveImportedStudents(
-          students: batch.students,
-          sections: batch.sections,
-        );
-        debugPrint(
-          'Import complete (${batch.summary.fileName}): ${batch.summary.feedbackMessage}',
-        );
-        return batch.summary;
-      }
-
-      return ImportSummary(
-        imported: 0,
-        skipped: 0,
-        duplicates: 0,
+      final rows = RosterSpreadsheetDecoder.decode(
+        bytes: bytes,
+        extension: extension,
         fileName: fileName,
       );
-    } catch (error) {
-      debugPrint('Excel parsing error: $error');
+
+      if (rows.isEmpty) {
+        return ImportSummary(
+          imported: 0,
+          skipped: 0,
+          duplicates: 0,
+          fileName: fileName,
+          errors: const ['The file has no student rows.'],
+        );
+      }
+
+      final batch = _prepareImportRows(
+        rows,
+        fileName: fileName,
+        onProgress: onProgress,
+      );
+      await LocalDataStore.instance.saveImportedStudents(
+        students: batch.students,
+        sections: batch.sections,
+      );
+      debugPrint(
+        'Import complete (${batch.summary.fileName}): ${batch.summary.feedbackMessage}',
+      );
+      return batch.summary;
+    } on FormatException {
       rethrow;
+    } catch (error) {
+      debugPrint('Roster import failed: $error');
+      throw const FormatException(
+        'Could not read that roster file. Save as .xlsx or .csv with Student ID, Name, and Section.',
+      );
     }
   }
 
@@ -641,41 +594,7 @@ class ImportService {
     return value?.toString().trim().replaceAll('\n', ' ') ?? '';
   }
 
-  static String _normalizeStudentId(String value) => value.trim().toUpperCase();
-
   static String _normalizeSectionName(String value) => normalizeSectionName(value);
-
-  static String _normalizeHeader(String value) =>
-      value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9 ]'), '');
-
-  static int _detectHeaderRow(List<List<dynamic>> rows) {
-    final maxRows = rows.length < 5 ? rows.length : 5;
-    int bestIndex = -1;
-    int bestScore = 0;
-
-    for (var i = 0; i < maxRows; i++) {
-      final normalized =
-          rows[i].map((cell) => _normalizeHeader(_readCell(cell))).toList();
-      int score = 0;
-      if (normalized.any((cell) => cell.contains('id'))) {
-        score++;
-      }
-      if (normalized.any((cell) => cell.contains('name'))) {
-        score++;
-      }
-      if (normalized
-          .any((cell) => cell.contains('section') || cell.contains('class'))) {
-        score++;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = i;
-      }
-    }
-
-    return bestScore >= 2 ? bestIndex : -1;
-  }
 
   static void _applyPreparedImportToMemory(_PreparedImportBatch batch) {
     for (final section in batch.sections) {

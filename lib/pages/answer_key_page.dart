@@ -8,6 +8,7 @@ import 'package:omr_app/pages/answer_sheet_generator.dart' as generator;
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 
 enum AnswerKeyEditorAction { updated, deleted }
@@ -610,7 +611,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Please create a Section before saving a subject"),
-          backgroundColor: Colors.orange,
+          backgroundColor: AppColors.warningAccent,
         ),
       );
       return;
@@ -677,7 +678,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.orange,
+        backgroundColor: AppColors.warningAccent,
       ),
     );
   }
@@ -893,67 +894,29 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       return;
     }
 
-    final linkedScans = findScansBySubject(subject.id).length;
-    final linkedDeadlines = globalDeadlines
-        .where((deadline) => deadline.subjectId == subject.id)
-        .length;
-    final sections = List<String>.from(subject.sectionNames ?? const <String>[])
-      ..sort();
-
-    final confirmed = await showDialog<bool>(
+    final sectionFocus = widget.editSectionFocus;
+    final choice = await showAnswerKeyDeleteDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Answer Key?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'This will permanently delete the answer key for ${subject.displayName}.',
-            ),
-            if (sections.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Assigned sections: ${sections.join(', ')}',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ],
-            if (linkedScans > 0) ...[
-              const SizedBox(height: 12),
-              Text(
-                '$linkedScans saved scan result${linkedScans == 1 ? '' : 's'} tied to this answer key will also be removed.',
-              ),
-            ],
-            if (linkedDeadlines > 0) ...[
-              const SizedBox(height: 8),
-              Text(
-                '$linkedDeadlines related deadline${linkedDeadlines == 1 ? '' : 's'} will also be removed.',
-              ),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+      subject: subject,
+      sectionName: sectionFocus,
     );
-
-    if (confirmed != true || !mounted) {
+    if (choice == AnswerKeyDeleteChoice.cancelled || !mounted) {
       return;
     }
 
-    final summary = await LocalDataStore.instance.deleteSubjectCascade(subject);
+    final SubjectDeletionSummary summary;
+    if (choice == AnswerKeyDeleteChoice.sectionOnly) {
+      if (sectionFocus == null) {
+        return;
+      }
+      summary = await LocalDataStore.instance.deleteSubjectFromSection(
+        subject: subject,
+        sectionName: sectionFocus,
+      );
+    } else {
+      summary = await LocalDataStore.instance.deleteSubjectCascade(subject);
+    }
+
     if (!mounted) {
       return;
     }
@@ -1558,7 +1521,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
               Text(
                 "âš ï¸ This will remove $answersToLose answer(s) for questions "
                 "${newCount + 1}-$_questionCount.",
-                style: const TextStyle(color: Colors.orange),
+                style: const TextStyle(color: AppColors.warningAccent),
               ),
               const SizedBox(height: 12),
             ],
@@ -1663,7 +1626,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
               ),
           ],
         ),
-        backgroundColor: layoutChanged ? AppColors.brandGreenDark : Colors.orange,
+        backgroundColor: layoutChanged ? AppColors.brandGreenDark : AppColors.warningAccent,
         duration: const Duration(seconds: 4),
       ),
     );
