@@ -1359,6 +1359,7 @@ class OmrProcessor {
      * Apply perspective transform to get a properly aligned image
      */
     private fun applyPerspectiveTransform(srcMat: Mat, corners: DetectedCorners): Mat {
+        val markerCenterOffset = CORNER_OFFSET + (CORNER_MARKER_SIZE / 2.0)
         val srcPoints = MatOfPoint2f(
             corners.topLeft,
             corners.topRight,
@@ -1367,10 +1368,10 @@ class OmrProcessor {
         )
         
         val dstPoints = MatOfPoint2f(
-            Point(0.0, 0.0),
-            Point(OUTPUT_WIDTH.toDouble(), 0.0),
-            Point(OUTPUT_WIDTH.toDouble(), OUTPUT_HEIGHT.toDouble()),
-            Point(0.0, OUTPUT_HEIGHT.toDouble())
+            Point(markerCenterOffset, markerCenterOffset),
+            Point(OUTPUT_WIDTH - markerCenterOffset, markerCenterOffset),
+            Point(OUTPUT_WIDTH - markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
+            Point(markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset)
         )
         
         val transformMatrix = Imgproc.getPerspectiveTransform(srcPoints, dstPoints)

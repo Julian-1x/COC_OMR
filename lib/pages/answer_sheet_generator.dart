@@ -717,7 +717,7 @@ class AnswerSheetGenerator {
               pw.SizedBox(height: 2),
               pw.Text(
                 'Fill one bubble per question. Use a dark pencil (HB or 2B).',
-                style: pw.TextStyle(fontSize: 7.2, color: _mutedInk),
+                style: const pw.TextStyle(fontSize: 7.2, color: _mutedInk),
               ),
             ],
           ),
@@ -869,7 +869,7 @@ class AnswerSheetGenerator {
         children: [
           pw.Text(
             'Lay flat, good lighting, dark pencil. Edge marks are for scanning — do not mark them.',
-            style: pw.TextStyle(fontSize: 5.8, color: _mutedInk),
+            style: const pw.TextStyle(fontSize: 5.8, color: _mutedInk),
           ),
         ],
       ),

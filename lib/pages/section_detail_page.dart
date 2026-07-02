@@ -270,9 +270,9 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               ),
               const SizedBox(height: 12),
               if (availableSubjects.isEmpty)
-                AppCard(
-                  padding: const EdgeInsets.all(18),
-                  child: const Text(
+                const AppCard(
+                  padding: EdgeInsets.all(18),
+                  child: Text(
                     'All available subjects are already assigned to this section.',
                     style: TextStyle(
                       color: brandMuted,

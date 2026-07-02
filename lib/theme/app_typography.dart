@@ -3,7 +3,7 @@ import 'package:omr_app/theme/app_colors.dart';
 
 /// Named text styles for consistent typography across the app.
 abstract final class AppTypography {
-  static TextTheme textTheme = TextTheme(
+  static TextTheme textTheme = const TextTheme(
     displaySmall: pageTitle,
     headlineSmall: sectionTitle,
     titleLarge: cardTitle,

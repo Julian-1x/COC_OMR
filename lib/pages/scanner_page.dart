@@ -2103,9 +2103,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              const Text(
                 'Session progress',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                   color: AppColors.brandText,
@@ -2113,7 +2113,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 4),
               Text(
-                '${_sessionScannedCount} of ${roster.length} scanned for ${widget.targetSubject.name}',
+                '$_sessionScannedCount of ${roster.length} scanned for ${widget.targetSubject.name}',
                 style: const TextStyle(color: AppColors.brandMuted),
               ),
               const SizedBox(height: 14),

@@ -1,7 +1,7 @@
 name: omr_app
 description: OMR Scanner App for Cagayan de Oro College
 publish_to: "none"
-version: 1.4.9+38
+version: 1.4.10+39
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:omr_app/pages/dashboard_page.dart';
 import 'package:omr_app/pages/welcome_onboarding_page.dart';
@@ -650,10 +649,10 @@ class _LoginPageState extends State<LoginPage> {
       backgroundColor: AppColors.appCanvas,
       body: SafeArea(
         child: _isLoading
-            ? Center(
+            ? const Center(
                 child: Padding(
-                  padding: const EdgeInsets.all(AppSpacing.lg),
-                  child: const AuthLoadingShell(),
+                  padding: EdgeInsets.all(AppSpacing.lg),
+                  child: AuthLoadingShell(),
                 ),
               )
             : _isPinStage

@@ -167,6 +167,7 @@ Map<String, num> get _iosExpectations => {
       'kOutputW': OmrPageConstants.pageWidth,
       'kOutputH': OmrPageConstants.pageHeight,
       'kCornerMarkerSize': OmrPageConstants.cornerMarkerSize,
+      'kCornerOffset': OmrPageConstants.cornerMarkerOffset,
       'kTimingMarkSize': OmrPageConstants.timingMarkSize,
       'kTimingSpacing': OmrPageConstants.timingMarkSpacing,
       'kTimingEdge': OmrPageConstants.timingMarkEdgeOffset,

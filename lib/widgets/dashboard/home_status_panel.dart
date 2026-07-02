@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_shadows.dart';
-import 'package:omr_app/theme/app_typography.dart';
 import 'package:omr_app/widgets/animated_percent_text.dart';
 
 /// One class row on the home status panel.

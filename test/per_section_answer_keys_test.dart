@@ -35,7 +35,7 @@ void main() {
       _mathForSection('SUB-0002', 'BSIT-1B', {1: ['B']}),
     ];
 
-    final payload = SubjectSheetQrPayload(
+    const payload = SubjectSheetQrPayload(
       version: 2,
       sheetId: 'SHEET-0001',
       subjectId: 'SUB-0002',
@@ -54,7 +54,7 @@ void main() {
       _mathForSection('SUB-0002', 'BSIT-1B', {1: ['B']}),
     ];
 
-    final payload = SubjectSheetQrPayload(
+    const payload = SubjectSheetQrPayload(
       version: 2,
       sheetId: 'SHEET-0002',
       subjectId: '',
@@ -73,7 +73,7 @@ void main() {
       _mathForSection('SUB-0002', 'BSIT-1B', {1: ['B']}),
     ];
 
-    final payload = SubjectSheetQrPayload(
+    const payload = SubjectSheetQrPayload(
       version: 2,
       sheetId: 'SHEET-0003',
       subjectId: '',

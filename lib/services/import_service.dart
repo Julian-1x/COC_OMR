@@ -1,10 +1,8 @@
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/supabase_service.dart';

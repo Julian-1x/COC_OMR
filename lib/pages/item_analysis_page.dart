@@ -393,7 +393,7 @@ class _ItemAnalysisPageState extends State<ItemAnalysisPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
+                              const Text(
                                 'Hardest Questions',
                                 style: TextStyle(
                                   fontWeight: FontWeight.bold,
@@ -476,7 +476,7 @@ class _SummaryCard extends StatelessWidget {
           ),
           Text(
             label,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 11,
               color: AppColors.brandMuted,
             ),
@@ -572,7 +572,7 @@ class _QuestionAnalysisCard extends StatelessWidget {
                           Text(
                             '${analysis.correctCount}/${analysis.totalAttempts} correct'
                             '${analysis.partialCount > 0 ? ' · ${analysis.partialCount} partial' : ''}',
-                            style: TextStyle(
+                            style: const TextStyle(
                               fontSize: 12,
                               color: AppColors.brandMuted,
                             ),
@@ -731,7 +731,7 @@ class _AnswerDistributionBar extends StatelessWidget {
                 ),
                 Text(
                   '${(pct * 100).round()}%',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 10,
                     color: AppColors.brandMuted,
                   ),

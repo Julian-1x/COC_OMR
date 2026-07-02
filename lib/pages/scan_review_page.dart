@@ -249,9 +249,9 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
   Widget _buildHeader(ColorScheme colorScheme, double percentage, bool passed) {
     return Container(
       padding: const EdgeInsets.all(AppSpacing.md),
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         color: Colors.white,
-        border: const Border(
+        border: Border(
           bottom: BorderSide(color: AppColors.borderLight),
         ),
         boxShadow: AppShadows.soft,
@@ -332,9 +332,9 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
         horizontal: AppSpacing.md,
         vertical: AppSpacing.sm,
       ),
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         color: AppColors.statusWarningBg,
-        border: const Border(
+        border: Border(
           bottom: BorderSide(color: AppColors.statusWarningBorder),
         ),
       ),

@@ -67,7 +67,7 @@ class LoadingIndicators {
           const SizedBox(height: 16),
           Text(
             message,
-            style: TextStyle(
+            style: const TextStyle(
               fontSize: 14,
               color: AppColors.brandMuted,
             ),

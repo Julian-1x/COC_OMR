@@ -23,11 +23,14 @@ class LocalDataStore {
   static const String _databaseName = 'omr_app.db';
   static const int _databaseVersion = 6;
   static const String _legacyFileName = 'omr_offline_store.json';
+  static const String _safetyBackupFolderName = 'safety_backups';
+  static const int _maxSafetyBackups = 20;
 
   Timer? _saveDebounce;
   Future<void> _pendingSave = Future<void>.value();
   Database? _database;
   bool _loaded = false;
+  DateTime? _lastSafetyBackupAt;
 
   Future<void> loadIntoMemory() async {
     if (_loaded) {
@@ -526,6 +529,10 @@ class LocalDataStore {
       );
     }
 
+    await _createSafetyBackupIfNeeded(
+      action: 'delete_empty_section_${normalizeSectionName(stored)}',
+    );
+
     await _queueSectionCloudDeletion(stored);
 
     await _enqueueDbWrite(() async {
@@ -567,10 +574,14 @@ class LocalDataStore {
 
     final students = _studentsInSection(stored);
     final omrIds = students.map((student) => student.omrId).toList();
+    await _createSafetyBackupIfNeeded(
+      action: 'archive_section_${normalizeSectionName(stored)}',
+    );
     final removal = await removeStudentsCascade(
       omrIds,
       queueCloudDeletions: false,
       deleteReviewImages: true,
+      createSafetyBackup: false,
     );
 
     final subjects = globalSubjects
@@ -673,7 +684,13 @@ class LocalDataStore {
 
     final students = _studentsInSection(stored);
     final omrIds = students.map((student) => student.omrId).toList();
-    final removal = await removeStudentsCascade(omrIds);
+    await _createSafetyBackupIfNeeded(
+      action: 'delete_section_${normalizeSectionName(stored)}',
+    );
+    final removal = await removeStudentsCascade(
+      omrIds,
+      createSafetyBackup: false,
+    );
 
     final subjects = globalSubjects
         .where((subject) {
@@ -918,6 +935,7 @@ class LocalDataStore {
     List<String> omrIds, {
     bool queueCloudDeletions = true,
     bool deleteReviewImages = false,
+    bool createSafetyBackup = true,
   }) async {
     if (omrIds.isEmpty) {
       return const SectionDeletionSummary(
@@ -950,6 +968,12 @@ class LocalDataStore {
         removedDeadlines: 0,
         removedSection: false,
         removedReviewImages: removedReviewImages,
+      );
+    }
+
+    if (createSafetyBackup) {
+      await _createSafetyBackupIfNeeded(
+        action: 'delete_students_${uniqueIds.length}',
       );
     }
 
@@ -1142,6 +1166,8 @@ class LocalDataStore {
     final affectedStudents =
         removedScans.map((result) => result.studentOmrId).toSet();
 
+    await _createSafetyBackupIfNeeded(action: 'delete_subject_${subject.id}');
+
     await _queueCloudDeletion(
       entityTable: 'subjects',
       cloudId: subject.cloudId,
@@ -1280,6 +1306,10 @@ class LocalDataStore {
       updatedAt: DateTime.now(),
     );
 
+    await _createSafetyBackupIfNeeded(
+      action: 'detach_subject_${subject.id}_$target',
+    );
+
     for (final result in scansToRemove) {
       await _queueCloudDeletion(
         entityTable: 'scan_results',
@@ -1385,6 +1415,8 @@ class LocalDataStore {
       return;
     }
 
+    await _createSafetyBackupIfNeeded(action: 'delete_template_$templateId');
+
     await _enqueueDbWrite(() async {
       final database = await _openDatabase();
       await database.delete(
@@ -1464,6 +1496,8 @@ class LocalDataStore {
       globalDeadlines.removeWhere((entry) => entry.id == deadlineId);
       return;
     }
+
+    await _createSafetyBackupIfNeeded(action: 'delete_deadline_$deadlineId');
 
     await _enqueueDbWrite(() async {
       final database = await _openDatabase();
@@ -2353,6 +2387,76 @@ class LocalDataStore {
     await database.transaction((txn) async {
       await _replaceDatabaseContents(txn, snapshot);
     });
+  }
+
+  Future<void> _createSafetyBackupIfNeeded({required String action}) async {
+    if (kIsWeb) {
+      return;
+    }
+
+    // Avoid creating many files when one user action triggers cascaded deletes.
+    final now = DateTime.now();
+    final last = _lastSafetyBackupAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 2)) {
+      return;
+    }
+
+    try {
+      final payload = <String, dynamic>{
+        'exportFormatVersion': 1,
+        'exportedAt': now.toIso8601String(),
+        'safetyBackup': true,
+        'reason': action,
+        'students': globalStudentDatabase.map((e) => e.toJson()).toList(),
+        'sections': globalSections.map((e) => e.toJson()).toList(),
+        'subjects': globalSubjects.map((e) => e.toJson()).toList(),
+        'scanResults': globalScanResults.map((e) => e.toJson()).toList(),
+        'deadlines': globalDeadlines.map((e) => e.toJson()).toList(),
+        'exportRecords': globalExportRecords.map((e) => e.toJson()).toList(),
+        'answerKeyTemplates':
+            globalAnswerKeyTemplates.map((e) => e.toJson()).toList(),
+        'omrCounter': nextOmrIdValue,
+        'subjectCounter': nextSubjectCounterValue,
+        'sheetCounter': nextSheetCounterValue,
+      };
+
+      final docsDir = await getApplicationDocumentsDirectory();
+      final backupDir = Directory(
+        p.join(docsDir.path, _safetyBackupFolderName),
+      );
+      if (!await backupDir.exists()) {
+        await backupDir.create(recursive: true);
+      }
+
+      final stamp = now.toIso8601String().replaceAll(':', '-');
+      final file = File(p.join(backupDir.path, 'omr_safety_$stamp.json'));
+      await file.writeAsString(const JsonEncoder.withIndent('  ').convert(payload));
+      _lastSafetyBackupAt = now;
+      await _trimSafetyBackups(backupDir);
+    } catch (error) {
+      debugPrint('Safety backup skipped: $error');
+    }
+  }
+
+  Future<void> _trimSafetyBackups(Directory backupDir) async {
+    final entities = await backupDir.list().toList();
+    final files = entities
+        .whereType<File>()
+        .where((file) => p.basename(file.path).startsWith('omr_safety_'))
+        .toList();
+    if (files.length <= _maxSafetyBackups) {
+      return;
+    }
+
+    files.sort((a, b) => a.path.compareTo(b.path));
+    final deleteCount = files.length - _maxSafetyBackups;
+    for (var i = 0; i < deleteCount; i++) {
+      try {
+        await files[i].delete();
+      } catch (_) {
+        // Keep going even if one old backup cannot be removed.
+      }
+    }
   }
 
   Future<void> _enqueueDbWrite(Future<void> Function() action) {

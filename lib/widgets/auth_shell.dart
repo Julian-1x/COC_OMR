@@ -225,12 +225,12 @@ class AuthLoadingShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return const Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const CocSealLogo(size: 112),
-        const SizedBox(height: AppSpacing.lg),
-        const SizedBox(
+        CocSealLogo(size: 112),
+        SizedBox(height: AppSpacing.lg),
+        SizedBox(
           width: 28,
           height: 28,
           child: CircularProgressIndicator(
@@ -238,16 +238,16 @@ class AuthLoadingShell extends StatelessWidget {
             strokeWidth: 3,
           ),
         ),
-        const SizedBox(height: AppSpacing.md),
-        const Text(
+        SizedBox(height: AppSpacing.md),
+        Text(
           'Loading COC OMR Hub...',
           style: TextStyle(
             color: AppColors.brandMuted,
             fontWeight: FontWeight.w600,
           ),
         ),
-        const SizedBox(height: 4),
-        const Text(
+        SizedBox(height: 4),
+        Text(
           'Cagayan de Oro College',
           style: TextStyle(
             color: AppColors.brandMuted,

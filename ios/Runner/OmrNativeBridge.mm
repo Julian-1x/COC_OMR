@@ -14,6 +14,7 @@ namespace {
 constexpr int kOutputW = 595;
 constexpr int kOutputH = 842;
 constexpr double kCornerMarkerSize = 20.0;
+constexpr double kCornerOffset = 8.0;
 constexpr double kTimingMarkSize = 6.0;
 constexpr double kTimingSpacing = 80.0;
 constexpr double kTimingEdge = 8.0;
@@ -103,8 +104,14 @@ Corners *assignCorners(std::vector<cv::Point2f> &cand, double w, double h) {
 }
 
 cv::Mat warpGray(const cv::Mat &gray, const Corners &c) {
+  const float markerCenterOffset = (float)(kCornerOffset + (kCornerMarkerSize / 2.0));
   std::vector<cv::Point2f> src = {c.tl, c.tr, c.br, c.bl};
-  std::vector<cv::Point2f> dst = {{0, 0}, {(float)kOutputW, 0}, {(float)kOutputW, (float)kOutputH}, {0, (float)kOutputH}};
+  std::vector<cv::Point2f> dst = {
+    {markerCenterOffset, markerCenterOffset},
+    {(float)kOutputW - markerCenterOffset, markerCenterOffset},
+    {(float)kOutputW - markerCenterOffset, (float)kOutputH - markerCenterOffset},
+    {markerCenterOffset, (float)kOutputH - markerCenterOffset}
+  };
   cv::Mat M = cv::getPerspectiveTransform(src, dst);
   cv::Mat out;
   cv::warpPerspective(gray, out, M, cv::Size(kOutputW, kOutputH));
