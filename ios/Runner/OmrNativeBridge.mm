@@ -21,7 +21,7 @@ constexpr double kTimingEdge = 8.0;
 constexpr double kMarginTop = 34.0;
 constexpr double kBubbleD = 11.5;
 constexpr double kBubbleBorder = 1.2;
-constexpr double kDefaultFillThresh = 0.40;
+constexpr double kDefaultFillThresh = 0.33;
 constexpr int kOmrCols = 4;
 constexpr int kOmrRows = 10;
 constexpr double kOmrIdTop = 114.0;
@@ -200,7 +200,8 @@ BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double
   cv::Scalar meanI = cv::mean(groi, mask);
   double intFill = 1.0 - (meanI[0] / 255.0);
   BubbleAn a;
-  a.fill = (thFill + intFill) / 2.0;
+  // Weight grayscale intensity more heavily so faint pencil shading is still recognized.
+  a.fill = (thFill * 0.35) + (intFill * 0.65);
   return a;
 }
 
@@ -482,7 +483,7 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   double ef = sampleBubbleFillGray(warped, kCalEmptyX, kCalY);
   debug[@"calibrationFilledSample"] = @(ff);
   debug[@"calibrationEmptySample"] = @(ef);
-  bool calibrated = ff > ef + 0.15;
+  bool calibrated = ff > ef + 0.10;
   if (calibrated) fillTh = (ff + ef) / 2.0;
   debug[@"fillThreshold"] = @(fillTh);
   debug[@"calibrationSuccess"] = @(calibrated);

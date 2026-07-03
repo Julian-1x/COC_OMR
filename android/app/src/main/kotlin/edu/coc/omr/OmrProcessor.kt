@@ -56,7 +56,7 @@ class OmrProcessor {
         // Bubble specifications
         private const val BUBBLE_DIAMETER = 11.5  // points
         private const val BUBBLE_BORDER = 1.2  // points
-        private const val DEFAULT_FILL_THRESHOLD = 0.40  // 40% fill = marked
+        private const val DEFAULT_FILL_THRESHOLD = 0.33  // Slightly more tolerant of light pencil shading
         
         // OMR ID section layout (from OmrPageConstants)
         private const val OMR_ID_COLUMNS = 4
@@ -116,6 +116,13 @@ class OmrProcessor {
         val rowHeight: Double,
         val columnWidth: Double,
         val bubbleSpacingX: Double
+    )
+
+    /** Exam turbo: session-locked layout + faster pipeline without QR per sheet. */
+    data class ProcessConfig(
+        val totalQuestions: Int = 50,
+        val sessionLayout: QrLayoutMetadata? = null,
+        val turboMode: Boolean = false,
     )
     
     // Image quality assessment result
@@ -290,8 +297,17 @@ class OmrProcessor {
      * Main processing entry point - optimized for low-end devices
      */
     fun processImage(imageBytes: ByteArray, totalQuestions: Int = 50): ProcessingResult {
+        return processImage(imageBytes, ProcessConfig(totalQuestions = totalQuestions))
+    }
+
+    fun processImage(imageBytes: ByteArray, config: ProcessConfig): ProcessingResult {
+        val totalQuestions = config.totalQuestions
+        val sessionLayout = config.sessionLayout
+        val turboMode = config.turboMode
         val debugInfo = mutableMapOf<String, Any>()
         val startTime = System.currentTimeMillis()
+        debugInfo["turboMode"] = turboMode
+        debugInfo["layoutFromSession"] = sessionLayout != null
         
         // Validate input size
         if (imageBytes.size > MAX_IMAGE_SIZE_BYTES) {
@@ -306,10 +322,14 @@ class OmrProcessor {
             return errorResult("Device memory too low. Please close other apps and try again.", debugInfo)
         }
         
-        // Determine processing quality based on device capability
-        val quality = determineProcessingQuality()
+        // Turbo keeps corner detection accurate but avoids the slowest quality path.
+        val quality = if (turboMode && sessionLayout != null) {
+            ProcessingQuality.BALANCED
+        } else {
+            determineProcessingQuality()
+        }
         debugInfo["processingQuality"] = quality.name
-        Log.d(TAG, "Using processing quality: $quality")
+        Log.d(TAG, "Using processing quality: $quality (turbo=$turboMode)")
         
         // Mats for cleanup (use nullable for safety)
         var originalMat: Mat? = null
@@ -327,6 +347,7 @@ class OmrProcessor {
 
             debugInfo["imageWidth"] = bitmap.width
             debugInfo["imageHeight"] = bitmap.height
+            debugInfo["decodeMs"] = System.currentTimeMillis() - startTime
             Log.d(TAG, "Image decoded: ${bitmap.width}x${bitmap.height}")
             
             // Check timeout
@@ -362,8 +383,9 @@ class OmrProcessor {
                     "contrast=${String.format("%.2f", imageQuality.contrastScore)}, " +
                     "brightness=${String.format("%.1f", imageQuality.brightnessScore)}")
             
-            if (!imageQuality.isAcceptable) {
-                // Try to enhance the image before giving up
+            val cornersStartMs = System.currentTimeMillis()
+            if (!imageQuality.isAcceptable && !(turboMode && imageQuality.blurScore >= MIN_BLUR_THRESHOLD * 0.5)) {
+                // Try to enhance the image before giving up (skipped in turbo when sharp enough)
                 Log.w(TAG, "Image quality issues: ${imageQuality.issues}. Attempting enhancement...")
                 enhanceImageForLowQualityCamera(grayMat, imageQuality)
                 debugInfo["imageEnhanced"] = true
@@ -385,6 +407,7 @@ class OmrProcessor {
                 listOf(corners.bottomRight.x, corners.bottomRight.y)
             )
             Log.d(TAG, "Corners detected and validated")
+            debugInfo["cornersMs"] = System.currentTimeMillis() - cornersStartMs
             
             // Check timeout
             if (System.currentTimeMillis() - startTime > PROCESSING_TIMEOUT_MS * 2 / 3) {
@@ -392,37 +415,47 @@ class OmrProcessor {
             }
             
             // Step 5: Apply perspective transform
+            val warpStartMs = System.currentTimeMillis()
             warpedMat = applyPerspectiveTransform(grayMat, corners)
             debugInfo["warpedSize"] = "${warpedMat.cols()}x${warpedMat.rows()}"
+            debugInfo["warpMs"] = System.currentTimeMillis() - warpStartMs
             
             // Release grayscale since we have warped
             grayMat.release()
             grayMat = null
             
-            // Step 6: Validate alignment using timing marks (skip in FAST mode)
-            val timingMarkScore = if (quality == ProcessingQuality.FAST) {
-                0.75  // Assume reasonable alignment in fast mode
-            } else {
+            // Step 6: Validate alignment using timing marks
+            val timingMarkScore = if (turboMode || quality != ProcessingQuality.FAST) {
                 validateTimingMarks(warpedMat, debugInfo)
+            } else {
+                0.75
             }
             debugInfo["timingMarkScore"] = timingMarkScore
             if (timingMarkScore < 0.5) {
                 Log.w(TAG, "Low timing mark score: $timingMarkScore - alignment may be off")
             }
             
-            // Step 7: Detect QR code (skip in FAST mode - it's slow)
-            val qrData = if (quality == ProcessingQuality.FAST) {
+            // Step 7: QR decode (skipped when session layout is locked for turbo speed)
+            val qrStartMs = System.currentTimeMillis()
+            val qrData = if (sessionLayout != null) {
+                Log.d(TAG, "Using session-locked layout — skipping QR decode")
+                null
+            } else if (quality == ProcessingQuality.FAST) {
                 Log.d(TAG, "Skipping QR detection in FAST mode")
                 null
             } else {
                 detectQRCode(warpedMat, debugInfo)
             }
+            debugInfo["qrMs"] = System.currentTimeMillis() - qrStartMs
             debugInfo["qrDetected"] = qrData != null
+            debugInfo["qrSkippedForSession"] = sessionLayout != null
             
-            // Step 7.5: Parse layout from QR (v2) or calculate fallback (v1/no QR)
-            val layout = parseQrLayout(qrData) ?: calculateFallbackLayout(totalQuestions)
+            // Step 7.5: Layout from session, QR v2, or fallback
+            val layout = sessionLayout
+                ?: parseQrLayout(qrData)
+                ?: calculateFallbackLayout(totalQuestions)
             debugInfo["layoutTemplate"] = layout.templateId
-            debugInfo["layoutFromQr"] = (layout.templateId != "LEGACY")
+            debugInfo["layoutFromQr"] = sessionLayout == null && layout.templateId != "LEGACY"
             Log.d(TAG, "Using layout: template=${layout.templateId}, cols=${layout.columns}, rows=${layout.rows}")
             
             // Step 8: Auto-calibrate fill threshold using calibration marks in footer
@@ -442,8 +475,8 @@ class OmrProcessor {
                 blockSize, 4.0
             )
             
-            // Step 9.5: Validate template using row marks (v2 sheets only)
-            if (layout.templateId != "LEGACY") {
+            // Step 9.5: Validate template using row marks (skip in turbo when timing marks OK)
+            if (layout.templateId != "LEGACY" && !(turboMode && timingMarkScore >= 0.65)) {
                 val rowMarkValidation = validateRowMarks(warpedMat, layout, debugInfo)
                 debugInfo["rowMarkValidation"] = rowMarkValidation
                 if (rowMarkValidation < 0.6) {
@@ -461,17 +494,20 @@ class OmrProcessor {
             debugInfo["omrIdConfidence"] = omrIdResult.second
             
             // Step 11: Detect answers using layout from QR (v2) or fallback calculation (v1)
+            val bubbleStartMs = System.currentTimeMillis()
             val answersResult = detectAnswersWithLayout(thresholdMat, warpedMat, totalQuestions, layout, fillThreshold, debugInfo)
+            debugInfo["bubbleMs"] = System.currentTimeMillis() - bubbleStartMs
             debugInfo["answersDetected"] = answersResult.first.size
             debugInfo["answersConfidence"] = answersResult.second
             
             // Step 12: Calculate overall confidence
+            val layoutConfirmed = sessionLayout != null || qrData != null
             val confidence = calculateOverallConfidence(
                 timingMarkScore = timingMarkScore,
                 calibrationSuccess = calibration.isCalibrated,
                 omrIdConfidence = omrIdResult.second,
                 answersConfidence = answersResult.second,
-                qrDetected = qrData != null,
+                qrDetected = layoutConfirmed,
                 debugInfo = debugInfo
             )
             
@@ -1510,6 +1546,52 @@ class OmrProcessor {
      * Parse layout metadata from QR payload v2
      * Returns null if QR data is v1 (no layout) or parsing fails
      */
+    private fun parseSessionLayout(raw: Map<*, *>?): QrLayoutMetadata? {
+        if (raw == null || raw.isEmpty()) return null
+
+        fun readDouble(key: String): Double {
+            val value = raw[key] ?: return 0.0
+            return when (value) {
+                is Number -> value.toDouble()
+                else -> value.toString().toDoubleOrNull() ?: 0.0
+            }
+        }
+
+        fun readInt(key: String): Int {
+            val value = raw[key] ?: return 0
+            return when (value) {
+                is Number -> value.toInt()
+                else -> value.toString().toIntOrNull() ?: 0
+            }
+        }
+
+        val templateId = raw["template"]?.toString()?.trim().orEmpty()
+        val columns = readInt("cols")
+        val rows = readInt("rows")
+        val rowHeight = readDouble("rowHeight")
+        val columnWidth = readDouble("colWidth")
+        val bubbleSpacingX = readDouble("bubbleSpacingX")
+
+        if (templateId.isEmpty() || columns <= 0 || rows <= 0 || rowHeight <= 0.0) {
+            return null
+        }
+
+        return QrLayoutMetadata(
+            templateId = templateId,
+            columns = columns,
+            rows = rows,
+            gridTop = readDouble("gridTop").takeIf { it > 0.0 } ?: ANSWER_GRID_TOP,
+            gridBottom = readDouble("gridBottom").takeIf { it > 0.0 } ?: ANSWER_GRID_BOTTOM,
+            rowHeight = rowHeight,
+            columnWidth = columnWidth.takeIf { it > 0.0 } ?: (ANSWER_GRID_WIDTH / columns),
+            bubbleSpacingX = bubbleSpacingX.takeIf { it > 0.0 } ?: 17.0,
+        )
+    }
+
+    /**
+     * Parse layout metadata from QR payload v2
+     * Returns null if QR data is v1 (no layout) or parsing fails
+     */
     private fun parseQrLayout(qrData: String?): QrLayoutMetadata? {
         if (qrData.isNullOrEmpty()) return null
         
@@ -1639,7 +1721,7 @@ class OmrProcessor {
             debugInfo["calibrationY"] = CALIBRATION_Y
             
             // If we got good samples, calculate threshold
-            if (filledFill > emptyFill + 0.15) {
+            if (filledFill > emptyFill + 0.10) {
                 val threshold = (filledFill + emptyFill) / 2
                 Log.d(TAG, "Calibration successful: filled=$filledFill, empty=$emptyFill, threshold=$threshold")
                 return GridCalibration(
@@ -1976,7 +2058,8 @@ class OmrProcessor {
         val intensityFill = 1.0 - (meanIntensity / 255.0)
         
         // Combine both methods (average)
-        val combinedFill = (thresholdFill + intensityFill) / 2
+        // Heavier weight on grayscale intensity helps light pencil shading register.
+        val combinedFill = (thresholdFill * 0.35) + (intensityFill * 0.65)
         
         // Calculate confidence based on consistency between methods
         val consistency = 1.0 - abs(thresholdFill - intensityFill)

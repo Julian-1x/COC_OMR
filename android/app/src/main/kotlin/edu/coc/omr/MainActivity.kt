@@ -200,6 +200,52 @@ class MainActivity: FlutterActivity() {
                         val args = call.arguments as? Map<*, *>
                         val bytes = args?.get("image") as? ByteArray
                         val totalQuestions = (args?.get("totalQuestions") as? Int) ?: 50
+                        val turboMode = args?.get("turboMode") as? Boolean ?: false
+                        val sessionLayoutRaw = args?.get("sessionLayout") as? Map<*, *>
+                        
+                        fun readSessionLayout(raw: Map<*, *>?): OmrProcessor.QrLayoutMetadata? {
+                            if (raw == null || raw.isEmpty()) return null
+                            fun readDouble(key: String): Double {
+                                val value = raw[key] ?: return 0.0
+                                return when (value) {
+                                    is Number -> value.toDouble()
+                                    else -> value.toString().toDoubleOrNull() ?: 0.0
+                                }
+                            }
+                            fun readInt(key: String): Int {
+                                val value = raw[key] ?: return 0
+                                return when (value) {
+                                    is Number -> value.toInt()
+                                    else -> value.toString().toIntOrNull() ?: 0
+                                }
+                            }
+                            val templateId = raw["template"]?.toString()?.trim().orEmpty()
+                            val columns = readInt("cols")
+                            val rows = readInt("rows")
+                            val rowHeight = readDouble("rowHeight")
+                            if (templateId.isEmpty() || columns <= 0 || rows <= 0 || rowHeight <= 0.0) {
+                                return null
+                            }
+                            val columnWidth = readDouble("colWidth")
+                            val bubbleSpacingX = readDouble("bubbleSpacingX")
+                            return OmrProcessor.QrLayoutMetadata(
+                                templateId = templateId,
+                                columns = columns,
+                                rows = rows,
+                                gridTop = readDouble("gridTop").takeIf { it > 0.0 } ?: 276.0,
+                                gridBottom = readDouble("gridBottom").takeIf { it > 0.0 } ?: 770.0,
+                                rowHeight = rowHeight,
+                                columnWidth = columnWidth.takeIf { it > 0.0 }
+                                    ?: (539.0 / columns),
+                                bubbleSpacingX = bubbleSpacingX.takeIf { it > 0.0 } ?: 17.0,
+                            )
+                        }
+
+                        val config = OmrProcessor.ProcessConfig(
+                            totalQuestions = totalQuestions,
+                            sessionLayout = readSessionLayout(sessionLayoutRaw),
+                            turboMode = turboMode,
+                        )
                         
                         if (bytes == null || bytes.isEmpty()) {
                             isProcessing.set(false)
@@ -225,7 +271,7 @@ class MainActivity: FlutterActivity() {
                         
                         processingScope.launch {
                             try {
-                                val processingResult = omrProcessor.processImage(bytes, totalQuestions)
+                                val processingResult = omrProcessor.processImage(bytes, config)
                                 val jsonResult = processingResult.toJson().toString()
                                 
                                 withContext(Dispatchers.Main) {

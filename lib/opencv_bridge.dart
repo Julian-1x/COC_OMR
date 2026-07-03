@@ -78,14 +78,23 @@ class OpenCVBridge {
 
   static const Duration _processOmrTimeout = Duration(seconds: 22);
 
-  /// Process an image and return structured OMR scan result
-  static Future<OmrScanResult> processOmr(Uint8List bytes,
-      {int totalQuestions = 50}) async {
+  /// Process an image and return structured OMR scan result.
+  ///
+  /// [sessionLayout] locks bubble geometry for the exam (skips per-sheet QR decode).
+  /// [turboMode] enables the faster exam-day pipeline on native Android.
+  static Future<OmrScanResult> processOmr(
+    Uint8List bytes, {
+    int totalQuestions = 50,
+    Map<String, dynamic>? sessionLayout,
+    bool turboMode = true,
+  }) async {
     try {
       final result = await _channel
           .invokeMethod('processWithConfig', {
             'image': bytes,
             'totalQuestions': totalQuestions,
+            'turboMode': turboMode,
+            if (sessionLayout != null) 'sessionLayout': sessionLayout,
           })
           .timeout(_processOmrTimeout);
 

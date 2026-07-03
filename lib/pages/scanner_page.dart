@@ -26,6 +26,7 @@ import 'package:omr_app/services/native_scanner_camera.dart';
 import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/services/scanner_camera.dart';
 import 'package:omr_app/services/scanner_camera_factory.dart';
+import 'package:omr_app/services/scanner_session_layout.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class ScannerPage extends StatefulWidget {
@@ -46,6 +47,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   static const Color _scannerAccent = AppColors.brandGreen;
   static const Color _scannerAccentDark = AppColors.brandGreenDark;
   static const Color _scannerOverlay = AppColors.scannerOverlay;
+
+  static const bool _examTurboMode = true;
 
   String? get _displayStatusHint {
     if (_isProcessing || !_opencvAvailable) {
@@ -101,19 +104,35 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   Timer? _autoScanTimer;
   String _continuousHint = '';
   bool _isCheckingFrame = false;
+  late final ScannerSessionLayout _sessionLayout;
 
   // Real-time quality feedback
   Timer? _qualityCheckTimer;
   final bool _qualityCheckEnabled = false;
 
-  // Stability thresholds (tighter on low-end to reduce heat / OOM from burst captures)
-  int get _requiredStableFrames => _isLowEndDevice ? 5 : 8;
-  Duration get _scanCooldown => _isLowEndDevice
-      ? const Duration(milliseconds: 2200)
-      : const Duration(milliseconds: 1500);
-  Duration get _continuousPollInterval => _isLowEndDevice
-      ? const Duration(milliseconds: 650)
-      : const Duration(milliseconds: 300);
+  // Stability thresholds — turbo mode captures sooner when sheet is aligned.
+  int get _requiredStableFrames {
+    if (_examTurboMode) {
+      return _sheetAligned ? 2 : (_isLowEndDevice ? 3 : 3);
+    }
+    return _isLowEndDevice ? 5 : 8;
+  }
+
+  Duration get _scanCooldown => _examTurboMode
+      ? (_isLowEndDevice
+          ? const Duration(milliseconds: 900)
+          : const Duration(milliseconds: 600))
+      : (_isLowEndDevice
+          ? const Duration(milliseconds: 2200)
+          : const Duration(milliseconds: 1500));
+
+  Duration get _continuousPollInterval => _examTurboMode
+      ? (_isLowEndDevice
+          ? const Duration(milliseconds: 400)
+          : const Duration(milliseconds: 250))
+      : (_isLowEndDevice
+          ? const Duration(milliseconds: 650)
+          : const Duration(milliseconds: 300));
   static const Duration _resultDisplayDuration = Duration(seconds: 2);
 
   bool get _isMobileNative => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
@@ -124,6 +143,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _sessionLayout = ScannerSessionLayout.fromSubject(widget.targetSubject);
     WidgetsBinding.instance.addObserver(this);
     _detectDeviceCapabilities();
     _initCamera();
@@ -1129,7 +1149,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     try {
       // Optimize image if needed
       var processBytes = bytes;
-      if (_isLowEndDevice) {
+      if (_isLowEndDevice ||
+          bytes.length >
+              (_examTurboMode ? 3.5 * 1024 * 1024 : 2 * 1024 * 1024)) {
         processBytes = await _optimizeImageForProcessing(bytes);
       }
 
@@ -1148,7 +1170,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
       final omrResult = await OpenCVBridge.processOmr(
         processBytes,
-        totalQuestions: widget.targetSubject.totalQuestions,
+        totalQuestions: _sessionLayout.totalQuestions,
+        sessionLayout: _sessionLayout.toNativeMap(),
+        turboMode: _examTurboMode,
       );
 
       if (!omrResult.success || omrResult.omrId == null) {
@@ -1243,8 +1267,18 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         answers: omrResult.answers,
         confidence: omrResult.confidence,
         sheetId: sheetId,
-        scanSafety: scanSafety,
+        scanSafety: _effectiveScanSafety(
+          scanSafety,
+          turboAutoSave: _canTurboAutoSave(
+            safety: scanSafety,
+            omrResult: omrResult,
+            subject: resolvedSubject,
+          ),
+        ),
         sourceBytes: processBytes,
+        processingMs: omrResult.debugInfo['processingTimeMs'] is num
+            ? (omrResult.debugInfo['processingTimeMs'] as num).toInt()
+            : null,
       );
 
       _lastScannedOmrId = omrResult.omrId;
@@ -1308,6 +1342,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     required _ScanSafetyAssessment scanSafety,
     Uint8List? sourceBytes,
     ScanResult? replaceExisting,
+    int? processingMs,
   }) async {
     final score = subject.calculateSmartScore(answers);
     final scanTime = DateTime.now();
@@ -1363,11 +1398,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     final scoreDisplay = '${formatScoreValue(score)}/${subject.totalQuestions}';
 
     if (mounted) {
+      final timingSuffix = processingMs != null ? ' · ${processingMs}ms' : '';
       setState(() {
         _isProcessing = false;
         _status = pendingReview
             ? '${student.name}: queued for review'
-            : "✓ ${student.name}: $scoreDisplay";
+            : "✓ ${student.name}: $scoreDisplay$timingSuffix";
       });
 
       // Show quick toast instead of modal in continuous mode
@@ -1798,7 +1834,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     try {
       var bytes = rawBytes;
 
-      if (_isLowEndDevice || bytes.length > 2 * 1024 * 1024) {
+      if (_isLowEndDevice ||
+          bytes.length >
+              (_examTurboMode ? 3.5 * 1024 * 1024 : 2 * 1024 * 1024)) {
         setState(() => _status = 'Optimizing...');
         bytes = await _optimizeImageForProcessing(bytes);
       }
@@ -1836,10 +1874,13 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
       final omrResult = await OpenCVBridge.processOmr(
         bytes,
-        totalQuestions: widget.targetSubject.totalQuestions,
+        totalQuestions: _sessionLayout.totalQuestions,
+        sessionLayout: _sessionLayout.toNativeMap(),
+        turboMode: _examTurboMode,
       );
 
       debugPrint('OMR Result: $omrResult');
+      final processingMs = omrResult.debugInfo['processingTimeMs'];
 
       if (omrResult.debugInfo.isNotEmpty) {
         final blurScore = omrResult.debugInfo['blurScore'];
@@ -1950,6 +1991,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         sheetId: sheetId,
         scanSafety: scanSafety,
         sourceBytes: bytes,
+        turboAutoSave: _canTurboAutoSave(
+          safety: scanSafety,
+          omrResult: omrResult,
+          subject: resolvedSubject,
+        ),
+        processingMs: processingMs is num ? processingMs.toInt() : null,
       );
     } on _ScanPersistenceException catch (e) {
       _handleScanPersistenceError(e);
@@ -2236,11 +2283,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       }
     }
 
-    if (omrResult.qrData == null) {
+    if (omrResult.qrData == null && debugInfo['layoutFromSession'] != true) {
       reasons.add('Template QR was not found.');
-    } else if (qrPayload == null) {
+    } else if (qrPayload == null && omrResult.qrData != null) {
       reasons.add('Template QR could not be read.');
-    } else {
+    } else if (qrPayload != null) {
       if (sheetId == null || sheetId.trim().isEmpty) {
         reasons.add('Template QR is missing a sheet ID.');
       }
@@ -2313,8 +2360,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       flaggedQuestions.addAll(missingQuestions);
     }
 
+    final layoutFromSession = debugInfo['layoutFromSession'] == true;
     final layoutFromQr = debugInfo['layoutFromQr'] == true;
-    if (!layoutFromQr) {
+    if (!layoutFromQr && !layoutFromSession) {
       reasons.add('Template layout could not be confirmed from QR.');
     }
 
@@ -2355,11 +2403,17 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     bool skipReview = false,
     _ScanSafetyAssessment? scanSafety,
     Uint8List? sourceBytes,
+    bool turboAutoSave = false,
+    int? processingMs,
   }) async {
-    final safety = scanSafety ?? _ScanSafetyAssessment.safe();
+    final safety = _effectiveScanSafety(
+      scanSafety ?? _ScanSafetyAssessment.safe(),
+      turboAutoSave: turboAutoSave,
+    );
 
     // Risky scans are reviewed even when the optional review toggle is off.
-    if ((_reviewBeforeSave && !skipReview) || safety.requiresReview) {
+    if ((_reviewBeforeSave && !skipReview && !turboAutoSave) ||
+        safety.requiresReview) {
       final wasContinuous = _isContinuousMode;
       if (wasContinuous && safety.requiresReview) {
         _stopContinuousScanning();
@@ -2387,7 +2441,56 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       sheetId: sheetId,
       scanSafety: safety,
       sourceBytes: sourceBytes,
+      processingMs: processingMs,
     );
+  }
+
+  bool _canTurboAutoSave({
+    required _ScanSafetyAssessment safety,
+    required OmrScanResult omrResult,
+    required Subject subject,
+  }) {
+    if (!_examTurboMode) {
+      return false;
+    }
+    if (omrResult.confidence < 0.80) {
+      return false;
+    }
+    final minAnswers = (subject.totalQuestions * 0.85).floor();
+    if (omrResult.answers.length < minAnswers) {
+      return false;
+    }
+    for (final reason in safety.reviewReasons) {
+      if (_isTurboHardReviewReason(reason)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _isTurboHardReviewReason(String reason) {
+    const softPatterns = <String>[
+      'Template QR was not found',
+      'Template layout could not be confirmed',
+      'Low scan confidence',
+      'Unread answer',
+    ];
+    for (final soft in softPatterns) {
+      if (reason.contains(soft)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  _ScanSafetyAssessment _effectiveScanSafety(
+    _ScanSafetyAssessment safety, {
+    required bool turboAutoSave,
+  }) {
+    if (!turboAutoSave) {
+      return safety;
+    }
+    return _ScanSafetyAssessment.safe();
   }
 
   /// Shows the scan review page for answer correction
@@ -2455,6 +2558,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     required _ScanSafetyAssessment scanSafety,
     bool wasManuallyReviewed = false,
     Uint8List? sourceBytes,
+    int? processingMs,
   }) async {
     final score = subject.calculateSmartScore(answers);
     final scanTime = DateTime.now();
@@ -2502,13 +2606,14 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     HapticFeedback.heavyImpact();
 
     if (mounted) {
+      final timingSuffix = processingMs != null ? ' · ${processingMs}ms' : '';
       setState(() {
         _isProcessing = false;
         _status = pendingReview
             ? "Queued for review: ${student.name}"
             : wasEdited
                 ? "Saved (edited): ${updatedStudent.name}"
-                : "Scanned: ${updatedStudent.name} - ${subject.displayName}";
+                : "Scanned: ${updatedStudent.name} - ${subject.displayName}$timingSuffix";
       });
 
       if (pendingReview) {
