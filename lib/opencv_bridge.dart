@@ -89,14 +89,12 @@ class OpenCVBridge {
     bool turboMode = true,
   }) async {
     try {
-      final result = await _channel
-          .invokeMethod('processWithConfig', {
-            'image': bytes,
-            'totalQuestions': totalQuestions,
-            'turboMode': turboMode,
-            if (sessionLayout != null) 'sessionLayout': sessionLayout,
-          })
-          .timeout(_processOmrTimeout);
+      final result = await _channel.invokeMethod('processWithConfig', {
+        'image': bytes,
+        'totalQuestions': totalQuestions,
+        'turboMode': turboMode,
+        if (sessionLayout != null) 'sessionLayout': sessionLayout,
+      }).timeout(_processOmrTimeout);
 
       if (result == null) {
         return OmrScanResult(
@@ -178,9 +176,8 @@ class OpenCVBridge {
       return true;
     }
     try {
-      final result = await _channel
-          .invokeMethod<bool>('ensureReady')
-          .timeout(timeout);
+      final result =
+          await _channel.invokeMethod<bool>('ensureReady').timeout(timeout);
       return result == true;
     } catch (e) {
       debugPrint('OpenCV ensureReady error: $e');
@@ -585,5 +582,5 @@ class SheetDetectionResult {
 
   /// Check if sheet is ready for capture
   bool get isReadyForCapture =>
-      sheetDetected && isAligned && hasGoodLighting && confidence >= 0.7;
+      sheetDetected && isAligned && hasGoodLighting && confidence >= 0.62;
 }

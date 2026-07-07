@@ -46,7 +46,6 @@ class ScannerPage extends StatefulWidget {
 class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   static const Color _scannerAccent = AppColors.brandGreen;
   static const Color _scannerAccentDark = AppColors.brandGreenDark;
-  static const Color _scannerOverlay = AppColors.scannerOverlay;
 
   static const bool _examTurboMode = true;
 
@@ -67,10 +66,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   }
 
   bool get _showFrameGlow =>
-      !_isProcessing &&
-      _isContinuousMode &&
-      _sheetDetected &&
-      _sheetAligned;
+      !_isProcessing && _isContinuousMode && _sheetDetected && _sheetAligned;
 
   ScannerCamera? _scannerCamera;
   bool _isInitialized = false;
@@ -86,8 +82,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   // Review mode - show answers for correction before saving
   bool _reviewBeforeSave = true;
 
-  // Last tap-to-focus point (normalized 0–1)
-  Offset _lastFocusPoint = const Offset(0.5, 0.55);
   static const Duration _preCaptureFocusDelay = Duration(milliseconds: 800);
 
   bool _cameraInitFailed = false;
@@ -229,7 +223,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _applyFocusAtPoint(Offset normalizedPoint) async {
-    _lastFocusPoint = normalizedPoint;
     await _scannerCamera?.setFocusPoint(normalizedPoint);
   }
 
@@ -237,11 +230,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     await _scannerCamera?.prepareCaptureFocus(_preCaptureFocusDelay);
   }
 
-  Future<void> _configureCameraForScanning() async {
-    await _scannerCamera?.configureForScanning();
-  }
-
-  Future<void> _handlePreviewTap(TapDownDetails details, Size previewSize) async {
+  Future<void> _handlePreviewTap(
+      TapDownDetails details, Size previewSize) async {
     final camera = _scannerCamera;
     if (camera == null || !camera.isCaptureReady || _isProcessing) {
       return;
@@ -407,7 +397,10 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   }
 
   double get _frameAccentStrokeWidth {
-    if (_isContinuousMode && _sheetDetected && _sheetAligned && !_isProcessing) {
+    if (_isContinuousMode &&
+        _sheetDetected &&
+        _sheetAligned &&
+        !_isProcessing) {
       return 4;
     }
     return 3;
@@ -591,7 +584,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                   decoration: BoxDecoration(
                     color: Colors.amber.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
+                    border:
+                        Border.all(color: Colors.amber.withValues(alpha: 0.35)),
                   ),
                   child: Row(
                     children: [
@@ -611,12 +605,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                         ),
                       ),
                       TextButton(
-                          onPressed: () {
-                            Navigator.pop(sheetContext);
-                            unawaited(_bootstrapScannerEngine());
-                          },
-                          child: const Text('Retry'),
-                        ),
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          unawaited(_bootstrapScannerEngine());
+                        },
+                        child: const Text('Retry'),
+                      ),
                     ],
                   ),
                 ),
@@ -779,13 +773,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
-                if (!_isContinuousMode) ...[
-                  const SizedBox(width: 12),
-                  _buildCaptureButton(
-                    colorScheme: colorScheme,
-                    captureReady: captureReady,
-                  ),
-                ],
+                const SizedBox(width: 12),
+                _buildCaptureButton(
+                  colorScheme: colorScheme,
+                  captureReady: captureReady,
+                ),
               ],
             ),
           ),
@@ -807,7 +799,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
           setState(() {});
         }
       },
-      builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
+      builder: (context, scale, child) =>
+          Transform.scale(scale: scale, child: child),
       child: Container(
         decoration: BoxDecoration(
           shape: BoxShape.circle,
@@ -1129,7 +1122,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
           });
         }
       }
-
     } catch (e) {
       debugPrint("Sheet detection error: $e");
       _stableFrameCount = 0;
@@ -1314,9 +1306,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       if (decoded == null) {
         return null;
       }
-      final resized = decoded.width > 1000
-          ? img.copyResize(decoded, width: 1000)
-          : decoded;
+      final resized =
+          decoded.width > 1000 ? img.copyResize(decoded, width: 1000) : decoded;
       final jpg = img.encodeJpg(resized, quality: 70);
       final dir = await getApplicationDocumentsDirectory();
       final snapDir = Directory('${dir.path}/scan_snapshots');
@@ -1766,11 +1757,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     return Uint8List.fromList(img.encodeJpg(resized, quality: 92));
   }
 
-  /// Static function for isolate - reads file bytes
-  static Future<Uint8List> _readBytesInIsolate(String path) async {
-    return await File(path).readAsBytes();
-  }
-
   Future<void> _captureFromNativeCamera() async {
     if (_isProcessing || !mounted) {
       return;
@@ -2048,6 +2034,19 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       return;
     }
 
+    if (!await _waitForAutoFrameCheckToFinish()) {
+      if (mounted && !_isProcessing) {
+        setState(() => _status = 'Try capture again');
+      }
+      return;
+    }
+
+    if (_isProcessing ||
+        _scannerCamera == null ||
+        !_scannerCamera!.isCaptureReady) {
+      return;
+    }
+
     _stopQualityCheck();
 
     setState(() {
@@ -2069,6 +2068,28 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         _resumeQualityCheckIfNeeded();
       }
     }
+  }
+
+  Future<bool> _waitForAutoFrameCheckToFinish() async {
+    if (!_isCheckingFrame) {
+      return true;
+    }
+
+    if (mounted && !_isProcessing) {
+      setState(() => _status = 'Finishing auto-check...');
+    }
+
+    for (var attempt = 0; attempt < 12; attempt++) {
+      if (!_isCheckingFrame) {
+        return true;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!mounted || _isProcessing) {
+        return false;
+      }
+    }
+
+    return !_isCheckingFrame;
   }
 
   SubjectSheetQrPayload? _parseQrPayload(String qrData) {
@@ -2343,10 +2364,15 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       reasons.add('$multipleMarks question(s) appear to have multiple marks.');
     }
 
-    for (final question in _readDebugIntList(debugInfo, 'ambiguousQuestions')) {
-      if (question >= 1 && question <= subject.totalQuestions) {
-        flaggedQuestions.add(question);
-      }
+    final ambiguousQuestions = _readDebugIntList(debugInfo, 'ambiguousQuestions')
+        .where((question) => question >= 1 && question <= subject.totalQuestions)
+        .toList()
+      ..sort();
+    if (ambiguousQuestions.isNotEmpty) {
+      reasons.add(
+        'Ambiguous mark(s) on question(s): ${ambiguousQuestions.take(8).join(', ')}${ambiguousQuestions.length > 8 ? '...' : ''}.',
+      );
+      flaggedQuestions.addAll(ambiguousQuestions);
     }
 
     final missingQuestions = <int>[
@@ -2456,29 +2482,14 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     if (omrResult.confidence < 0.80) {
       return false;
     }
-    final minAnswers = (subject.totalQuestions * 0.85).floor();
-    if (omrResult.answers.length < minAnswers) {
+    if (omrResult.answers.length < subject.totalQuestions) {
       return false;
     }
-    for (final reason in safety.reviewReasons) {
-      if (_isTurboHardReviewReason(reason)) {
-        return false;
-      }
+    if (safety.flaggedQuestions.isNotEmpty) {
+      return false;
     }
-    return true;
-  }
-
-  bool _isTurboHardReviewReason(String reason) {
-    const softPatterns = <String>[
-      'Template QR was not found',
-      'Template layout could not be confirmed',
-      'Low scan confidence',
-      'Unread answer',
-    ];
-    for (final soft in softPatterns) {
-      if (reason.contains(soft)) {
-        return false;
-      }
+    if (safety.reviewReasons.isNotEmpty) {
+      return false;
     }
     return true;
   }
@@ -3525,7 +3536,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       ],
     );
   }
-
 }
 
 class _ViewfinderGeometry {
@@ -3745,7 +3755,8 @@ class _ScanSafetyAssessment {
   final List<String> reviewReasons;
   final List<int> flaggedQuestions;
 
-  bool get requiresReview => reviewReasons.isNotEmpty;
+  bool get requiresReview =>
+      reviewReasons.isNotEmpty || flaggedQuestions.isNotEmpty;
 
   _ScanSafetyAssessment withAdditionalReason(String reason) {
     final reasons = <String>{

@@ -639,7 +639,7 @@ NSString *jsonFromDict(NSDictionary *d) {
   }
   double blurV, contrast, bright, noise;
   assessQuality(gray, blurV, contrast, bright, noise);
-  bool light = bright > 70 && bright < 220 && contrast >= 0.2;
+  bool light = bright > 55 && bright < 235 && contrast >= 0.15;
   Corners *c = detectCornersAdaptive(gray, ProcQ::High);
   if (!c) {
     double conf = (std::min(bright / 255.0, 1.0) * 0.35 + std::min(contrast, 1.0) * 0.25 +
@@ -662,7 +662,7 @@ NSString *jsonFromDict(NSDictionary *d) {
   double cov = ((maxX - minX) / w + (maxY - minY) / h) / 2.0;
   cov = std::min(cov, 1.0);
   double align = ((topTilt + botTilt + leftTilt + rightTilt) / 4.0 * 0.65 + cov * 0.35);
-  bool aligned = align >= 0.65;
+  bool aligned = align >= 0.60;
   delete c;
   double conf = aligned && light ? std::min(0.65 + cov * 0.35, 1.0) : align * 0.8;
   NSString *hint = aligned ? (NSString *)nil : @"Align sheet edges with frame";

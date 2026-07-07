@@ -65,7 +65,6 @@ class LocalAuthService {
   static const String _cooldownUntilKey = 'local_auth_cooldown_until';
 
   static const int _maxFailedAttempts = 5;
-  static const Duration _cooldownDuration = Duration(minutes: 1);
 
   bool _isUnlocked = false;
   String? _activeCloudUserId;

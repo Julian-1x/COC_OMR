@@ -578,8 +578,8 @@ class OmrProcessor {
             Imgproc.cvtColor(rgbaMat, grayMat, Imgproc.COLOR_RGBA2GRAY)
 
             val imageQuality = assessImageQuality(grayMat)
-            val hasGoodLighting = imageQuality.brightnessScore in 70.0..220.0 &&
-                imageQuality.contrastScore >= 0.2
+            val hasGoodLighting = imageQuality.brightnessScore in 55.0..235.0 &&
+                imageQuality.contrastScore >= 0.15
 
             val debugInfo = mutableMapOf<String, Any>()
             val corners = detectCornerMarkersAdaptive(
@@ -609,7 +609,7 @@ class OmrProcessor {
                 grayMat.cols().toDouble(),
                 grayMat.rows().toDouble()
             )
-            val isAligned = alignmentScore >= 0.65
+            val isAligned = alignmentScore >= 0.60
 
             val confidence = (
                 0.45 +

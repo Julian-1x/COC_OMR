@@ -361,9 +361,22 @@ class ScannerCameraSession(
 
         }
 
+        val normalizedX = x.coerceIn(0f, 1f)
+        val normalizedY = y.coerceIn(0f, 1f)
+
         val factory = previewView.meteringPointFactory
 
-        val point = factory.createPoint(x, y)
+        val focusViewWidth = previewView.width.takeIf { it > 0 } ?: viewWidth
+        val focusViewHeight = previewView.height.takeIf { it > 0 } ?: viewHeight
+
+        val point = if (focusViewWidth > 0 && focusViewHeight > 0) {
+            factory.createPoint(
+                normalizedX * focusViewWidth,
+                normalizedY * focusViewHeight,
+            )
+        } else {
+            factory.createPoint(normalizedX, normalizedY)
+        }
 
         val action = FocusMeteringAction.Builder(
 
@@ -406,8 +419,6 @@ class ScannerCameraSession(
         )
 
         capture.targetRotation = currentTargetRotation()
-
-        focusOnSheetCenter()
 
         val outputOptions = ImageCapture.OutputFileOptions.Builder(outputFile).build()
 
