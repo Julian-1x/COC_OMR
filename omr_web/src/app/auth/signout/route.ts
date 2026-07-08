@@ -1,24 +1,27 @@
-import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getSupabaseServerEnv } from "@/lib/supabase/env";
+import { API_TOKEN_COOKIE } from "@/lib/api/laravel-client";
+import { tryGetApiBaseUrl } from "@/lib/api/env";
 
 export async function POST() {
   const cookieStore = await cookies();
-  const { url, key } = getSupabaseServerEnv();
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value, options }) =>
-          cookieStore.set(name, value, options),
-        );
-      },
-    },
-  });
+  const token = cookieStore.get(API_TOKEN_COOKIE)?.value;
+  const baseUrl = tryGetApiBaseUrl();
 
-  await supabase.auth.signOut();
+  if (token && baseUrl) {
+    try {
+      await fetch(`${baseUrl}/api/logout`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      });
+    } catch {
+      // Best-effort remote logout.
+    }
+  }
+
+  cookieStore.delete(API_TOKEN_COOKIE);
   return NextResponse.json({ ok: true });
 }

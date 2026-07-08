@@ -5,17 +5,13 @@ Desk companion for **PHINMA Cagayan de Oro College** teachers. Prep rosters, ans
 ## Setup
 
 1. Install [Node.js LTS](https://nodejs.org/) (18+).
-2. Copy env file and add your Supabase keys (same project as the mobile app):
+2. Start the Laravel API (`coc-omr-api`) — see `coc-omr-api/README.md`.
+3. Copy env file and point at your API:
 
 ```powershell
 cd omr_web
 copy .env.local.example .env.local
 ```
-
-3. In **Supabase → Authentication → URL Configuration**, add redirect URLs:
-
-- `http://localhost:3000/auth/callback`
-- Your production URL, e.g. `https://your-app.vercel.app/auth/callback`
 
 4. Install and run:
 
@@ -25,6 +21,8 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+Set `FRONTEND_URL=http://localhost:3000` in the Laravel API `.env` so email verification links return to `/auth/callback`.
 
 ## Features
 
@@ -50,10 +48,7 @@ cd omr_web
 npx vercel@latest login
 ```
 
-3. In **Supabase → Authentication → URL Configuration**, add redirect URLs:
-
-- `http://localhost:3000/auth/callback` (local dev)
-- `https://YOUR-VERCEL-URL/auth/callback` (after first deploy — see below)
+3. In the Laravel API `.env`, set `FRONTEND_URL` to your web portal URL (e.g. `http://localhost:3000` for local dev, or your Vercel URL after deploy).
 
 ### Deploy
 
@@ -74,19 +69,16 @@ Set these **Environment Variables** in the Vercel project (Settings → Environm
 
 | Variable | Value |
 |----------|--------|
-| `SUPABASE_URL` | Same as mobile app |
-| `SUPABASE_PUBLISHABLE_KEY` | Same as mobile app |
-| `NEXT_PUBLIC_SUPABASE_URL` | Same as `SUPABASE_URL` |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Same as `SUPABASE_PUBLISHABLE_KEY` |
+| `API_BASE_URL` | Your Laravel API URL, e.g. `https://api.yourschool.edu` |
+| `NEXT_PUBLIC_API_BASE_URL` | Same as `API_BASE_URL` |
 
-After deploy, copy your production URL from the Vercel dashboard and add  
-`https://that-url/auth/callback` to Supabase redirect URLs.
+After deploy, set `FRONTEND_URL` on the Laravel API to your Vercel URL so email verification redirects work.
 
 ### GitHub auto-deploy (recommended)
 
 1. Push this repo to GitHub (include the `omr_web/` folder).
 2. In [Vercel](https://vercel.com) → **omr_web** → Settings → Git: connect the repo, set **Root Directory** to `omr_web`.
-3. Add the four Supabase env vars in Vercel (Production + Preview).
+3. Add the two API env vars in Vercel (Production + Preview).
 4. Optional CI deploy via GitHub Actions (`.github/workflows/omr-web.yml`):
    - Vercel → Settings → copy **Project ID** and **Org ID**
    - Vercel → Account → Tokens → create token
@@ -99,7 +91,7 @@ Or deploy manually:
 .\scripts\deploy_web_vercel.ps1
 ```
 
-Keep Supabase on the free tier for pilots; use a weekly ping or unpause if the project sleeps after inactivity.
+Keep the Laravel API running for pilots; use a weekly ping or process manager if the server sleeps after inactivity.
 
 ## Data flow
 

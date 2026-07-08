@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { isSupabaseConfigured } from "@/lib/supabase/client";
+import { isApiConfigured } from "@/lib/api/env";
 import { workspaceName } from "@/lib/theme";
 
 function LoginForm() {
@@ -43,9 +43,9 @@ function LoginForm() {
     setLoading(true);
 
     try {
-      if (!isSupabaseConfigured()) {
+      if (!isApiConfigured()) {
         throw new Error(
-          "Supabase keys missing. Check omr_web/.env.local and restart npm run dev.",
+          "API URL missing. Check omr_web/.env.local and restart npm run dev.",
         );
       }
 

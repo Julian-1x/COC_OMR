@@ -5,7 +5,7 @@ Rollout checklist for **ongoing professional use** at Cagayan de Oro College (no
 ## Release gate (before any teacher install)
 
 - [ ] `flutter test` and `flutter analyze` pass
-- [ ] APK built with `scripts/build_release.ps1` (Supabase keys from `secrets.json`)
+- [ ] APK built with `scripts/build_release.ps1` (`API_BASE_URL` from `secrets.json`)
 - [ ] Release signed with production keystore (`android/key.properties`) when distributing widely
 - [ ] `SCAN_VALIDATION.md` completed on target printer + phone models
 - [ ] `PRIVACY.md` contact line updated with school IT / DPO
@@ -51,13 +51,21 @@ Rollout checklist for **ongoing professional use** at Cagayan de Oro College (no
 
 - Google Play internal / managed distribution
 - MDM push for school-owned devices
-- Department-wide Supabase project review and RLS audit
+- Department-wide Laravel API security review and policy audit
 
-## Web portal (Vercel)
+## Public internet (anywhere, including LTE)
 
-Production URL: **https://omrweb.vercel.app**
+**Free cloud (no server budget):** [laravel/FREE_CLOUD.md](laravel/FREE_CLOUD.md) — **Render + Vercel** (works in Philippines; Oracle optional).
 
-Deploy from repo root:
+Campus / self-hosted: **`D:\coc-omr\PUBLIC_URLS.md`** (Windows pilot).
+
+## Web portal
+
+**Free cloud:** [laravel/FREE_CLOUD.md](laravel/FREE_CLOUD.md) — `.\scripts\deploy_free_cloud.ps1`
+
+**Self-hosted:** [laravel/WINDOWS_SERVER.md](laravel/WINDOWS_SERVER.md) (Windows) or [laravel/SELF_HOSTED.md](laravel/SELF_HOSTED.md) (Linux).
+
+**Vercel only (web tier):**
 
 ```powershell
 .\scripts\deploy_web_vercel.ps1

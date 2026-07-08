@@ -1,0 +1,44 @@
+# Render Blueprint — deploy from GitHub repo root (monorepo).
+# Dashboard: New → Blueprint → connect Julian-1x/COC_OMR
+# See laravel/FREE_CLOUD.md
+
+services:
+  - type: web
+    name: coc-omr-api
+    runtime: docker
+    plan: free
+    rootDir: coc-omr-api
+    healthCheckPath: /up
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      - key: APP_KEY
+        generateValue: true
+      - key: AUTO_VERIFY_EMAIL
+        value: true
+      - key: FRONTEND_URL
+        value: https://omrweb.vercel.app
+      - key: MOBILE_VERIFY_REDIRECT
+        value: edu.coc.omr://login-callback
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DATABASE_URL
+        fromDatabase:
+          name: coc-omr-db
+          property: connectionString
+      - key: DB_URL
+        fromDatabase:
+          name: coc-omr-db
+          property: connectionString
+      - key: LOG_CHANNEL
+        value: stderr
+      - key: SANCTUM_STATEFUL_DOMAINS
+        value: omrweb.vercel.app
+
+databases:
+  - name: coc-omr-db
+    plan: free
+    databaseName: coc_omr
+    user: coc_omr

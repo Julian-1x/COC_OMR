@@ -1,48 +1,32 @@
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { isSchoolAdmin } from "@/lib/api/admin";
-import { fetchProfile } from "@/lib/api/data";
-import { getSupabaseServerEnv } from "@/lib/supabase/env";
+import {
+  ApiClient,
+  ApiUser,
+} from "@/lib/api/laravel-client";
+import {
+  createServerApiClient,
+  getServerApiToken,
+} from "@/lib/api/laravel-server";
 import type { DbTeacherProfile } from "@/lib/types/database";
-import type { User } from "@supabase/supabase-js";
 
 export async function requireTeacherSession(): Promise<{
-  supabase: Awaited<ReturnType<typeof createServerClient>>;
-  user: User;
+  api: ApiClient;
+  user: ApiUser;
   profile: DbTeacherProfile | null;
 }> {
-  const cookieStore = await cookies();
-  const { url, key } = getSupabaseServerEnv();
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return cookieStore.getAll();
-      },
-      setAll(cookiesToSet) {
-        try {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options),
-          );
-        } catch {
-          // Server Component — middleware handles refresh.
-        }
-      },
-    },
-  });
+  const token = await getServerApiToken();
+  if (!token) redirect("/login");
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  const api = createServerApiClient(token);
+  const { user } = await api.get<{ user: ApiUser }>("/me");
 
-  const profile = await fetchProfile(supabase, user.id);
-  return { supabase, user, profile };
+  return { api, user, profile: user.profile };
 }
 
 export async function requireAdminSession(): Promise<{
-  supabase: Awaited<ReturnType<typeof createServerClient>>;
-  user: User;
+  api: ApiClient;
+  user: ApiUser;
   profile: DbTeacherProfile;
 }> {
   const session = await requireTeacherSession();
@@ -53,7 +37,7 @@ export async function requireAdminSession(): Promise<{
     redirect("/dashboard");
   }
   return {
-    supabase: session.supabase,
+    api: session.api,
     user: session.user,
     profile: session.profile,
   };

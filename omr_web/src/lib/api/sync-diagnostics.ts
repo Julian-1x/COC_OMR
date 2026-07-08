@@ -1,5 +1,12 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchCloudLastUpdated, fetchDashboardStats } from "@/lib/api/data";
+import type { ApiClient, ApiUser } from "@/lib/api/laravel-client";
+import {
+  fetchCloudLastUpdated,
+  fetchDashboardStats,
+  fetchScanResults,
+  fetchSections,
+  fetchStudents,
+  fetchSubjects,
+} from "@/lib/api/data";
 
 export type SyncDiagnostic = {
   ok: boolean;
@@ -17,43 +24,45 @@ export type SyncDiagnostic = {
   hints: string[];
 };
 
+function latestUpdated<T extends { updated_at?: string }>(rows: T[]): string | null {
+  if (rows.length === 0) return null;
+  const sorted = [...rows].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  return sorted[0]?.updated_at ? String(sorted[0].updated_at) : null;
+}
+
 async function tableDiagnostic(
-  supabase: SupabaseClient,
+  api: ApiClient,
   table: "sections" | "students" | "subjects" | "scan_results",
 ) {
-  const { count, error: countError } = await supabase
-    .from(table)
-    .select("*", { count: "exact", head: true });
-  if (countError) throw countError;
-
-  const { data, error: sampleError } = await supabase
-    .from(table)
-    .select("updated_at")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (sampleError) throw sampleError;
-
-  return {
-    table,
-    count: count ?? 0,
-    latestUpdated: data?.updated_at ? String(data.updated_at) : null,
-  };
+  if (table === "sections") {
+    const rows = await fetchSections(api);
+    return { table, count: rows.length, latestUpdated: latestUpdated(rows) };
+  }
+  if (table === "students") {
+    const rows = await fetchStudents(api);
+    return { table, count: rows.length, latestUpdated: latestUpdated(rows) };
+  }
+  if (table === "subjects") {
+    const rows = await fetchSubjects(api);
+    return { table, count: rows.length, latestUpdated: latestUpdated(rows) };
+  }
+  const rows = await fetchScanResults(api);
+  return { table, count: rows.length, latestUpdated: latestUpdated(rows) };
 }
 
 export async function fetchSyncDiagnostics(
-  supabase: SupabaseClient,
-  user: { id: string; email?: string | null },
+  api: ApiClient,
+  user: Pick<ApiUser, "id" | "email">,
   profile: { school_name?: string | null; role?: string } | null,
 ): Promise<SyncDiagnostic> {
   const hints: string[] = [];
   const [stats, lastCloudUpdate, ...tableSamples] = await Promise.all([
-    fetchDashboardStats(supabase),
-    fetchCloudLastUpdated(supabase),
-    tableDiagnostic(supabase, "sections"),
-    tableDiagnostic(supabase, "students"),
-    tableDiagnostic(supabase, "subjects"),
-    tableDiagnostic(supabase, "scan_results"),
+    fetchDashboardStats(api),
+    fetchCloudLastUpdated(api),
+    tableDiagnostic(api, "sections"),
+    tableDiagnostic(api, "students"),
+    tableDiagnostic(api, "subjects"),
+    tableDiagnostic(api, "scan_results"),
   ]);
 
   if (stats.sectionCount === 0 && stats.studentCount === 0 && stats.subjectCount === 0) {
