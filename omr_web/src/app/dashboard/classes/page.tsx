@@ -40,11 +40,11 @@ export default async function ClassesPage({
 
   const schoolYear = year?.trim() || undefined;
 
-  const { supabase } = await requireTeacherSession();
+  const { api } = await requireTeacherSession();
 
   const [sections, counts] = await Promise.all([
 
-    fetchSections(supabase, {
+    fetchSections(api, {
 
       archived: showArchived,
 
@@ -52,7 +52,7 @@ export default async function ClassesPage({
 
     }),
 
-    fetchSectionStudentCounts(supabase),
+    fetchSectionStudentCounts(api),
 
   ]);
 
@@ -238,7 +238,7 @@ export default async function ClassesPage({
 
             showArchived
 
-              ? "When you archive a section on the phone app, it appears here with full history."
+              ? "When you archive a section on the phone app, it appears here with full history. You can Restore it back to the phone anytime."
 
               : "Import a roster in Prepare, or add students in the phone app and sync."
 

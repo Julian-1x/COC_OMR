@@ -45,6 +45,7 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::get('/sync/snapshot', SnapshotController::class);
     Route::post('/sync/sections', [SectionSyncController::class, 'store']);
     Route::patch('/sync/sections/archive', [SectionSyncController::class, 'archive']);
+    Route::patch('/sync/sections/unarchive', [SectionSyncController::class, 'unarchive']);
     Route::post('/sync/students', [StudentSyncController::class, 'store']);
     Route::post('/sync/subjects', [SubjectSyncController::class, 'store']);
     Route::post('/sync/scan-results', [ScanResultSyncController::class, 'store']);

@@ -13,4 +13,9 @@ class SectionPolicy
     {
         return $section->owner_teacher_id === $user->id;
     }
+
+    public function unarchive(User $user, Section $section): bool
+    {
+        return $section->owner_teacher_id === $user->id;
+    }
 }

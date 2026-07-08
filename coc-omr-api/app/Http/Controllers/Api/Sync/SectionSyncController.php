@@ -94,4 +94,36 @@ class SectionSyncController extends Controller
             'section' => $section->fresh(),
         ]);
     }
+
+    public function unarchive(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+        ]);
+
+        $ownerId = $request->user()->id;
+        $section = Section::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->where('name', $validated['name'])
+            ->first();
+
+        if ($section === null) {
+            return response()->json([
+                'message' => 'Section was not found in the cloud.',
+            ], 404);
+        }
+
+        $this->authorize('unarchive', $section);
+
+        $section->fill([
+            'archived_at' => null,
+            'updated_at' => now(),
+        ]);
+        $section->save();
+
+        return response()->json([
+            'id' => $section->id,
+            'section' => $section->fresh(),
+        ]);
+    }
 }

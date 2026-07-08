@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { Hash, Printer, Users } from "lucide-react";
+import { useState, useTransition } from "react";
+import { Hash, Printer, RotateCcw, Users } from "lucide-react";
 import {
   ExpandableClassCard,
   type ExpandableClassSection,
@@ -13,6 +13,7 @@ import {
   sectionPrintSheetsHref,
 } from "@/lib/prepare-links";
 import { formatSectionTerm } from "@/lib/academic-term";
+import { restoreSection } from "@/lib/actions/sections";
 
 export function ClassesList({
   sections,
@@ -86,14 +87,48 @@ export function ClassesList({
                   </Link>
                 </>
               ) : (
-                <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600">
-                  Read-only archive
-                </span>
+                <RestoreSectionButton name={section.name} />
               )}
             </div>
           </ExpandableClassCard>
         );
       })}
+    </div>
+  );
+}
+
+function RestoreSectionButton({ name }: { name: string }) {
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleRestore() {
+    const confirmed = window.confirm(
+      `Restore "${name}"?\n\nThe class returns here and to the phone app the next time that teacher taps Sync Now.`,
+    );
+    if (!confirmed) return;
+
+    setError(null);
+    startTransition(async () => {
+      try {
+        await restoreSection(name);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not restore. Try again.");
+      }
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleRestore}
+        disabled={isPending}
+        className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+        {isPending ? "Restoring…" : "Restore"}
+      </button>
+      {error ? <span className="text-xs font-semibold text-red-600">{error}</span> : null}
     </div>
   );
 }

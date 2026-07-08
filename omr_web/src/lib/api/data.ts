@@ -87,6 +87,14 @@ export async function upsertSection(
   return section;
 }
 
+export async function unarchiveSection(api: ApiClient, name: string) {
+  const { section } = await api.patch<{ section: DbSection }>(
+    "/sync/sections/unarchive",
+    { name },
+  );
+  return section;
+}
+
 export async function upsertStudent(
   api: ApiClient,
   _ownerId: string,
