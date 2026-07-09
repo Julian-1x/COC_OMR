@@ -36,7 +36,8 @@ class MailTestCommand extends Command
 
         if ($mailer !== 'smtp') {
             $this->error('MAIL_MAILER is not smtp — emails only go to server logs, not Brevo.');
-            $this->line('On Render → Environment, set MAIL_MAILER=smtp and redeploy.');
+            $this->line('On Render -> Environment, set MAIL_MAILER=smtp and redeploy.');
+            $this->line('Also check MAIL_PASSWORD is your Brevo SMTP key (SMTP page), not an API key.');
 
             return self::FAILURE;
         }

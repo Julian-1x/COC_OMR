@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
-Write-Host "=== COC OMR — Render email setup (2 minutes) ===" -ForegroundColor Cyan
+Write-Host "=== COC OMR - Render email setup (2 minutes) ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "I cannot log into Render for you. Follow these steps:" -ForegroundColor Yellow
 Write-Host ""
@@ -22,7 +22,7 @@ $table = @(
   @{ Key = "MAIL_PORT"; Value = "587" },
   @{ Key = "MAIL_ENCRYPTION"; Value = "tls" },
   @{ Key = "MAIL_USERNAME"; Value = "b160f1001@smtp-brevo.com" },
-  @{ Key = "MAIL_PASSWORD"; Value = "(paste your Brevo SMTP key — not API key)" },
+  @{ Key = "MAIL_PASSWORD"; Value = "paste your Brevo SMTP key (not API key)" },
   @{ Key = "MAIL_FROM_ADDRESS"; Value = "alex.balaba.coc@phinmaed.com" },
   @{ Key = "MAIL_FROM_NAME"; Value = "COC OMR" },
   @{ Key = "AUTO_VERIFY_EMAIL"; Value = "false" }
@@ -34,5 +34,5 @@ Write-Host "Opening Render dashboard..." -ForegroundColor Green
 Start-Process "https://dashboard.render.com"
 
 Write-Host ""
-Write-Host "Stuck on registration right now? After mail works, resend from the web login page." -ForegroundColor Cyan
+Write-Host "After mail works, resend confirmation from the web login page." -ForegroundColor Cyan
 Write-Host ""
