@@ -38,6 +38,14 @@ class LoginController extends Controller
             ]);
         }
 
+        if (! config('app.auto_verify_email') && ! $user->hasVerifiedEmail()) {
+            Auth::logout();
+
+            throw ValidationException::withMessages([
+                'email' => ['This email has not been confirmed yet. Open the confirmation email, then sign in again.'],
+            ]);
+        }
+
         $deviceName = $credentials['device_name'] ?? 'mobile';
         $token = $user->createToken($deviceName)->plainTextToken;
 

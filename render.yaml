@@ -17,7 +17,7 @@ services:
       - key: APP_KEY
         generateValue: true
       - key: AUTO_VERIFY_EMAIL
-        value: true
+        value: false
       - key: FRONTEND_URL
         value: https://omrweb.vercel.app
       - key: MOBILE_VERIFY_REDIRECT

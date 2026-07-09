@@ -38,6 +38,7 @@ All protected routes use `Authorization: Bearer {token}` (Sanctum personal acces
 | POST | `/api/email/verification-notification` | Resend verification email |
 | POST | `/api/forgot-password` | Send reset link |
 | POST | `/api/reset-password` | Reset password |
+| POST | `/api/email/resend-verification` | Resend confirmation email (public) |
 
 **Register body**
 
@@ -55,6 +56,11 @@ All protected routes use `Authorization: Bearer {token}` (Sanctum personal acces
 
 - Mobile: `edu.coc.omr://login-callback?token=...&verified=1` (append `?platform=mobile` to verify link)
 - Web: `{FRONTEND_URL}/auth/callback?token=...&verified=1` (default `?platform=web`)
+
+**Password reset**
+
+- Email link: `{FRONTEND_URL}/auth/reset-password?token=...&email=...`
+- Teachers open the link in a browser (phone or PC), set a new password, then sign in on the app or web.
 
 Set `AUTO_VERIFY_EMAIL=true` in `.env` for local dev to skip verification.
 

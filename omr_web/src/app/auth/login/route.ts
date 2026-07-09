@@ -21,6 +21,35 @@ function authErrorMessage(payload: AuthResponse | null, fallback: string): strin
   return first ?? fallback;
 }
 
+async function readJsonBody(response: Response): Promise<AuthResponse | null> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as AuthResponse;
+  } catch {
+    return null;
+  }
+}
+
+function upstreamErrorMessage(
+  response: Response,
+  payload: AuthResponse | null,
+  fallback: string,
+): string {
+  if (payload) {
+    return authErrorMessage(payload, fallback);
+  }
+  if (response.status === 502 || response.status === 504) {
+    return "School server timed out. Wait a minute and try again.";
+  }
+  if (response.status >= 500) {
+    return "School server error. Try again in a minute.";
+  }
+  return fallback;
+}
+
 export async function POST(request: Request) {
   try {
     const baseUrl = tryGetApiBaseUrl();
@@ -72,15 +101,15 @@ export async function POST(request: Request) {
         }),
       });
 
-      const payload = (await response.json()) as AuthResponse;
+      const payload = await readJsonBody(response);
       if (!response.ok) {
         return NextResponse.json(
-          { error: authErrorMessage(payload, "Registration failed.") },
+          { error: upstreamErrorMessage(response, payload, "Registration failed.") },
           { status: response.status },
         );
       }
 
-      const needsEmailConfirmation = !payload.user?.email_verified_at;
+      const needsEmailConfirmation = !payload?.user?.email_verified_at;
       if (!needsEmailConfirmation && payload.token) {
         const cookieStore = await cookies();
         cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
@@ -89,6 +118,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         needsEmailConfirmation,
+        message: payload?.message,
       });
     }
 
@@ -105,11 +135,42 @@ export async function POST(request: Request) {
       }),
     });
 
-    const payload = (await response.json()) as AuthResponse;
-    if (!response.ok || !payload.token) {
+    const payload = await readJsonBody(response);
+    if (!response.ok || !payload?.token) {
+      const unverified =
+        payload?.user?.email_verified_at == null &&
+        (payload?.message?.toLowerCase().includes('not confirmed') ||
+          payload?.message?.toLowerCase().includes('not verified') ||
+          payload?.errors?.email?.some((m) =>
+            m.toLowerCase().includes('not confirmed') ||
+            m.toLowerCase().includes('not verified'),
+          ));
+      if (unverified) {
+        return NextResponse.json(
+          {
+            error:
+              "This email has not been confirmed yet. Open the confirmation email, then sign in again.",
+          },
+          { status: 403 },
+        );
+      }
       return NextResponse.json(
-        { error: authErrorMessage(payload, "Sign in failed.") },
+        { error: upstreamErrorMessage(response, payload, "Sign in failed.") },
         { status: response.status || 400 },
+      );
+    }
+
+    if (!payload) {
+      return NextResponse.json({ error: "Sign in failed." }, { status: 500 });
+    }
+
+    if (!payload.user?.email_verified_at) {
+      return NextResponse.json(
+        {
+          error:
+            "This email has not been confirmed yet. Open the confirmation email, then sign in again.",
+        },
+        { status: 403 },
       );
     }
 

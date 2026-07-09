@@ -5,10 +5,10 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
 use App\Models\User;
-use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Password;
 
 class RegisterController extends Controller
@@ -36,19 +36,44 @@ class RegisterController extends Controller
             'is_active' => true,
         ]);
 
+        $verificationEmailSent = true;
         if (config('app.auto_verify_email')) {
             $user->markEmailAsVerified();
         } else {
-            event(new Registered($user));
+            $verificationEmailSent = $this->sendVerificationEmail($user);
         }
 
-        $token = $user->createToken('mobile')->plainTextToken;
-
-        return response()->json([
+        $payload = [
             'user' => $this->userPayload($user),
-            'token' => $token,
             'token_type' => 'Bearer',
-        ], 201);
+        ];
+
+        if ($user->hasVerifiedEmail()) {
+            $payload['token'] = $user->createToken('mobile')->plainTextToken;
+        } else {
+            $payload['message'] = $verificationEmailSent
+                ? 'Check your email to confirm your account before signing in.'
+                : 'Account created, but we could not send the confirmation email yet. Use Resend confirmation or try again in a few minutes.';
+        }
+
+        return response()->json($payload, 201);
+    }
+
+    private function sendVerificationEmail(User $user): bool
+    {
+        try {
+            $user->sendEmailVerificationNotification();
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('verification_email_failed', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**

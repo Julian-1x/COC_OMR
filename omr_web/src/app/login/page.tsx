@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -32,6 +33,12 @@ function LoginForm() {
 
     if (searchParams.get("confirmed") === "1") {
       setNotice("Email confirmed. Sign in to open your dashboard.");
+      setMode("login");
+      return;
+    }
+
+    if (searchParams.get("reset") === "1") {
+      setNotice("Password updated. Sign in with your new password.");
       setMode("login");
     }
   }, [searchParams]);
@@ -65,6 +72,7 @@ function LoginForm() {
         error?: string;
         ok?: boolean;
         needsEmailConfirmation?: boolean;
+        message?: string;
       };
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? "Sign in failed.");
@@ -72,7 +80,8 @@ function LoginForm() {
 
       if (mode === "register" && payload.needsEmailConfirmation) {
         setNotice(
-          "Account created. Open the confirmation email on this device, tap the link, and you will return here signed in.",
+          payload.message ??
+            "Account created. Open the confirmation email on this device, tap the link, and you will return here signed in.",
         );
         setMode("login");
         return;
@@ -82,7 +91,11 @@ function LoginForm() {
       router.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
-      if (message.toLowerCase().includes("failed to fetch")) {
+      if (message.toLowerCase().includes("already been taken")) {
+        setError(
+          "This email is already registered. Check your inbox (and spam) for the confirmation email, or sign in if you already confirmed.",
+        );
+      } else if (message.toLowerCase().includes("failed to fetch")) {
         setError(
           "Could not reach the server. Make sure npm run dev is running, then try again.",
         );
@@ -151,7 +164,17 @@ function LoginForm() {
             />
           </div>
           <div className="mb-4">
-            <Label htmlFor="password">Password</Label>
+            <div className="mb-1 flex items-center justify-between">
+              <Label htmlFor="password">Password</Label>
+              {mode === "login" ? (
+                <Link
+                  href="/auth/forgot-password"
+                  className="text-xs font-semibold text-emerald-700 hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              ) : null}
+            </div>
             <Input
               id="password"
               type="password"

@@ -9,8 +9,8 @@ import 'package:omr_app/services/cloud_auth_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/onboarding_preferences_service.dart';
-import 'package:omr_app/services/supabase_service.dart';
-import 'package:omr_app/services/supabase_sync_service.dart';
+import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
@@ -115,7 +115,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _initAuthDeepLinks() async {
-    if (!SupabaseService.isReady) {
+    if (!ApiService.isReady) {
       return;
     }
 
@@ -141,17 +141,17 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _handleAuthDeepLink(Uri uri) async {
-    if (!mounted || !SupabaseService.isReady || !_isAuthCallbackUri(uri)) {
+    if (!mounted || !ApiService.isReady || !_isAuthCallbackUri(uri)) {
       return;
     }
 
-    final client = SupabaseService.client;
-    if (client == null) {
+    final token = uri.queryParameters['token']?.trim();
+    if (token == null || token.isEmpty) {
       return;
     }
 
     try {
-      await client.auth.getSessionFromUrl(uri);
+      await _auth.applyTokenFromEmailVerification(token);
       if (!mounted) {
         return;
       }
@@ -175,21 +175,14 @@ class _LoginPageState extends State<LoginPage> {
     bool fromEmailConfirmation = false,
     bool isNewRegistration = false,
   }) async {
-    if (SupabaseService.client?.auth.currentSession == null) {
+    if (!ApiService.hasActiveSession) {
       return;
     }
 
-    final currentUser = SupabaseService.client?.auth.currentUser;
+    final account = await _auth.accountFromCurrentSession();
     final profile = await _localAuth.loadProfile();
-    if (profile == null && currentUser != null) {
-      final account = await _auth.accountFromCurrentSession();
-      final resolvedAccount = account ??
-          CloudTeacherAccount(
-            id: currentUser.id,
-            email: currentUser.email ?? '',
-            name: currentUser.email ?? 'Teacher',
-            isActive: true,
-          );
+    if (profile == null && account != null) {
+      final resolvedAccount = account;
       if (await _tryRestoreCloudPinProfile(resolvedAccount)) {
         if (mounted) {
           setState(() => _isLoading = false);
@@ -251,7 +244,7 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    if (SupabaseService.client?.auth.currentSession != null) {
+    if (ApiService.hasActiveSession) {
       await _continueWithActiveSession();
       return;
     }
@@ -266,12 +259,12 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _pullCloudData({required bool showErrors}) async {
-    if (!SupabaseService.isReady) {
+    if (!ApiService.isReady) {
       return;
     }
 
     try {
-      await SupabaseSyncService.instance.syncAll();
+      await CloudSyncService.instance.syncAll();
     } catch (error) {
       if (showErrors && mounted) {
         _showMessage(
@@ -283,9 +276,9 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _submit() async {
-    if (!SupabaseService.isReady) {
+    if (!ApiService.isReady) {
       _showMessage(
-        'Supabase is not connected. Start the app with your project URL and publishable key.',
+        'School server is not connected. Reinstall the app with API_BASE_URL configured.',
         isError: true,
       );
       return;
@@ -513,7 +506,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<bool> _tryRestoreCloudPinProfile(CloudTeacherAccount account) async {
-    if (!SupabaseService.hasActiveSession) {
+    if (!ApiService.hasActiveSession) {
       return false;
     }
 
@@ -759,6 +752,10 @@ class _LoginPageState extends State<LoginPage> {
           ),
           const SizedBox(height: AppSpacing.sm),
           TextButton(
+            onPressed: _isSubmitting ? null : _resendConfirmationEmail,
+            child: const Text('Resend confirmation email'),
+          ),
+          TextButton(
             onPressed: _isSubmitting
                 ? null
                 : () {
@@ -774,19 +771,38 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
+  Future<void> _resendConfirmationEmail() async {
+    final email = (_pendingConfirmationEmail ?? _emailController.text.trim())
+        .trim()
+        .toLowerCase();
+    if (!_isValidEmail(email)) {
+      _showMessage('Enter a valid email on the sign-in form first.', isError: true);
+      return;
+    }
+    setState(() => _isSubmitting = true);
+    try {
+      await _auth.resendEmailVerification(email: email);
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      _showMessage(
+        'Confirmation email sent again. Check your inbox and spam folder.',
+        isError: false,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      _showMessage(UserErrorMessages.friendlyError(error), isError: true);
+    }
+  }
+
   Future<void> _retryAfterEmailConfirmation() async {
-    if (!SupabaseService.isReady) {
+    if (!ApiService.isReady) {
       return;
     }
 
     setState(() => _isSubmitting = true);
     try {
-      await SupabaseService.client?.auth.refreshSession();
-      if (!mounted) {
-        return;
-      }
-
-      if (SupabaseService.client?.auth.currentSession != null) {
+      if (ApiService.hasActiveSession) {
         _confirmedEmailThisSession = true;
         await _continueWithActiveSession(
           fromEmailConfirmation: true,
@@ -817,7 +833,7 @@ class _LoginPageState extends State<LoginPage> {
       subtitle: isRegister
           ? 'Register to sync your classes and scan results to the cloud.'
           : 'Sign in to continue to OMR Hub.',
-      badge: SupabaseService.isReady
+      badge: ApiService.isReady
           ? AuthBadgeType.online
           : AuthBadgeType.none,
       child: Column(
@@ -825,11 +841,11 @@ class _LoginPageState extends State<LoginPage> {
         children: [
           _modeSelector(),
           const SizedBox(height: AppSpacing.lg),
-          if (!SupabaseService.isReady) ...[
+          if (!ApiService.isReady) ...[
             _statusNote(
               icon: Icons.cloud_off_rounded,
               text:
-                  'Cloud sign-in is not configured in this APK. Ask your administrator for a build that includes the school Supabase keys, or reinstall using the official release package.',
+                  'Cloud sign-in is not configured in this APK. Ask your administrator for a build that includes API_BASE_URL, or reinstall using the official release package.',
               isWarning: true,
             ),
             const SizedBox(height: AppSpacing.md),
@@ -853,6 +869,18 @@ class _LoginPageState extends State<LoginPage> {
           _emailField(),
           const SizedBox(height: AppSpacing.md),
           _passwordField(),
+          if (!isRegister) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: ApiService.isReady && !_isSubmitting
+                    ? _showForgotPasswordSheet
+                    : null,
+                child: const Text('Forgot password?'),
+              ),
+            ),
+          ],
           const SizedBox(height: AppSpacing.xl),
           AppPrimaryButton(
             label: isRegister ? 'Create Account' : 'Sign In',
@@ -860,11 +888,103 @@ class _LoginPageState extends State<LoginPage> {
                 ? Icons.person_add_alt_1_rounded
                 : Icons.login_rounded,
             isLoading: _isSubmitting,
-            onPressed: SupabaseService.isReady && !_isSubmitting ? _submit : null,
+            onPressed: ApiService.isReady && !_isSubmitting ? _submit : null,
           ),
         ],
       ),
     );
+  }
+
+  /// Prompts for an email and asks the server to send a password-reset link.
+  Future<void> _showForgotPasswordSheet() async {
+    final resetEmailController =
+        TextEditingController(text: _emailController.text.trim());
+    var isSending = false;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> submitReset() async {
+              final email = resetEmailController.text.trim();
+              if (!_isValidEmail(email)) {
+                _showMessage('Enter a valid email address.', isError: true);
+                return;
+              }
+              final navigator = Navigator.of(sheetContext);
+              setSheetState(() => isSending = true);
+              try {
+                await _auth.requestPasswordReset(email: email);
+                if (!mounted) return;
+                navigator.pop();
+                _showMessage(
+                  'If that email is registered, a reset link is on its way. '
+                  'Open it in your browser to set a new password, then sign in here.',
+                  isError: false,
+                );
+              } catch (error) {
+                setSheetState(() => isSending = false);
+                _showMessage(
+                  UserErrorMessages.friendlyError(error),
+                  isError: true,
+                );
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: AppSpacing.lg,
+                right: AppSpacing.lg,
+                top: AppSpacing.lg,
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom +
+                    AppSpacing.lg,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Reset your password',
+                    style: Theme.of(sheetContext).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    'Enter your account email. We\'ll send a link to set a new '
+                    'password. Open it on this phone.',
+                    style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+                          color: AppColors.brandMuted,
+                        ),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  TextField(
+                    controller: resetEmailController,
+                    keyboardType: TextInputType.emailAddress,
+                    autofocus: true,
+                    enabled: !isSending,
+                    decoration: const InputDecoration(
+                      labelText: 'Email',
+                      prefixIcon: Icon(Icons.alternate_email_rounded),
+                    ),
+                    onSubmitted: (_) => isSending ? null : submitReset(),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  AppPrimaryButton(
+                    label: 'Send reset link',
+                    icon: Icons.mail_outline_rounded,
+                    isLoading: isSending,
+                    onPressed: isSending ? null : submitReset,
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    resetEmailController.dispose();
   }
 
   Widget _buildPinSetupContent() {
@@ -962,7 +1082,7 @@ class _LoginPageState extends State<LoginPage> {
           isLoading: _isSubmitting,
           onPressed: _unlockOffline,
         ),
-        if (SupabaseService.isReady) ...[
+        if (ApiService.isReady) ...[
           const SizedBox(height: AppSpacing.sm),
           Center(
             child: TextButton(
