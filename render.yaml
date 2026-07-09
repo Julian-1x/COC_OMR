@@ -36,6 +36,18 @@ services:
         value: stderr
       - key: SANCTUM_STATEFUL_DOMAINS
         value: omrweb.vercel.app
+      - key: MAIL_MAILER
+        value: smtp
+      - key: MAIL_HOST
+        value: smtp-relay.brevo.com
+      - key: MAIL_PORT
+        value: "587"
+      - key: MAIL_ENCRYPTION
+        value: tls
+      - key: MAIL_FROM_ADDRESS
+        value: alex.balaba.coc@phinmaed.com
+      - key: MAIL_FROM_NAME
+        value: COC OMR
 
 databases:
   - name: coc-omr-db
