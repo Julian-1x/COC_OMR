@@ -21,6 +21,7 @@ function LoginForm() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
 
   async function handleResendConfirmation() {
     const normalizedEmail = email.trim().toLowerCase();
@@ -46,6 +47,8 @@ function LoginForm() {
         payload.message ??
           "Confirmation email sent. Check your inbox and spam folder, then tap the link.",
       );
+      setAwaitingConfirmation(true);
+      setMode("login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not resend confirmation email.");
     } finally {
@@ -111,6 +114,7 @@ function LoginForm() {
       }
 
       if (mode === "register" && payload.needsEmailConfirmation) {
+        setAwaitingConfirmation(true);
         setNotice(
           payload.message ??
             "Account created. Open the confirmation email on this device, tap the link, and you will return here signed in.",
@@ -125,8 +129,17 @@ function LoginForm() {
       const message = err instanceof Error ? err.message : "Sign in failed.";
       if (message.toLowerCase().includes("already been taken") ||
           message.toLowerCase().includes("already exists")) {
+        setAwaitingConfirmation(true);
         setError(
-          "This email is already registered. If you never confirmed it, tap Resend confirmation below. Otherwise sign in.",
+          "This email is already registered. Tap Resend confirmation below, or sign in if you already confirmed.",
+        );
+      } else if (
+        message.toLowerCase().includes("not confirmed") ||
+        message.toLowerCase().includes("not verified")
+      ) {
+        setAwaitingConfirmation(true);
+        setError(
+          "This email is not confirmed yet. Tap Resend confirmation below, then open the link in your inbox.",
         );
       } else if (message.toLowerCase().includes("failed to fetch")) {
         setError(
@@ -219,6 +232,17 @@ function LoginForm() {
             />
           </div>
 
+          {awaitingConfirmation ? (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+              <p className="font-bold">Waiting for email confirmation</p>
+              <p className="mt-1">
+                We sent a link to{" "}
+                <span className="font-semibold">{email.trim() || "your email"}</span>.
+                Check inbox and spam, or resend below.
+              </p>
+            </div>
+          ) : null}
+
           {notice ? (
             <p className="mb-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
               {notice}
@@ -233,16 +257,31 @@ function LoginForm() {
             {loading ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"}
           </Button>
 
-          <p className="mt-4 text-center text-sm text-slate-600">
-            <button
+          {awaitingConfirmation ? (
+            <Button
               type="button"
-              onClick={handleResendConfirmation}
+              variant="secondary"
+              className="mt-3 w-full"
               disabled={loading || resendLoading}
-              className="font-semibold text-emerald-700 hover:underline disabled:opacity-60"
+              onClick={handleResendConfirmation}
             >
               {resendLoading ? "Sending…" : "Resend confirmation email"}
-            </button>
-          </p>
+            </Button>
+          ) : (
+            <p className="mt-4 text-center text-sm text-slate-600">
+              <button
+                type="button"
+                onClick={() => {
+                  setAwaitingConfirmation(true);
+                  void handleResendConfirmation();
+                }}
+                disabled={loading || resendLoading}
+                className="font-semibold text-emerald-700 hover:underline disabled:opacity-60"
+              >
+                {resendLoading ? "Sending…" : "Resend confirmation email"}
+              </button>
+            </p>
+          )}
         </form>
       </div>
     </div>

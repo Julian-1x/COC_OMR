@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\Auth\MeController;
 use App\Http\Controllers\Api\Auth\RegisterController;
 use App\Http\Controllers\Api\Auth\ResendVerificationController;
 use App\Http\Controllers\Api\Auth\ResetPasswordController;
+use App\Http\Controllers\Api\MailDiagnosticsController;
 use App\Http\Controllers\Api\PinController;
 use App\Http\Controllers\Api\Portal\AdminController;
 use App\Http\Controllers\Api\Portal\DashboardController;
@@ -38,6 +39,10 @@ Route::post('/email/resend-verification', ResendVerificationController::class)
 Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
     ->middleware(['signed', 'throttle:6,1'])
     ->name('verification.verify');
+
+Route::get('/health/mail-config', [MailDiagnosticsController::class, 'config']);
+Route::post('/health/mail-test', [MailDiagnosticsController::class, 'sendTest'])
+    ->middleware('throttle:6,1');
 
 Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::post('/logout', LogoutController::class);

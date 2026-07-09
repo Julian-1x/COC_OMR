@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use App\Notifications\ResetPasswordNotification;
-use App\Notifications\VerifyEmailNotification;
+use App\Services\VerificationEmailSender;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
@@ -79,7 +79,9 @@ class User extends Authenticatable implements MustVerifyEmail
 
     public function sendEmailVerificationNotification(): void
     {
-        $this->notify(new VerifyEmailNotification);
+        if (! VerificationEmailSender::send($this)) {
+            throw new \RuntimeException('Verification email could not be sent.');
+        }
     }
 
     public function sendPasswordResetNotification($token): void

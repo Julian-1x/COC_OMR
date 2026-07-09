@@ -23,4 +23,5 @@ return [
     'auto_verify_email' => (bool) env('AUTO_VERIFY_EMAIL', false),
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
     'mobile_verify_redirect' => env('MOBILE_VERIFY_REDIRECT', 'edu.coc.omr://login-callback'),
+    'mail_test_secret' => env('MAIL_TEST_SECRET', ''),
 ];
