@@ -20,6 +20,38 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+
+  async function handleResendConfirmation() {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setError("Enter your email above first.");
+      return;
+    }
+
+    setResendLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch("/api/auth/resend-verification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: normalizedEmail }),
+      });
+      const payload = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error ?? "Could not resend confirmation email.");
+      }
+      setNotice(
+        payload.message ??
+          "Confirmation email sent. Check your inbox and spam folder, then tap the link.",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not resend confirmation email.");
+    } finally {
+      setResendLoading(false);
+    }
+  }
 
   useEffect(() => {
     const authError = searchParams.get("error");
@@ -91,9 +123,10 @@ function LoginForm() {
       router.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
-      if (message.toLowerCase().includes("already been taken")) {
+      if (message.toLowerCase().includes("already been taken") ||
+          message.toLowerCase().includes("already exists")) {
         setError(
-          "This email is already registered. Check your inbox (and spam) for the confirmation email, or sign in if you already confirmed.",
+          "This email is already registered. If you never confirmed it, tap Resend confirmation below. Otherwise sign in.",
         );
       } else if (message.toLowerCase().includes("failed to fetch")) {
         setError(
@@ -196,9 +229,20 @@ function LoginForm() {
             <p className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>
           ) : null}
 
-          <Button type="submit" className="w-full" disabled={loading}>
+          <Button type="submit" className="w-full" disabled={loading || resendLoading}>
             {loading ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"}
           </Button>
+
+          <p className="mt-4 text-center text-sm text-slate-600">
+            <button
+              type="button"
+              onClick={handleResendConfirmation}
+              disabled={loading || resendLoading}
+              className="font-semibold text-emerald-700 hover:underline disabled:opacity-60"
+            >
+              {resendLoading ? "Sending…" : "Resend confirmation email"}
+            </button>
+          </p>
         </form>
       </div>
     </div>

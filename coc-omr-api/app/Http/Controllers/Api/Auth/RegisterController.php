@@ -10,21 +10,38 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 
 class RegisterController extends Controller
 {
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+            'email' => ['required', 'email', 'max:255'],
             'password' => ['required', 'confirmed', Password::defaults()],
             'full_name' => ['required', 'string', 'max:255'],
             'school' => ['nullable', 'string', 'max:255'],
         ]);
 
+        $email = strtolower($validated['email']);
+        $existing = User::query()->where('email', $email)->first();
+
+        if ($existing?->hasVerifiedEmail()) {
+            throw ValidationException::withMessages([
+                'email' => ['An account with this email already exists. Use Login instead.'],
+            ]);
+        }
+
+        if ($existing !== null) {
+            return $this->finishRegistration(
+                $this->updateUnverifiedUser($existing, $validated),
+                resumed: true,
+            );
+        }
+
         $user = User::query()->create([
             'name' => $validated['full_name'],
-            'email' => strtolower($validated['email']),
+            'email' => $email,
             'password' => Hash::make($validated['password']),
         ]);
 
@@ -36,6 +53,34 @@ class RegisterController extends Controller
             'is_active' => true,
         ]);
 
+        return $this->finishRegistration($user, resumed: false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function updateUnverifiedUser(User $user, array $validated): User
+    {
+        $user->update([
+            'name' => $validated['full_name'],
+            'password' => Hash::make($validated['password']),
+        ]);
+
+        TeacherProfile::query()->updateOrCreate(
+            ['id' => $user->id],
+            [
+                'full_name' => $validated['full_name'],
+                'school_name' => $validated['school'] ?? null,
+                'role' => 'teacher',
+                'is_active' => true,
+            ],
+        );
+
+        return $user->fresh(['teacherProfile']) ?? $user;
+    }
+
+    private function finishRegistration(User $user, bool $resumed): JsonResponse
+    {
         $verificationEmailSent = true;
         if (config('app.auto_verify_email')) {
             $user->markEmailAsVerified();
@@ -46,17 +91,20 @@ class RegisterController extends Controller
         $payload = [
             'user' => $this->userPayload($user),
             'token_type' => 'Bearer',
+            'resumed_unverified_signup' => $resumed,
         ];
 
         if ($user->hasVerifiedEmail()) {
             $payload['token'] = $user->createToken('mobile')->plainTextToken;
         } else {
             $payload['message'] = $verificationEmailSent
-                ? 'Check your email to confirm your account before signing in.'
-                : 'Account created, but we could not send the confirmation email yet. Use Resend confirmation or try again in a few minutes.';
+                ? ($resumed
+                    ? 'This email was not confirmed yet. We sent a new confirmation link — check your inbox and spam folder.'
+                    : 'Check your email to confirm your account before signing in.')
+                : 'Account saved, but we could not send the confirmation email yet. Use Resend confirmation or try again in a few minutes.';
         }
 
-        return response()->json($payload, 201);
+        return response()->json($payload, $resumed ? 200 : 201);
     }
 
     private function sendVerificationEmail(User $user): bool
