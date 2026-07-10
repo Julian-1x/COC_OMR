@@ -2,6 +2,20 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { formatCorrectAnswer } from "@/lib/omr/answer-key";
 import { scanPassed } from "@/lib/omr/passing-score";
+import {
+  buildItemAnalysisReport,
+  exportItemAnalysisCsv,
+  exportItemAnalysisPdf,
+  type QuestionAnalysis,
+} from "@/lib/omr/item-analysis";
+
+export type { QuestionAnalysis } from "@/lib/omr/item-analysis";
+export {
+  buildItemAnalysisReport,
+  computeItemAnalysis,
+  exportItemAnalysisCsv,
+  exportItemAnalysisPdf,
+} from "@/lib/omr/item-analysis";
 
 const ROWS_PER_PAGE = 45;
 
@@ -169,58 +183,4 @@ export function exportSectionRosterCsv(students: DbStudent[], sectionName: strin
     [s.school_id, s.omr_id, `"${s.name.replace(/"/g, '""')}"`, s.section_name].join(","),
   );
   return [header, ...lines].join("\n");
-}
-
-export type QuestionAnalysis = {
-  questionNumber: number;
-  correctAnswer: string;
-  totalAttempts: number;
-  correctCount: number;
-  answerDistribution: Record<string, number>;
-};
-
-export function computeItemAnalysis(
-  scans: DbScanResult[],
-  answerKey: Record<string, string | string[]>,
-  totalQuestions: number,
-): QuestionAnalysis[] {
-  const analyses: QuestionAnalysis[] = Array.from({ length: totalQuestions }, (_, i) => {
-    const qNum = i + 1;
-    const key = String(qNum);
-    return {
-      questionNumber: qNum,
-      correctAnswer: formatCorrectAnswer(answerKey[key]),
-      totalAttempts: 0,
-      correctCount: 0,
-      answerDistribution: {},
-    };
-  });
-
-  for (const scan of scans.filter((s) => !s.needs_review)) {
-    for (let q = 1; q <= totalQuestions; q++) {
-      const analysis = analyses[q - 1];
-      const studentAnswer = scan.detected_answers?.[String(q)] ?? "";
-      if (!studentAnswer) continue;
-      analysis.totalAttempts++;
-      analysis.answerDistribution[studentAnswer] =
-        (analysis.answerDistribution[studentAnswer] ?? 0) + 1;
-      const correct = answerKey[String(q)];
-      const acceptable = Array.isArray(correct) ? correct : correct ? [correct] : [];
-      if (acceptable.includes(studentAnswer)) analysis.correctCount++;
-    }
-  }
-
-  return analyses;
-}
-
-export function exportItemAnalysisCsv(
-  subjectName: string,
-  analyses: QuestionAnalysis[],
-): string {
-  const header = "Question,Correct Answer,Attempts,Correct,Percent Correct";
-  const lines = analyses.map((a) => {
-    const pct = a.totalAttempts > 0 ? Math.round((a.correctCount / a.totalAttempts) * 100) : 0;
-    return [a.questionNumber, a.correctAnswer, a.totalAttempts, a.correctCount, `${pct}%`].join(",");
-  });
-  return [`Subject,${subjectName}`, header, ...lines].join("\n");
 }

@@ -17,8 +17,8 @@ export async function saveStudent(input: {
   name: string;
   section_name: string;
 }) {
-  const { user, supabase } = await requireTeacherSession();
-  const existing = await fetchStudents(supabase);
+  const { user, api } = await requireTeacherSession();
+  const existing = await fetchStudents(api);
   const schoolId = normalizeSchoolId(input.school_id);
   if (!schoolId) {
     throw new Error("Student ID is required.");
@@ -29,16 +29,16 @@ export async function saveStudent(input: {
   );
   const omrId = input.omr_id ?? match?.omr_id ?? nextOmrId(existing, new Set());
 
-  await upsertStudent(supabase, user.id, {
+  await upsertStudent(api, user.id, {
     school_id: schoolId,
     omr_id: omrId,
     name: input.name.trim(),
     section_name: input.section_name.trim(),
   });
 
-  const counts = await fetchSectionStudentCounts(supabase);
+  const counts = await fetchSectionStudentCounts(api);
   await upsertSection(
-    supabase,
+    api,
     user.id,
     input.section_name.trim(),
     counts.get(input.section_name.trim()) ?? 0,
@@ -51,10 +51,10 @@ export async function saveStudent(input: {
 }
 
 export async function removeStudent(omrId: string, sectionName: string) {
-  const { user, supabase } = await requireTeacherSession();
-  await deleteStudent(supabase, omrId);
-  const counts = await fetchSectionStudentCounts(supabase);
-  await upsertSection(supabase, user.id, sectionName, counts.get(sectionName) ?? 0);
+  const { user, api } = await requireTeacherSession();
+  await deleteStudent(api, omrId);
+  const counts = await fetchSectionStudentCounts(api);
+  await upsertSection(api, user.id, sectionName, counts.get(sectionName) ?? 0);
   revalidatePath("/dashboard/classes");
   revalidatePath(`/dashboard/classes/${encodeURIComponent(sectionName)}`);
   revalidatePath("/dashboard");

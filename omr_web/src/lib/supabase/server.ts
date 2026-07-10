@@ -1,29 +1,6 @@
-import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
-import { getSupabaseServerEnv } from "@/lib/supabase/env";
+const REMOVED =
+  "Supabase was removed from omr_web. Use createServerApiClient from @/lib/api/laravel-client.";
 
-export async function createClient() {
-  const cookieStore = await cookies();
-  const { url, key } = getSupabaseServerEnv();
-
-  return createServerClient(
-    url,
-    key,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options),
-            );
-          } catch {
-            // Called from a Server Component — middleware handles refresh.
-          }
-        },
-      },
-    },
-  );
+export async function createClient(): Promise<never> {
+  throw new Error(REMOVED);
 }

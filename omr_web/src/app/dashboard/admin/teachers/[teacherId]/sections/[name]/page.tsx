@@ -11,13 +11,13 @@ export default async function AdminSectionRosterPage({
 }) {
   const { teacherId, name } = await params;
   const sectionName = decodeURIComponent(name);
-  const { profile, supabase } = await requireAdminSession();
+  const { profile, api } = await requireAdminSession();
   const schoolName = profile.school_name?.trim() ?? null;
 
-  const teacher = await fetchTeacherProfileForAdmin(supabase, teacherId, schoolName);
+  const teacher = await fetchTeacherProfileForAdmin(api, teacherId, schoolName);
   if (!teacher) notFound();
 
-  const students = await fetchSectionStudentsForAdmin(supabase, teacherId, sectionName, schoolName);
+  const students = await fetchSectionStudentsForAdmin(api, teacherId, sectionName, schoolName);
   if (students === null) notFound();
 
   return (

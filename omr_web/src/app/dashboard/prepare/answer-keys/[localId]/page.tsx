@@ -7,7 +7,7 @@ import { PageSkeleton } from "@/components/page-skeleton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
-import { createClient } from "@/lib/supabase/client";
+import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchSubject, fetchSubjects, upsertSubject } from "@/lib/api/data";
 import { generateSubjectLocalId } from "@/lib/import/roster";
 import {
@@ -48,12 +48,12 @@ export default function AnswerKeyEditorPage() {
   useEffect(() => {
     async function load() {
       try {
-        const supabase = createClient();
-        const sectionRows = await fetchSections(supabase);
+        const api = createBrowserApiClient();
+        const sectionRows = await fetchSections(api);
         setAllSections(sectionRows.map((s) => s.name));
 
         if (localIdParam) {
-          const subject = await fetchSubject(supabase, localIdParam);
+          const subject = await fetchSubject(api, localIdParam);
           if (subject) {
             setName(subject.name);
             setTotalQuestions(subject.total_questions);
@@ -105,16 +105,11 @@ export default function AnswerKeyEditorPage() {
     setSaving(true);
     setError(null);
     try {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) throw new Error("Sign in required.");
-      const existing = await fetchSubjects(supabase);
+      const api = createBrowserApiClient();
+      const existing = await fetchSubjects(api);
       const localId = localIdParam ?? generateSubjectLocalId(existing);
-      const now = new Date().toISOString();
 
-      await upsertSubject(supabase, user.id, {
+      await upsertSubject(api, "", {
         local_id: localId,
         name: name.trim(),
         answer_key: answerKey,
@@ -124,7 +119,6 @@ export default function AnswerKeyEditorPage() {
         exam_date: examDate || null,
         passing_score: passingScore,
         use_partial_credit: usePartialCredit,
-        updated_at: now,
       });
 
       router.push("/dashboard/prepare/answer-keys");

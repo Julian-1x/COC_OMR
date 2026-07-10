@@ -10,14 +10,14 @@ import { requireTeacherSession } from "@/lib/api/session";
 import { PrepareContent } from "./prepare-content";
 
 export default async function PreparePage() {
-  const { supabase } = await requireTeacherSession();
+  const { api } = await requireTeacherSession();
 
   const [sectionRows, counts, students, subjects, lastUpdated] = await Promise.all([
-    fetchSections(supabase),
-    fetchSectionStudentCounts(supabase),
-    fetchStudents(supabase),
-    fetchSubjects(supabase),
-    fetchCloudLastUpdated(supabase),
+    fetchSections(api),
+    fetchSectionStudentCounts(api),
+    fetchStudents(api),
+    fetchSubjects(api),
+    fetchCloudLastUpdated(api),
   ]);
 
   const sections = sectionRows

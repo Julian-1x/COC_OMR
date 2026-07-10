@@ -1,14 +1,10 @@
-import { createBrowserClient } from "@supabase/ssr";
-import { getSupabaseClientEnv, isSupabaseConfigured } from "@/lib/supabase/env";
+const REMOVED =
+  "Supabase was removed from omr_web. Use createBrowserApiClient from @/lib/api/laravel-client.";
 
-export { isSupabaseConfigured };
+export function isSupabaseConfigured(): boolean {
+  return false;
+}
 
-export function createClient() {
-  const { url, key } = getSupabaseClientEnv();
-  if (!url?.startsWith("https://") || !key) {
-    throw new Error(
-      "Supabase is not configured. Add omr_web/.env.local, then restart: npm run dev",
-    );
-  }
-  return createBrowserClient(url, key);
+export function createClient(): never {
+  throw new Error(REMOVED);
 }

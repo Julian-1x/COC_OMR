@@ -7,11 +7,11 @@ import { requireTeacherSession } from "@/lib/api/session";
 import { workspaceName } from "@/lib/theme";
 
 export default async function SettingsPage() {
-  const { user, profile, supabase } = await requireTeacherSession();
+  const { user, profile, api } = await requireTeacherSession();
   const admin = isSchoolAdmin(profile, user);
   const [stats, lastUpdated] = await Promise.all([
-    fetchDashboardStats(supabase),
-    fetchCloudLastUpdated(supabase),
+    fetchDashboardStats(api),
+    fetchCloudLastUpdated(api),
   ]);
 
   const hasData =

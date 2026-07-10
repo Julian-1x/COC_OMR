@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { fetchScanResults, fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
 import { schoolYearOptions } from "@/lib/academic-term";
@@ -6,30 +7,35 @@ import { ResultsContent } from "./results-content";
 export default async function ResultsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: string; year?: string }>;
+  searchParams: Promise<{ view?: string; year?: string; review?: string }>;
 }) {
-  const { view, year } = await searchParams;
+  const { view, year, review } = await searchParams;
   const showArchived = view === "archived";
   const schoolYear = year?.trim() || undefined;
-  const { supabase } = await requireTeacherSession();
+  const reviewFilter =
+    review === "pending" || review === "passed" || review === "failed" ? review : "";
+  const { api } = await requireTeacherSession();
   const [scans, students, subjects, sections] = await Promise.all([
-    fetchScanResults(supabase),
-    fetchStudents(supabase),
-    fetchSubjects(supabase),
-    fetchSections(supabase, { archived: showArchived ? true : false, schoolYear }),
+    fetchScanResults(api),
+    fetchStudents(api),
+    fetchSubjects(api),
+    fetchSections(api, { archived: showArchived ? true : false, schoolYear }),
   ]);
 
   const allowedSectionNames = new Set(sections.map((section) => section.name));
 
   return (
-    <ResultsContent
-      scans={scans}
-      students={students.filter((student) => allowedSectionNames.has(student.section_name))}
-      subjects={subjects}
-      sections={sections}
-      showArchived={showArchived}
-      schoolYear={schoolYear}
-      yearOptions={schoolYearOptions()}
-    />
+    <Suspense fallback={<p className="text-sm text-slate-500">Loading results…</p>}>
+      <ResultsContent
+        scans={scans}
+        students={students.filter((student) => allowedSectionNames.has(student.section_name))}
+        subjects={subjects}
+        sections={sections}
+        showArchived={showArchived}
+        schoolYear={schoolYear}
+        yearOptions={schoolYearOptions()}
+        initialReviewFilter={reviewFilter}
+      />
+    </Suspense>
   );
 }

@@ -24,13 +24,13 @@ export default async function AdminTeacherDetailPage({
 
   const { teacherId } = await params;
 
-  const { user, profile, supabase } = await requireAdminSession();
+  const { user, profile, api } = await requireAdminSession();
 
   const schoolName = profile.school_name?.trim() ?? null;
 
 
 
-  const detail = await fetchTeacherAdminDetail(supabase, teacherId, schoolName);
+  const detail = await fetchTeacherAdminDetail(api, teacherId, schoolName);
 
   if (!detail) notFound();
 

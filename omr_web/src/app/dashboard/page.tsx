@@ -33,10 +33,10 @@ const deskTasks = [
 ];
 
 export default async function DashboardHomePage() {
-  const { user, profile, supabase } = await requireTeacherSession();
+  const { user, profile, api } = await requireTeacherSession();
   const [stats, lastUpdated] = await Promise.all([
-    fetchDashboardStats(supabase),
-    fetchCloudLastUpdated(supabase),
+    fetchDashboardStats(api),
+    fetchCloudLastUpdated(api),
   ]);
 
   const firstName = profile?.full_name?.split(" ")[0] ?? "Teacher";
@@ -54,8 +54,17 @@ export default async function DashboardHomePage() {
           Prep and print here on your desk. Scan on your phone. Results show up after you sync.
         </p>
         {lastUpdated && hasData ? (
-          <p className="mt-1 text-xs text-slate-400">
-            Last updated {formatDistanceToNow(new Date(lastUpdated), { addSuffix: true })}
+          <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+            Cloud data last updated {formatDistanceToNow(new Date(lastUpdated), { addSuffix: true })}.
+            {stats.pendingReview > 0 ? (
+              <>
+                {" "}
+                <Link href="/dashboard/results?review=pending" className="text-emerald-700 underline">
+                  {stats.pendingReview} scan{stats.pendingReview === 1 ? "" : "s"} need review on your phone
+                </Link>
+                .
+              </>
+            ) : null}
           </p>
         ) : null}
       </div>
@@ -67,7 +76,11 @@ export default async function DashboardHomePage() {
         <StatCard
           label="Graded sheets"
           value={stats.scanCount}
-          hint={stats.pendingReview > 0 ? `${stats.pendingReview} to review on phone` : undefined}
+          hint={
+            stats.pendingReview > 0
+              ? `${stats.pendingReview} need review on phone`
+              : undefined
+          }
         />
       </div>
 

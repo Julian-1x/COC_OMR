@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/dashboard-shell";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { createClient } from "@/lib/supabase/client";
+import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { deleteSubject, fetchSubjects } from "@/lib/api/data";
 import type { DbSubject } from "@/lib/types/database";
 import { formatPassingLabel } from "@/lib/omr/passing-score";
@@ -19,8 +19,8 @@ export default function AnswerKeysPage() {
   async function load() {
     setLoading(true);
     try {
-      const supabase = createClient();
-      setSubjects(await fetchSubjects(supabase));
+      const api = createBrowserApiClient();
+      setSubjects(await fetchSubjects(api));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load.");
     } finally {
@@ -40,8 +40,8 @@ export default function AnswerKeysPage() {
     ) {
       return;
     }
-    const supabase = createClient();
-    await deleteSubject(supabase, localId);
+    const api = createBrowserApiClient();
+    await deleteSubject(api, localId);
     await load();
   }
 

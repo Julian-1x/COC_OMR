@@ -14,12 +14,12 @@ export async function commitRosterImport(
   rows: ImportRow[],
   meta?: { schoolYear: string; termLabel: string },
 ) {
-  const { user, supabase } = await requireTeacherSession();
-  const existing = await fetchStudents(supabase);
+  const { user, api } = await requireTeacherSession();
+  const existing = await fetchStudents(api);
   const plan = buildImportPlan(rows, existing);
 
   await upsertStudentsBatch(
-    supabase,
+    api,
     user.id,
     plan.toUpsert.map((r) => ({
       school_id: r.schoolId,
@@ -29,13 +29,13 @@ export async function commitRosterImport(
     })),
   );
 
-  const counts = await fetchSectionStudentCounts(supabase);
+  const counts = await fetchSectionStudentCounts(api);
   const sectionNames = new Set([
     ...existing.map((s) => s.section_name),
     ...plan.toUpsert.map((r) => r.section),
   ]);
   for (const sectionName of sectionNames) {
-    await upsertSection(supabase, user.id, sectionName, counts.get(sectionName) ?? 0, meta);
+    await upsertSection(api, user.id, sectionName, counts.get(sectionName) ?? 0, meta);
   }
 
   revalidatePath("/dashboard");

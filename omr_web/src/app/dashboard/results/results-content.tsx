@@ -1,22 +1,33 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Label, Select } from "@/components/ui/input";
+import { Input, Label, Select } from "@/components/ui/input";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { exportResultsCsv, exportResultsPdf } from "@/lib/pdf/exports";
 import { scanPassed } from "@/lib/omr/passing-score";
 import { downloadBlob, downloadText } from "@/lib/utils";
 import { formatSectionTerm } from "@/lib/academic-term";
 
-function resultsHref(view?: "archived", year?: string) {
+type ReviewFilter = "" | "pending" | "passed" | "failed";
+
+function resultsHref(view?: "archived", year?: string, review?: ReviewFilter) {
   const params = new URLSearchParams();
   if (view === "archived") params.set("view", "archived");
   if (year) params.set("year", year);
+  if (review) params.set("review", review);
   const query = params.toString();
   return query ? `/dashboard/results?${query}` : "/dashboard/results";
+}
+
+function passingPoints(scan: DbScanResult, subjects: DbSubject[]): number {
+  const subject = subjects.find(
+    (s) => s.local_id === scan.subject_local_id || s.name === scan.subject_name,
+  );
+  return subject?.passing_score ?? Math.round(scan.total_questions * 0.6);
 }
 
 export function ResultsContent({
@@ -27,6 +38,7 @@ export function ResultsContent({
   showArchived = false,
   schoolYear,
   yearOptions = [],
+  initialReviewFilter = "",
 }: {
   scans: DbScanResult[];
   students: DbStudent[];
@@ -35,22 +47,54 @@ export function ResultsContent({
   showArchived?: boolean;
   schoolYear?: string;
   yearOptions?: string[];
+  initialReviewFilter?: ReviewFilter;
 }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [sectionFilter, setSectionFilter] = useState("");
   const [subjectFilter, setSubjectFilter] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>(initialReviewFilter);
   const [pdfNote, setPdfNote] = useState<string | null>(null);
 
   const studentMap = new Map(students.map((s) => [s.omr_id, s]));
   const sectionOptions = [...sections].sort((a, b) => a.name.localeCompare(b.name));
+  const pendingCount = scans.filter((s) => s.needs_review).length;
 
-  const filtered = scans.filter((scan) => {
-    const student = studentMap.get(scan.student_omr_id);
-    if (sectionFilter && student?.section_name !== sectionFilter) return false;
-    if (subjectFilter && scan.subject_local_id !== subjectFilter && scan.subject_name !== subjectFilter) {
-      return false;
+  const filtered = useMemo(() => {
+    const needle = nameSearch.trim().toLowerCase();
+    return scans.filter((scan) => {
+      const student = studentMap.get(scan.student_omr_id);
+      if (sectionFilter && student?.section_name !== sectionFilter) return false;
+      if (subjectFilter && scan.subject_local_id !== subjectFilter && scan.subject_name !== subjectFilter) {
+        return false;
+      }
+      if (needle) {
+        const haystack = `${student?.name ?? ""} ${student?.school_id ?? ""} ${scan.student_omr_id}`.toLowerCase();
+        if (!haystack.includes(needle)) return false;
+      }
+      if (reviewFilter === "pending" && !scan.needs_review) return false;
+      if (reviewFilter === "passed" || reviewFilter === "failed") {
+        if (scan.needs_review) return false;
+        const passed = scanPassed(scan.score, scan.total_questions, passingPoints(scan, subjects));
+        if (reviewFilter === "passed" && !passed) return false;
+        if (reviewFilter === "failed" && passed) return false;
+      }
+      return true;
+    });
+  }, [scans, studentMap, sectionFilter, subjectFilter, nameSearch, reviewFilter, subjects]);
+
+  function setReviewFilterAndUrl(next: ReviewFilter) {
+    setReviewFilter(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) {
+      params.set("review", next);
+    } else {
+      params.delete("review");
     }
-    return true;
-  });
+    const q = params.toString();
+    router.replace(q ? `/dashboard/results?${q}` : "/dashboard/results");
+  }
 
   async function downloadPdf() {
     const { bytes, truncated, total } = await exportResultsPdf(
@@ -61,7 +105,9 @@ export function ResultsContent({
     );
     downloadBlob(new Blob([Uint8Array.from(bytes)], { type: "application/pdf" }), "omr_results.pdf");
     setPdfNote(
-      truncated ? `PDF shows first ${Math.min(total, 45)} of ${total} rows. Use CSV for the full list.` : null,
+      truncated
+        ? `PDF includes only the first 45 of ${total} rows. Download CSV for the full list.`
+        : null,
     );
   }
 
@@ -136,8 +182,33 @@ export function ResultsContent({
         </div>
       </div>
 
+      {pendingCount > 0 && !showArchived ? (
+        <Card className="mb-4 border-amber-200 bg-amber-50">
+          <p className="text-sm text-amber-950">
+            <strong>{pendingCount}</strong> scan{pendingCount === 1 ? "" : "s"} need review on your phone
+            before they count in exports and item analysis.{" "}
+            <button
+              type="button"
+              onClick={() => setReviewFilterAndUrl("pending")}
+              className="font-bold text-emerald-800 underline"
+            >
+              Show pending only
+            </button>
+          </p>
+        </Card>
+      ) : null}
+
       <Card className="mb-4">
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+          <div className="lg:col-span-2">
+            <Label htmlFor="search">Search student</Label>
+            <Input
+              id="search"
+              placeholder="Name, school ID, or OMR ID"
+              value={nameSearch}
+              onChange={(e) => setNameSearch(e.target.value)}
+            />
+          </div>
           <div>
             <Label htmlFor="section">Section</Label>
             <Select id="section" value={sectionFilter} onChange={(e) => setSectionFilter(e.target.value)}>
@@ -163,23 +234,45 @@ export function ResultsContent({
               ))}
             </Select>
           </div>
-          <div className="flex items-end gap-2">
-            <Button type="button" variant="secondary" onClick={downloadCsv}>
+          <div>
+            <Label htmlFor="status">Status</Label>
+            <Select
+              id="status"
+              value={reviewFilter}
+              onChange={(e) => setReviewFilterAndUrl(e.target.value as ReviewFilter)}
+            >
+              <option value="">All</option>
+              <option value="pending">Review on phone</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+            </Select>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold text-slate-500">
+            Showing {filtered.length} of {scans.length} scans
+          </p>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={downloadCsv} disabled={filtered.length === 0}>
               CSV
             </Button>
-            <Button type="button" onClick={() => void downloadPdf()}>
+            <Button type="button" onClick={() => void downloadPdf()} disabled={filtered.length === 0}>
               PDF
             </Button>
           </div>
         </div>
-        {pdfNote ? <p className="mt-3 text-xs font-semibold text-amber-700">{pdfNote}</p> : null}
+        {pdfNote ? (
+          <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{pdfNote}</p>
+        ) : null}
       </Card>
 
       {filtered.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
-          <h3 className="text-base font-extrabold text-slate-800">No results yet</h3>
+          <h3 className="text-base font-extrabold text-slate-800">No results match</h3>
           <p className="mt-2 text-sm text-slate-500">
-            After exam day, scan on your phone then open Settings → Sync Now on Wi‑Fi.
+            {scans.length === 0
+              ? "After exam day, scan on your phone then open Settings → Sync Now on Wi‑Fi."
+              : "Try clearing filters or search with a different name."}
           </p>
         </div>
       ) : (
@@ -198,9 +291,6 @@ export function ResultsContent({
               <tbody>
                 {filtered.map((scan) => {
                   const student = studentMap.get(scan.student_omr_id);
-                  const subject = subjects.find(
-                    (s) => s.local_id === scan.subject_local_id || s.name === scan.subject_name,
-                  );
                   const pct =
                     scan.total_questions > 0
                       ? Math.round((scan.score / scan.total_questions) * 100)
@@ -208,7 +298,7 @@ export function ResultsContent({
                   const passed = scanPassed(
                     scan.score,
                     scan.total_questions,
-                    subject?.passing_score ?? Math.round(scan.total_questions * 0.6),
+                    passingPoints(scan, subjects),
                   );
                   return (
                     <tr key={scan.id} className="border-b border-slate-100">

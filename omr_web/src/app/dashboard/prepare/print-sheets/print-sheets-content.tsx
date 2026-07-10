@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
-import { createClient } from "@/lib/supabase/client";
+import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
 import type { DbSubject, DbStudent } from "@/lib/types/database";
 import { generateAnswerSheetPdf, generateBlankSheetsPdf } from "@/lib/pdf/answer-sheet";
+import { getQuestionAnswers } from "@/lib/omr/answer-key";
 import { downloadBlob } from "@/lib/utils";
 
 export default function PrintSheetsPage() {
@@ -26,11 +27,11 @@ export default function PrintSheetsPage() {
 
   useEffect(() => {
     async function load() {
-      const supabase = createClient();
+      const api = createBrowserApiClient();
       const [subjectRows, sectionRows, studentRows] = await Promise.all([
-        fetchSubjects(supabase),
-        fetchSections(supabase),
-        fetchStudents(supabase),
+        fetchSubjects(api),
+        fetchSections(api),
+        fetchStudents(api),
       ]);
       setSubjects(subjectRows);
       const names = sectionRows.map((s) => s.name);
@@ -58,9 +59,65 @@ export default function PrintSheetsPage() {
   const subject = subjects.find((s) => s.local_id === subjectId);
   const sectionStudents = students.filter((s) => s.section_name === sectionName);
 
+  const checklist = useMemo(() => {
+    const keyFilled =
+      subject &&
+      Array.from({ length: subject.total_questions }, (_, i) => i + 1).every((q) => {
+        return getQuestionAnswers(subject.answer_key, String(q)).length > 0;
+      });
+    const missingOmrIds =
+      mode === "class" ? sectionStudents.filter((s) => !s.omr_id?.trim()).length : 0;
+
+    return [
+      {
+        ok: Boolean(subject),
+        label: "Answer key selected",
+        fix: "/dashboard/prepare/answer-keys",
+      },
+      {
+        ok: Boolean(sectionName && sections.includes(sectionName)),
+        label: "Section selected",
+        fix: "/dashboard/prepare/import",
+      },
+      {
+        ok: Boolean(keyFilled),
+        label: `All ${subject?.total_questions ?? "?"} questions have a correct answer`,
+        fix: subject ? `/dashboard/prepare/answer-keys/${subject.local_id}` : "/dashboard/prepare/answer-keys",
+      },
+      {
+        ok: mode === "blank" || sectionStudents.length > 0,
+        label:
+          mode === "blank"
+            ? "Blank sheet mode (no roster required)"
+            : `Roster has ${sectionStudents.length} student${sectionStudents.length === 1 ? "" : "s"}`,
+        fix: "/dashboard/prepare/import",
+      },
+      {
+        ok: missingOmrIds === 0,
+        label:
+          missingOmrIds > 0
+            ? `${missingOmrIds} student(s) missing OMR ID — assign IDs before printing`
+            : "Every student has an OMR ID",
+        fix: "/dashboard/prepare/omr-ids",
+      },
+      {
+        ok: Boolean(subject?.exam_date),
+        label: subject?.exam_date ? `Exam date set (${subject.exam_date})` : "Exam date not set (optional)",
+        fix: subject ? `/dashboard/prepare/answer-keys/${subject.local_id}` : undefined,
+        optional: !subject?.exam_date,
+      },
+    ];
+  }, [subject, sectionName, sections, sectionStudents, mode]);
+
+  const blockers = checklist.filter((item) => !item.ok && !item.optional);
+
   async function downloadPdf() {
     if (!subject || !sectionName || !sections.includes(sectionName)) {
       setError("Choose a valid subject and section.");
+      return;
+    }
+    if (blockers.length > 0) {
+      setError("Fix the checklist items below before printing.");
       return;
     }
     if (mode === "class" && sectionStudents.length === 0) {
@@ -94,6 +151,38 @@ export default function PrintSheetsPage() {
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Print OMR sheets</h1>
         <p className="mt-1 text-sm text-slate-500">Print at 100% scale (Actual size). Do not use Fit to page.</p>
       </div>
+
+      <Card className="mb-4 max-w-xl border-slate-200">
+        <p className="mb-3 text-sm font-extrabold text-slate-800">Before you print</p>
+        <ul className="space-y-2 text-sm">
+          {checklist.map((item) => (
+            <li key={item.label} className="flex items-start gap-2">
+              <span
+                className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                  item.ok
+                    ? "bg-emerald-100 text-emerald-800"
+                    : item.optional
+                      ? "bg-slate-100 text-slate-500"
+                      : "bg-amber-100 text-amber-900"
+                }`}
+              >
+                {item.ok ? "✓" : item.optional ? "·" : "!"}
+              </span>
+              <span className={item.ok ? "text-slate-700" : item.optional ? "text-slate-500" : "text-amber-950"}>
+                {item.label}
+                {!item.ok && item.fix ? (
+                  <>
+                    {" "}
+                    <Link href={item.fix} className="font-bold text-emerald-700 hover:underline">
+                      Fix
+                    </Link>
+                  </>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Card>
 
       <Card className="max-w-xl">
         <div className="space-y-3">
@@ -154,7 +243,7 @@ export default function PrintSheetsPage() {
             </div>
           ) : null}
           {error ? <p className="text-sm font-semibold text-red-600">{error}</p> : null}
-          <Button type="button" disabled={loading || !subject} onClick={downloadPdf}>
+          <Button type="button" disabled={loading || !subject || blockers.length > 0} onClick={downloadPdf}>
             {loading ? "Generating…" : "Download PDF"}
           </Button>
         </div>

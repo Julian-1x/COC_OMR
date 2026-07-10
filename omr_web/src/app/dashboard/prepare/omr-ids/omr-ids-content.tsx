@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
-import { createClient } from "@/lib/supabase/client";
+import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchStudents } from "@/lib/api/data";
 import type { DbStudent } from "@/lib/types/database";
 import { exportOmrIdsCsv, exportOmrIdsPdf } from "@/lib/pdf/exports";
@@ -24,10 +24,10 @@ export default function OmrIdsPage() {
 
   useEffect(() => {
     async function load() {
-      const supabase = createClient();
+      const api = createBrowserApiClient();
       const [sectionRows, studentRows] = await Promise.all([
-        fetchSections(supabase),
-        fetchStudents(supabase),
+        fetchSections(api),
+        fetchStudents(api),
       ]);
       const names = sectionRows.map((s) => s.name);
       setSections(names);

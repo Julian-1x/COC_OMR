@@ -10,8 +10,8 @@ export default async function SectionDetailPage({
 }) {
   const { name } = await params;
   const sectionName = decodeURIComponent(name);
-  const { supabase } = await requireTeacherSession();
-  const students = await fetchStudents(supabase, sectionName);
+  const { api } = await requireTeacherSession();
+  const students = await fetchStudents(api, sectionName);
 
   return (
     <>
