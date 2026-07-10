@@ -2,6 +2,7 @@
 
 namespace App\Notifications;
 
+use App\Services\PasswordResetEmailSender;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Notifications\Messages\MailMessage;
 
@@ -12,12 +13,7 @@ class ResetPasswordNotification extends ResetPassword
      */
     protected function resetUrl(mixed $notifiable): string
     {
-        $frontend = rtrim((string) config('app.frontend_url'), '/');
-
-        return $frontend.'/auth/reset-password?'.http_build_query([
-            'token' => $this->token,
-            'email' => $notifiable->getEmailForPasswordReset(),
-        ]);
+        return PasswordResetEmailSender::resetUrl($notifiable, $this->token);
     }
 
     public function toMail(mixed $notifiable): MailMessage

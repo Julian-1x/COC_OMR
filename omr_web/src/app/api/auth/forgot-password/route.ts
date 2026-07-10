@@ -39,8 +39,12 @@ export async function POST(request: Request) {
 
     const payload = (await response.json()) as ForgotResponse;
     if (!response.ok) {
+      const fallback =
+        response.status >= 500
+          ? "We could not send the reset email right now. Try again in a few minutes."
+          : "Could not send reset link.";
       return NextResponse.json(
-        { error: errorMessage(payload, "Could not send reset link.") },
+        { error: errorMessage(payload, fallback) },
         { status: response.status },
       );
     }

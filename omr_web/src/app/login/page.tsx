@@ -127,12 +127,13 @@ function LoginForm() {
       router.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
-      if (message.toLowerCase().includes("already been taken") ||
-          message.toLowerCase().includes("already exists")) {
-        setAwaitingConfirmation(true);
-        setError(
-          "This email is already registered. Tap Resend confirmation below, or sign in if you already confirmed.",
-        );
+      if (
+        message.toLowerCase().includes("already been taken") ||
+        message.toLowerCase().includes("already exists")
+      ) {
+        setAwaitingConfirmation(false);
+        setMode("login");
+        setError("An account with this email already exists. Sign in with your password instead.");
       } else if (
         message.toLowerCase().includes("not confirmed") ||
         message.toLowerCase().includes("not verified")
@@ -175,7 +176,12 @@ function LoginForm() {
               <button
                 key={item}
                 type="button"
-                onClick={() => setMode(item)}
+                onClick={() => {
+                  setMode(item);
+                  if (item === "register") {
+                    setAwaitingConfirmation(false);
+                  }
+                }}
                 className={`flex-1 rounded-lg py-2 text-sm font-bold capitalize ${
                   mode === item ? "bg-white text-emerald-800 shadow" : "text-slate-500"
                 }`}
@@ -267,21 +273,7 @@ function LoginForm() {
             >
               {resendLoading ? "Sending…" : "Resend confirmation email"}
             </Button>
-          ) : (
-            <p className="mt-4 text-center text-sm text-slate-600">
-              <button
-                type="button"
-                onClick={() => {
-                  setAwaitingConfirmation(true);
-                  void handleResendConfirmation();
-                }}
-                disabled={loading || resendLoading}
-                className="font-semibold text-emerald-700 hover:underline disabled:opacity-60"
-              >
-                {resendLoading ? "Sending…" : "Resend confirmation email"}
-              </button>
-            </p>
-          )}
+          ) : null}
         </form>
       </div>
     </div>

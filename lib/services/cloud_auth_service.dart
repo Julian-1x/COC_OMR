@@ -332,7 +332,7 @@ class CloudAuthService {
     if (normalized.contains('already been taken') ||
         normalized.contains('already registered') ||
         normalized.contains('already exists')) {
-      return 'An account with this email already exists. If you never confirmed it, tap Resend confirmation email. Otherwise use Login.';
+      return 'An account with this email already exists. Sign in with your email and password instead.';
     }
     if (normalized.contains('password')) {
       return 'The password does not meet requirements. Use at least 8 characters.';
