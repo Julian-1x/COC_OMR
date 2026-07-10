@@ -79,8 +79,9 @@ class User extends Authenticatable implements MustVerifyEmail
 
     public function sendEmailVerificationNotification(): void
     {
-        if (! VerificationEmailSender::send($this)) {
-            throw new \RuntimeException('Verification email could not be sent.');
+        $result = VerificationEmailSender::send($this);
+        if (! $result['ok']) {
+            throw new \RuntimeException($result['error'] ?? 'Verification email could not be sent.');
         }
     }
 

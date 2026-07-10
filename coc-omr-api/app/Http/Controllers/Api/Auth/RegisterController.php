@@ -109,19 +109,9 @@ class RegisterController extends Controller
 
     private function sendVerificationEmail(User $user): bool
     {
-        try {
-            $user->sendEmailVerificationNotification();
+        $result = \App\Services\VerificationEmailSender::send($user);
 
-            return true;
-        } catch (\Throwable $exception) {
-            Log::error('verification_email_failed', [
-                'user_id' => $user->id,
-                'email' => $user->email,
-                'error' => $exception->getMessage(),
-            ]);
-
-            return false;
-        }
+        return $result['ok'];
     }
 
     /**

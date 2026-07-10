@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\VerificationEmailSender;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class ResendVerificationController extends Controller
 {
@@ -24,10 +24,10 @@ class ResendVerificationController extends Controller
         $user = User::query()->where('email', $email)->first();
 
         if ($user !== null && ! $user->hasVerifiedEmail()) {
-            $sent = $this->sendVerificationEmail($user);
-            if (! $sent) {
+            $result = VerificationEmailSender::send($user);
+            if (! $result['ok']) {
                 return response()->json([
-                    'message' => 'We could not send the confirmation email. Ask your admin to verify Brevo sender settings on the server.',
+                    'message' => $result['error'] ?? 'We could not send the confirmation email.',
                     'email_sent' => false,
                 ], 503);
             }
@@ -37,22 +37,5 @@ class ResendVerificationController extends Controller
             'message' => 'If that email is registered and not yet confirmed, a verification link has been sent.',
             'email_sent' => true,
         ]);
-    }
-
-    private function sendVerificationEmail(User $user): bool
-    {
-        try {
-            $user->sendEmailVerificationNotification();
-
-            return true;
-        } catch (\Throwable $exception) {
-            Log::error('verification_email_resend_failed', [
-                'user_id' => $user->id,
-                'email' => $user->email,
-                'error' => $exception->getMessage(),
-            ]);
-
-            return false;
-        }
     }
 }

@@ -2,6 +2,6 @@
 
 return [
     'brevo' => [
-        'api_key' => env('BREVO_API_KEY'),
+        'api_key' => trim((string) env('BREVO_API_KEY', '')),
     ],
 ];

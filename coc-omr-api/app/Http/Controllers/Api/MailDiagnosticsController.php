@@ -3,10 +3,10 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\BrevoMailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class MailDiagnosticsController extends Controller
 {
@@ -16,31 +16,27 @@ class MailDiagnosticsController extends Controller
     public function config(): JsonResponse
     {
         $mailer = (string) config('mail.default');
-        $username = (string) config('mail.mailers.smtp.username');
         $from = (string) config('mail.from.address');
+        $brevoKeySet = (string) config('services.brevo.api_key') !== '';
+        $appUrl = (string) config('app.url');
 
         $issues = [];
-        if ($mailer !== 'smtp') {
-            $issues[] = 'MAIL_MAILER must be smtp on production (currently: '.$mailer.').';
-        }
-        if ($username === '') {
-            $issues[] = 'MAIL_USERNAME is missing.';
-        }
-        if (! config('mail.mailers.smtp.password')) {
-            $issues[] = 'MAIL_PASSWORD is missing.';
-        }
         if ($from === '' || str_contains($from, '@smtp-brevo.com')) {
-            $issues[] = 'MAIL_FROM_ADDRESS must be a verified Brevo sender (not @smtp-brevo.com).';
+            $issues[] = 'MAIL_FROM_ADDRESS must be a verified Brevo sender (e.g. alex.balaba.coc@phinmaed.com).';
+        }
+        if (! $brevoKeySet && $mailer !== 'smtp') {
+            $issues[] = 'Set BREVO_API_KEY (recommended) or MAIL_MAILER=smtp on Render.';
+        }
+        if ($appUrl === '' || str_contains($appUrl, 'localhost')) {
+            $issues[] = 'APP_URL must be https://coc-omr-api.onrender.com on Render.';
         }
 
         return response()->json([
             'mailer' => $mailer,
-            'host' => config('mail.mailers.smtp.host'),
-            'port' => config('mail.mailers.smtp.port'),
-            'encryption' => config('mail.mailers.smtp.encryption'),
-            'username_set' => $username !== '',
-            'password_set' => (bool) config('mail.mailers.smtp.password'),
+            'brevo_api_key_set' => $brevoKeySet,
+            'active_transport' => $brevoKeySet ? 'brevo_api' : 'smtp',
             'from_address' => $from !== '' ? $from : null,
+            'app_url' => $appUrl,
             'auto_verify_email' => (bool) config('app.auto_verify_email'),
             'ok' => $issues === [],
             'issues' => $issues,
@@ -48,7 +44,6 @@ class MailDiagnosticsController extends Controller
     }
 
     /**
-     * Send one test email. Requires MAIL_TEST_SECRET on the server (set on Render).
      * POST /api/health/mail-test  { "secret": "...", "email": "you@gmail.com" }
      */
     public function sendTest(Request $request): JsonResponse
@@ -72,11 +67,11 @@ class MailDiagnosticsController extends Controller
         $email = strtolower($request->string('email')->toString());
 
         try {
-            Mail::raw(
+            BrevoMailService::sendTransactional(
+                $email,
+                'COC OMR mail test',
+                '<p>COC OMR mail test — if you received this, Brevo is working.</p>',
                 'COC OMR mail test — if you received this, Brevo is working.',
-                static function ($message) use ($email): void {
-                    $message->to($email)->subject('COC OMR mail test');
-                },
             );
         } catch (\Throwable $exception) {
             Log::error('mail_test_failed', ['email' => $email, 'error' => $exception->getMessage()]);
@@ -88,7 +83,7 @@ class MailDiagnosticsController extends Controller
         }
 
         return response()->json([
-            'message' => 'Test email handed off to mail. Check Brevo logs and the inbox (including spam).',
+            'message' => 'Test email sent via Brevo API. Check Brevo logs and the inbox (including spam).',
             'email' => $email,
         ]);
     }
