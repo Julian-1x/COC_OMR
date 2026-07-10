@@ -30,6 +30,10 @@ class MailDiagnosticsController extends Controller
         if ($appUrl === '' || str_contains($appUrl, 'localhost')) {
             $issues[] = 'APP_URL must be https://coc-omr-api.onrender.com on Render.';
         }
+        $frontendUrl = (string) config('app.frontend_url');
+        if ($frontendUrl === '' || str_contains($frontendUrl, 'localhost')) {
+            $issues[] = 'FRONTEND_URL must be https://omrweb.vercel.app on Render.';
+        }
 
         return response()->json([
             'mailer' => $mailer,
@@ -37,6 +41,7 @@ class MailDiagnosticsController extends Controller
             'active_transport' => $brevoKeySet ? 'brevo_api' : 'smtp',
             'from_address' => $from !== '' ? $from : null,
             'app_url' => $appUrl,
+            'frontend_url' => $frontendUrl !== '' ? $frontendUrl : null,
             'auto_verify_email' => (bool) config('app.auto_verify_email'),
             'ok' => $issues === [],
             'issues' => $issues,

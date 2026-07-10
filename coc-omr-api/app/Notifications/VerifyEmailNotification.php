@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\URL;
 
 class VerifyEmailNotification extends VerifyEmail
 {
-    protected function verificationUrl($notifiable): string
+    protected function verificationUrl($notifiable, string $platform): string
     {
         return URL::temporarySignedRoute(
             'verification.verify',
@@ -18,15 +18,15 @@ class VerifyEmailNotification extends VerifyEmail
             [
                 'id' => $notifiable->getKey(),
                 'hash' => sha1($notifiable->getEmailForVerification()),
+                'platform' => $platform,
             ],
         );
     }
 
     public function toMail($notifiable): MailMessage
     {
-        $verifyUrl = $this->verificationUrl($notifiable);
-        $mobileUrl = $verifyUrl.(str_contains($verifyUrl, '?') ? '&' : '?').'platform=mobile';
-        $webUrl = $verifyUrl.(str_contains($verifyUrl, '?') ? '&' : '?').'platform=web';
+        $webUrl = $this->verificationUrl($notifiable, 'web');
+        $mobileUrl = $this->verificationUrl($notifiable, 'mobile');
 
         return (new MailMessage)
             ->subject('Verify your COC OMR email')

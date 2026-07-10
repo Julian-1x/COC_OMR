@@ -103,15 +103,14 @@ HTML;
 
     private static function verificationUrl(User $user, string $platform): string
     {
-        $base = URL::temporarySignedRoute(
+        return URL::temporarySignedRoute(
             'verification.verify',
             Carbon::now()->addMinutes(Config::get('auth.verification.expire', 60)),
             [
                 'id' => $user->getKey(),
                 'hash' => sha1($user->getEmailForVerification()),
+                'platform' => $platform,
             ],
         );
-
-        return $base.(str_contains($base, '?') ? '&' : '?').'platform='.$platform;
     }
 }
