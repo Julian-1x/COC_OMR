@@ -30,9 +30,10 @@ class VerifyEmailNotification extends VerifyEmail
 
         return (new MailMessage)
             ->subject('Verify your COC OMR email')
-            ->line('Tap the button below to verify your email and finish signing in.')
-            ->action('Verify email (web)', $webUrl)
-            ->line('On your phone? Open this link in the browser, then return to the app:')
+            ->line('Tap the button below to verify your email.')
+            ->line('If you registered on the web, leave that sign-in page open — it will continue automatically after you verify.')
+            ->action('Verify email', $webUrl)
+            ->line('Prefer the mobile app? Open this link:')
             ->line($mobileUrl);
     }
 }

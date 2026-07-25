@@ -85,13 +85,13 @@ class VerificationEmailSender
 
         $html = <<<HTML
 <p>You are receiving this email because we received a registration request for your COC OMR account.</p>
-<p><a href="{$webUrl}"><strong>Verify email (web)</strong></a></p>
-<p>On your phone? Open this link:</p>
-<p><a href="{$mobileUrl}">{$mobileUrl}</a></p>
+<p><a href="{$webUrl}"><strong>Verify email</strong></a></p>
+<p>You can open this link on your phone or computer. If you registered on the web, leave that sign-in page open — it will continue automatically after you verify.</p>
+<p>Prefer the mobile app? <a href="{$mobileUrl}">Open in COC OMR app</a></p>
 <p>This link expires in 60 minutes. If you did not request this, you can ignore this email.</p>
 HTML;
 
-        $text = "Verify your COC OMR email\n\nWeb: {$webUrl}\n\nPhone: {$mobileUrl}\n";
+        $text = "Verify your COC OMR email\n\n{$webUrl}\n\nLeave your web sign-in page open if you registered there — it will continue after you verify.\n\nMobile app: {$mobileUrl}\n";
 
         BrevoMailService::sendTransactional(
             $user->getEmailForVerification(),

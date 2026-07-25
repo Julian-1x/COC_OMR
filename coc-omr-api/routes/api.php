@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\Auth\MeController;
 use App\Http\Controllers\Api\Auth\RegisterController;
 use App\Http\Controllers\Api\Auth\ResendVerificationController;
 use App\Http\Controllers\Api\Auth\ResetPasswordController;
+use App\Http\Controllers\Api\Auth\VerificationStatusController;
 use App\Http\Controllers\Api\MailDiagnosticsController;
 use App\Http\Controllers\Api\PinController;
 use App\Http\Controllers\Api\Portal\AdminController;
@@ -35,6 +36,8 @@ Route::post('/forgot-password', ForgotPasswordController::class);
 Route::post('/reset-password', ResetPasswordController::class);
 Route::post('/email/resend-verification', ResendVerificationController::class)
     ->middleware('throttle:6,1');
+Route::post('/email/verification-check', VerificationStatusController::class)
+    ->middleware('throttle:60,1');
 
 Route::get('/email/verify/{id}/{hash}', [EmailVerificationController::class, 'verify'])
     ->middleware(['signed', 'throttle:6,1'])
