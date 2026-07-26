@@ -15,29 +15,33 @@ use Illuminate\Database\Eloquent\Model;
 
 class TeacherScopeService
 {
+    /**
+     * Teacher-desk queries: always the signed-in teacher's own rows.
+     * School-wide admin reads use schoolWide* methods instead.
+     */
     public function sectionsQuery(User $user): Builder
     {
-        return $this->scopedQuery($user, Section::query());
+        return Section::query()->where('owner_teacher_id', $user->id);
     }
 
     public function studentsQuery(User $user): Builder
     {
-        return $this->scopedQuery($user, Student::query());
+        return Student::query()->where('owner_teacher_id', $user->id);
     }
 
     public function subjectsQuery(User $user): Builder
     {
-        return $this->scopedQuery($user, Subject::query());
+        return Subject::query()->where('owner_teacher_id', $user->id);
     }
 
     public function scanResultsQuery(User $user): Builder
     {
-        return $this->scopedQuery($user, ScanResult::query());
+        return ScanResult::query()->where('owner_teacher_id', $user->id);
     }
 
     public function deadlinesQuery(User $user): Builder
     {
-        return $this->scopedQuery($user, Deadline::query());
+        return Deadline::query()->where('owner_teacher_id', $user->id);
     }
 
     public function schoolTeachersQuery(User $user): Builder
@@ -58,31 +62,51 @@ class TeacherScopeService
             ->orderBy('full_name');
     }
 
+    public function schoolWideSectionsQuery(User $user): Builder
+    {
+        return $this->schoolWideQuery($user, Section::query());
+    }
+
+    public function schoolWideStudentsQuery(User $user): Builder
+    {
+        return $this->schoolWideQuery($user, Student::query());
+    }
+
+    public function schoolWideSubjectsQuery(User $user): Builder
+    {
+        return $this->schoolWideQuery($user, Subject::query());
+    }
+
+    public function schoolWideScanResultsQuery(User $user): Builder
+    {
+        return $this->schoolWideQuery($user, ScanResult::query());
+    }
+
     /**
      * @template T of Model
      *
      * @param  Builder<T>  $query
      * @return Builder<T>
      */
-    private function scopedQuery(User $user, Builder $query): Builder
+    private function schoolWideQuery(User $user, Builder $query): Builder
     {
-        if ($user->isSchoolAdmin()) {
-            $school = $user->schoolName();
-            if ($school === null || $school === '') {
-                return $query->where('owner_teacher_id', $user->id);
-            }
-
-            if ($school === CocSchool::NAME) {
-                return $query;
-            }
-
-            $teacherIds = TeacherProfile::query()
-                ->where('school_name', $school)
-                ->pluck('id');
-
-            return $query->whereIn('owner_teacher_id', $teacherIds);
+        if (! $user->isSchoolAdmin()) {
+            return $query->where('owner_teacher_id', $user->id);
         }
 
-        return $query->where('owner_teacher_id', $user->id);
+        $school = $user->schoolName();
+        if ($school === null || $school === '') {
+            return $query->where('owner_teacher_id', $user->id);
+        }
+
+        if ($school === CocSchool::NAME) {
+            return $query;
+        }
+
+        $teacherIds = TeacherProfile::query()
+            ->where('school_name', $school)
+            ->pluck('id');
+
+        return $query->whereIn('owner_teacher_id', $teacherIds);
     }
 }

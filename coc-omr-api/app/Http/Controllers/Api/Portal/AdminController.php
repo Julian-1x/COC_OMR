@@ -49,12 +49,12 @@ class AdminController extends Controller
             return response()->json(['message' => 'Teacher not found.'], 404);
         }
 
-        $sectionRows = $this->scope->sectionsQuery($admin)
+        $sectionRows = $this->scope->schoolWideSectionsQuery($admin)
             ->where('owner_teacher_id', $teacherId)
             ->orderBy('name')
             ->get(['name']);
 
-        $studentRows = $this->scope->studentsQuery($admin)
+        $studentRows = $this->scope->schoolWideStudentsQuery($admin)
             ->where('owner_teacher_id', $teacherId)
             ->get(['section_name']);
 
@@ -74,11 +74,11 @@ class AdminController extends Controller
 
         return response()->json([
             'teacher' => $teacher,
-            'section_count' => $this->scope->sectionsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
-            'student_count' => $this->scope->studentsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
-            'subject_count' => $this->scope->subjectsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
-            'scan_count' => $this->scope->scanResultsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
-            'pending_review_count' => $this->scope->scanResultsQuery($admin)
+            'section_count' => $this->scope->schoolWideSectionsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
+            'student_count' => $this->scope->schoolWideStudentsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
+            'subject_count' => $this->scope->schoolWideSubjectsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
+            'scan_count' => $this->scope->schoolWideScanResultsQuery($admin)->where('owner_teacher_id', $teacherId)->count(),
+            'pending_review_count' => $this->scope->schoolWideScanResultsQuery($admin)
                 ->where('owner_teacher_id', $teacherId)
                 ->where('needs_review', true)
                 ->count(),
@@ -96,7 +96,7 @@ class AdminController extends Controller
             return response()->json(['message' => 'Teacher not found.'], 404);
         }
 
-        $students = $this->scope->studentsQuery($admin)
+        $students = $this->scope->schoolWideStudentsQuery($admin)
             ->where('owner_teacher_id', $teacherId)
             ->where('section_name', $sectionName)
             ->orderBy('name')
@@ -202,11 +202,11 @@ class AdminController extends Controller
 
         return $teachers->map(function (TeacherProfile $teacher) use ($admin) {
             $teacherId = $teacher->id;
-            $sectionCount = $this->scope->sectionsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
-            $studentCount = $this->scope->studentsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
-            $subjectCount = $this->scope->subjectsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
-            $scanCount = $this->scope->scanResultsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
-            $pendingReviewCount = $this->scope->scanResultsQuery($admin)
+            $sectionCount = $this->scope->schoolWideSectionsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
+            $studentCount = $this->scope->schoolWideStudentsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
+            $subjectCount = $this->scope->schoolWideSubjectsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
+            $scanCount = $this->scope->schoolWideScanResultsQuery($admin)->where('owner_teacher_id', $teacherId)->count();
+            $pendingReviewCount = $this->scope->schoolWideScanResultsQuery($admin)
                 ->where('owner_teacher_id', $teacherId)
                 ->where('needs_review', true)
                 ->count();
@@ -256,10 +256,10 @@ class AdminController extends Controller
 
         foreach (['sections', 'students', 'subjects', 'scan_results'] as $table) {
             $query = match ($table) {
-                'sections' => $this->scope->sectionsQuery($admin),
-                'students' => $this->scope->studentsQuery($admin),
-                'subjects' => $this->scope->subjectsQuery($admin),
-                'scan_results' => $this->scope->scanResultsQuery($admin),
+                'sections' => $this->scope->schoolWideSectionsQuery($admin),
+                'students' => $this->scope->schoolWideStudentsQuery($admin),
+                'subjects' => $this->scope->schoolWideSubjectsQuery($admin),
+                'scan_results' => $this->scope->schoolWideScanResultsQuery($admin),
             };
 
             $latest = $query

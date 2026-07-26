@@ -30,10 +30,10 @@ export function ClassesList({
   }[];
   archived?: boolean;
 }) {
-  const [expandedName, setExpandedName] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  function toggleSection(name: string) {
-    setExpandedName((current) => (current === name ? null : name));
+  function toggleSection(id: string) {
+    setExpandedId((current) => (current === id ? null : id));
   }
 
   return (
@@ -58,8 +58,8 @@ export function ClassesList({
           <ExpandableClassCard
             key={section.id}
             section={cardSection}
-            isOpen={expandedName === section.name}
-            onToggle={() => toggleSection(section.name)}
+            isOpen={expandedId === section.id}
+            onToggle={() => toggleSection(section.id)}
           >
             <div className="flex flex-wrap gap-2">
               <Link
