@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\CocSchool;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -74,6 +75,11 @@ class User extends Authenticatable implements MustVerifyEmail
         $school = $this->schoolName();
         if ($school === null || $school === '') {
             return false;
+        }
+
+        // Single-tenant COC admin can manage any teacher account.
+        if ($school === CocSchool::NAME) {
+            return TeacherProfile::query()->whereKey($teacherId)->exists();
         }
 
         $other = TeacherProfile::query()->find($teacherId);

@@ -9,6 +9,7 @@ use App\Models\Student;
 use App\Models\Subject;
 use App\Models\TeacherProfile;
 use App\Models\User;
+use App\Support\CocSchool;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
@@ -46,6 +47,12 @@ class TeacherScopeService
             return TeacherProfile::query()->whereRaw('1 = 0');
         }
 
+        // Single-tenant COC: school admins see every teacher, including older
+        // accounts that typed a different free-text school name.
+        if ($school === CocSchool::NAME) {
+            return TeacherProfile::query()->orderBy('full_name');
+        }
+
         return TeacherProfile::query()
             ->where('school_name', $school)
             ->orderBy('full_name');
@@ -63,6 +70,10 @@ class TeacherScopeService
             $school = $user->schoolName();
             if ($school === null || $school === '') {
                 return $query->where('owner_teacher_id', $user->id);
+            }
+
+            if ($school === CocSchool::NAME) {
+                return $query;
             }
 
             $teacherIds = TeacherProfile::query()
