@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\AdminBootstrap;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -63,6 +64,8 @@ class EmailVerificationController extends Controller
 
         if ($success && $user !== null) {
             $user->loadMissing('teacherProfile');
+            AdminBootstrap::promoteIfListed($user);
+            $user->load('teacherProfile');
         }
 
         if ($success && $user !== null && $user->isAccessApproved()) {

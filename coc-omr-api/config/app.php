@@ -24,4 +24,9 @@ return [
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
     'mobile_verify_redirect' => env('MOBILE_VERIFY_REDIRECT', 'edu.coc.omr://login-callback'),
     'mail_test_secret' => env('MAIL_TEST_SECRET', ''),
+    // Comma-separated emails auto-promoted to school_admin on login/verify (free-plan bootstrap).
+    'bootstrap_admin_emails' => env(
+        'COC_BOOTSTRAP_ADMIN_EMAILS',
+        'alex.balaba.coc@phinmaed.com',
+    ),
 ];

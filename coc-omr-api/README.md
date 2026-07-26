@@ -108,8 +108,19 @@ CRUD for teachers; school admins get read-only access to same-school data.
 
 ### Bootstrap the first school admin
 
-1. Register that person on the web or phone and confirm their email.
-2. On the API host (e.g. Render Shell):
+**Preferred on free Render (no Shell):**
+
+1. Register and verify `alex.balaba.coc@phinmaed.com` (already bootstrapped in code/env default).
+2. Manual Deploy the API so migrations run on boot.
+3. Sign in on the web — that email is auto-promoted to `school_admin`.
+
+Optional env override (comma-separated):
+
+```
+COC_BOOTSTRAP_ADMIN_EMAILS=alex.balaba.coc@phinmaed.com
+```
+
+If you have Shell (paid):
 
 ```bash
 php artisan omr:promote-admin you@example.com
@@ -117,25 +128,7 @@ php artisan omr:promote-admin you@example.com
 
 This sets `role=school_admin`, `access_status=approved`, and `school_name` to **Cagayan de Oro College**.
 
-3. Sign in on the web portal → open **Admin** → **Access control** to approve other teachers.
-
-Demote (keeps approved teacher access):
-
-```bash
-php artisan omr:promote-admin you@example.com --demote
-```
-
-Manual SQL (only if needed):
-
-```sql
-UPDATE teacher_profiles
-SET role = 'school_admin',
-    access_status = 'approved',
-    is_active = 1,
-    school_name = 'Cagayan de Oro College'
-WHERE id = 'USER-UUID';
-```
-
+Then open **Admin** → **Access control** to approve other teachers.
 ### Admin API
 
 | Action | Path |

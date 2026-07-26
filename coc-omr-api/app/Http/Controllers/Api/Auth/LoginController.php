@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Services\AdminBootstrap;
 use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,6 +32,11 @@ class LoginController extends Controller
         /** @var \App\Models\User $user */
         $user = Auth::user();
         $user->loadMissing('teacherProfile');
+
+        // Free-plan bootstrap: listed emails become school_admin without Render Shell.
+        if (AdminBootstrap::promoteIfListed($user)) {
+            $user->load('teacherProfile');
+        }
 
         $profile = $user->teacherProfile;
         $accessStatus = $profile?->access_status ?? CocSchool::ACCESS_PENDING;
