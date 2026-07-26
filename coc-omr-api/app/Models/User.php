@@ -52,11 +52,16 @@ class User extends Authenticatable implements MustVerifyEmail
     {
         $profile = $this->teacherProfile;
 
-        if (! $profile || ! $profile->is_active) {
+        if (! $profile || ! $profile->isApproved()) {
             return false;
         }
 
         return in_array($profile->role, ['admin', 'school_admin'], true);
+    }
+
+    public function isAccessApproved(): bool
+    {
+        return $this->teacherProfile?->isApproved() ?? false;
     }
 
     public function schoolName(): ?string

@@ -76,6 +76,7 @@ export type DbTeacherProfile = {
   full_name: string;
   role: string;
   is_active: boolean;
+  access_status?: "pending" | "approved" | "revoked" | string | null;
   school_name: string | null;
   created_at: string;
   updated_at: string;

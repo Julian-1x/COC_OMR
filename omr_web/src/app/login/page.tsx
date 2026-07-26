@@ -1,12 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured } from "@/lib/api/env";
+import { COC_SCHOOL_NAME } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
 
 function LoginForm() {
@@ -16,12 +17,52 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
-  const [school, setSchool] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const autoSignInInFlight = useRef(false);
+  const loadingRef = useRef(false);
+
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+
+  const signInWithPassword = useCallback(
+    async (signInEmail: string, signInPassword: string) => {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "login",
+          email: signInEmail,
+          password: signInPassword,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        error?: string;
+        ok?: boolean;
+        needsEmailConfirmation?: boolean;
+        accessPending?: boolean;
+        message?: string;
+      };
+      if (!response.ok || payload.error) {
+        if (payload.accessPending || payload.error?.toLowerCase().includes("admin approval")) {
+          const err = new Error(payload.error ?? "Waiting for school admin approval.");
+          (err as Error & { accessPending?: boolean }).accessPending = true;
+          throw err;
+        }
+        throw new Error(payload.error ?? "Sign in failed.");
+      }
+
+      router.push("/dashboard");
+      router.refresh();
+    },
+    [router],
+  );
 
   async function handleResendConfirmation() {
     const normalizedEmail = email.trim().toLowerCase();
@@ -45,7 +86,7 @@ function LoginForm() {
       }
       setNotice(
         payload.message ??
-          "Confirmation email sent. Check your inbox and spam folder, then tap the link.",
+          "Confirmation email sent. Check your inbox and spam folder, then tap Verify email (web).",
       );
       setAwaitingConfirmation(true);
       setMode("login");
@@ -66,6 +107,18 @@ function LoginForm() {
       return;
     }
 
+    if (searchParams.get("pending") === "1") {
+      setAwaitingApproval(true);
+      setAwaitingConfirmation(false);
+      setMode("login");
+      setNotice(
+        searchParams.get("confirmed") === "1"
+          ? "Email confirmed. Your account is waiting for a COC admin to approve access."
+          : "Your account is waiting for a COC admin to approve access.",
+      );
+      return;
+    }
+
     if (searchParams.get("confirmed") === "1") {
       setNotice("Email confirmed. Sign in to open your dashboard.");
       setMode("login");
@@ -77,6 +130,106 @@ function LoginForm() {
       setMode("login");
     }
   }, [searchParams]);
+
+  // While waiting for email confirmation, poll so verifying on phone unlocks this tab.
+  useEffect(() => {
+    if (!awaitingConfirmation) {
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !password) {
+      return;
+    }
+
+    let cancelled = false;
+    let consecutiveFailures = 0;
+
+    const checkAndSignIn = async () => {
+      if (cancelled || autoSignInInFlight.current || loadingRef.current) {
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/auth/verification-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: normalizedEmail }),
+        });
+        const payload = (await response.json()) as {
+          verified?: boolean;
+          error?: string;
+        };
+        if (!response.ok) {
+          consecutiveFailures += 1;
+          return;
+        }
+        consecutiveFailures = 0;
+        if (!payload.verified || cancelled) {
+          return;
+        }
+
+        autoSignInInFlight.current = true;
+        setNotice("Email confirmed — signing you in…");
+        setError(null);
+        setLoading(true);
+        try {
+          await signInWithPassword(normalizedEmail, password);
+          setAwaitingConfirmation(false);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Sign in failed.";
+          const accessPending =
+            (err as Error & { accessPending?: boolean }).accessPending === true ||
+            message.toLowerCase().includes("admin approval") ||
+            message.toLowerCase().includes("waiting for school admin");
+          if (accessPending) {
+            setAwaitingConfirmation(false);
+            setAwaitingApproval(true);
+            setNotice(
+              "Email confirmed. Ask your COC admin to approve your account, then sign in again.",
+            );
+          } else if (
+            message.toLowerCase().includes("not confirmed") ||
+            message.toLowerCase().includes("not verified")
+          ) {
+            setAwaitingConfirmation(true);
+            setNotice("Almost there — waiting for confirmation to finish syncing.");
+          } else {
+            setAwaitingConfirmation(false);
+            setError(
+              "Email is confirmed. Enter your password and tap Sign in to continue.",
+            );
+            setNotice("Email confirmed. Sign in below.");
+          }
+        } finally {
+          setLoading(false);
+          autoSignInInFlight.current = false;
+        }
+      } catch {
+        consecutiveFailures += 1;
+        if (consecutiveFailures > 20) {
+          // Stop hammering if the API is unreachable for a long stretch.
+          cancelled = true;
+        }
+      }
+    };
+
+    void checkAndSignIn();
+    const intervalId = window.setInterval(() => {
+      void checkAndSignIn();
+    }, 4000);
+
+    const timeoutId = window.setTimeout(() => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    }, 15 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [awaitingConfirmation, email, password, signInWithPassword]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -99,7 +252,7 @@ function LoginForm() {
           email,
           password,
           name,
-          school,
+          school: COC_SCHOOL_NAME,
         }),
       });
 
@@ -107,6 +260,7 @@ function LoginForm() {
         error?: string;
         ok?: boolean;
         needsEmailConfirmation?: boolean;
+        accessPending?: boolean;
         message?: string;
       };
       if (!response.ok || payload.error) {
@@ -114,10 +268,22 @@ function LoginForm() {
       }
 
       if (mode === "register" && payload.needsEmailConfirmation) {
+        setAwaitingApproval(false);
         setAwaitingConfirmation(true);
         setNotice(
           payload.message ??
-            "Account created. Open the confirmation email on this device, tap the link, and you will return here signed in.",
+            "Account created. Keep this page open — after you tap the confirmation link (even on your phone), we will continue here.",
+        );
+        setMode("login");
+        return;
+      }
+
+      if (payload.accessPending) {
+        setAwaitingConfirmation(false);
+        setAwaitingApproval(true);
+        setNotice(
+          payload.message ??
+            "Your email is ready. Ask your COC admin to approve your account before you can open the dashboard.",
         );
         setMode("login");
         return;
@@ -140,8 +306,16 @@ function LoginForm() {
       ) {
         setAwaitingConfirmation(true);
         setError(
-          "This email is not confirmed yet. Tap Resend confirmation below, then open the link in your inbox.",
+          "This email is not confirmed yet. Leave this page open, tap the link in your email (phone or computer), then wait a few seconds.",
         );
+      } else if (
+        message.toLowerCase().includes("admin approval") ||
+        message.toLowerCase().includes("waiting for school admin") ||
+        message.toLowerCase().includes("revoked by your school admin")
+      ) {
+        setAwaitingConfirmation(false);
+        setAwaitingApproval(true);
+        setError(message);
       } else if (message.toLowerCase().includes("failed to fetch")) {
         setError(
           "Could not reach the server. Make sure npm run dev is running, then try again.",
@@ -197,9 +371,13 @@ function LoginForm() {
                 <Label htmlFor="name">Full name</Label>
                 <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
               </div>
-              <div className="mb-3">
-                <Label htmlFor="school">School / department</Label>
-                <Input id="school" value={school} onChange={(e) => setSchool(e.target.value)} required />
+              <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                <p className="font-semibold text-slate-800">School</p>
+                <p>{COC_SCHOOL_NAME}</p>
+                <p className="mt-1 text-xs">
+                  Access is for COC instructors only. After email confirmation, a school admin must
+                  approve your account.
+                </p>
               </div>
             </>
           ) : null}
@@ -244,7 +422,18 @@ function LoginForm() {
               <p className="mt-1">
                 We sent a link to{" "}
                 <span className="font-semibold">{email.trim() || "your email"}</span>.
-                Check inbox and spam, or resend below.
+                Leave this page open. After you tap the link on your phone or computer, this
+                page will continue automatically.
+              </p>
+            </div>
+          ) : null}
+
+          {awaitingApproval ? (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+              <p className="font-bold">Waiting for school admin approval</p>
+              <p className="mt-1">
+                Your email is confirmed. Ask your COC admin to approve you under{" "}
+                <strong>Admin → Access control</strong>, then sign in again.
               </p>
             </div>
           ) : null}

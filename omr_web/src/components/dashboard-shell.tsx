@@ -32,6 +32,7 @@ const teacherNav = [
 
 const adminNav = [
   { href: "/dashboard/admin", label: "Overview", icon: Shield },
+  { href: "/dashboard/admin/access", label: "Access", icon: ClipboardList },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

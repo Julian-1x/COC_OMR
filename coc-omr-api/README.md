@@ -103,15 +103,50 @@ CRUD for teachers; school admins get read-only access to same-school data.
 ## Authorization
 
 - Teachers: full CRUD on rows where `owner_teacher_id` = their user id.
-- `school_admin` / `admin` role: read-only across teachers with the same `school_name` (see `supabase/add_admin_rls.sql`).
+- New teachers register as `access_status=pending` and cannot log in until a school admin approves them.
+- `school_admin` / `admin` role: read access across teachers with the same `school_name`, plus approve/revoke on `/api/admin/teachers/{id}/approve|revoke`.
 
-Promote an admin in the database:
+### Bootstrap the first school admin
 
-```sql
-UPDATE teacher_profiles SET role = 'school_admin' WHERE id = 'USER-UUID';
+1. Register that person on the web or phone and confirm their email.
+2. On the API host (e.g. Render Shell):
+
+```bash
+php artisan omr:promote-admin you@example.com
 ```
 
-## CORS
+This sets `role=school_admin`, `access_status=approved`, and `school_name` to **Cagayan de Oro College**.
+
+3. Sign in on the web portal → open **Admin** → **Access control** to approve other teachers.
+
+Demote (keeps approved teacher access):
+
+```bash
+php artisan omr:promote-admin you@example.com --demote
+```
+
+Manual SQL (only if needed):
+
+```sql
+UPDATE teacher_profiles
+SET role = 'school_admin',
+    access_status = 'approved',
+    is_active = 1,
+    school_name = 'Cagayan de Oro College'
+WHERE id = 'USER-UUID';
+```
+
+### Admin API
+
+| Action | Path |
+|--------|------|
+| Stats | `GET /api/admin/stats` |
+| Teachers | `GET /api/admin/teachers` |
+| Pending access | `GET /api/admin/access-requests` |
+| Approve | `POST /api/admin/teachers/{id}/approve` |
+| Revoke | `POST /api/admin/teachers/{id}/revoke` |
+| Teacher detail | `GET /api/admin/teachers/{id}` |
+| Section roster | `GET /api/admin/teachers/{id}/sections/{name}/students` |
 
 Allowed origins: `FRONTEND_URL` from `.env`, optional comma-separated `CORS_EXTRA_ORIGINS`, plus `http://localhost:3000` for local dev (see `config/cors.php`).
 

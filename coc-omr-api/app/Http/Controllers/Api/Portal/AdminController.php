@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Portal;
 use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
 use App\Services\TeacherScopeService;
+use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -104,13 +105,100 @@ class AdminController extends Controller
         return response()->json(['students' => $students]);
     }
 
+    public function accessRequests(Request $request): JsonResponse
+    {
+        $admin = $request->user();
+        $teachers = $this->scope->schoolTeachersQuery($admin)
+            ->with('user')
+            ->where('access_status', CocSchool::ACCESS_PENDING)
+            ->orderBy('created_at')
+            ->get();
+
+        return response()->json([
+            'teachers' => $teachers->map(fn (TeacherProfile $teacher) => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'role' => $teacher->role,
+                'access_status' => $teacher->access_status,
+                'school_name' => $teacher->school_name,
+                'created_at' => $teacher->created_at?->toIso8601String(),
+            ])->values()->all(),
+        ]);
+    }
+
+    public function approve(Request $request, string $teacherId): JsonResponse
+    {
+        $admin = $request->user();
+        $teacher = $this->scopedTeacherProfile($admin, $teacherId);
+
+        if ($teacher === null) {
+            return response()->json(['message' => 'Teacher not found.'], 404);
+        }
+
+        if ($teacher->id === $admin->id) {
+            return response()->json(['message' => 'You cannot change your own access status here.'], 422);
+        }
+
+        $teacher->applyAccessStatus(CocSchool::ACCESS_APPROVED);
+        $teacher->school_name = CocSchool::NAME;
+        $teacher->save();
+
+        return response()->json([
+            'message' => 'Teacher approved.',
+            'teacher' => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'access_status' => $teacher->access_status,
+                'is_active' => $teacher->is_active,
+            ],
+        ]);
+    }
+
+    public function revoke(Request $request, string $teacherId): JsonResponse
+    {
+        $admin = $request->user();
+        $teacher = $this->scopedTeacherProfile($admin, $teacherId);
+
+        if ($teacher === null) {
+            return response()->json(['message' => 'Teacher not found.'], 404);
+        }
+
+        if ($teacher->id === $admin->id) {
+            return response()->json(['message' => 'You cannot revoke your own admin access here.'], 422);
+        }
+
+        if (in_array($teacher->role, ['admin', 'school_admin'], true)) {
+            return response()->json([
+                'message' => 'Cannot revoke another school admin from the portal. Use the promote-admin command carefully.',
+            ], 422);
+        }
+
+        $teacher->applyAccessStatus(CocSchool::ACCESS_REVOKED);
+        $teacher->save();
+
+        $teacher->user?->tokens()->delete();
+
+        return response()->json([
+            'message' => 'Teacher access revoked.',
+            'teacher' => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'access_status' => $teacher->access_status,
+                'is_active' => $teacher->is_active,
+            ],
+        ]);
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
     private function teacherSummaries(Request $request): array
     {
         $admin = $request->user();
-        $teachers = $this->scope->schoolTeachersQuery($admin)->get();
+        $teachers = $this->scope->schoolTeachersQuery($admin)->with('user')->get();
 
         return $teachers->map(function (TeacherProfile $teacher) use ($admin) {
             $teacherId = $teacher->id;
@@ -126,6 +214,10 @@ class AdminController extends Controller
             $status = 'active';
             if ($teacherId === $admin->id) {
                 $status = 'you';
+            } elseif ($teacher->access_status === CocSchool::ACCESS_PENDING) {
+                $status = 'pending';
+            } elseif ($teacher->access_status === CocSchool::ACCESS_REVOKED) {
+                $status = 'revoked';
             } elseif ($sectionCount === 0 && $studentCount === 0 && $scanCount === 0) {
                 $status = 'no_sync';
             }
@@ -135,6 +227,8 @@ class AdminController extends Controller
                 'full_name' => $teacher->full_name,
                 'email' => $teacher->user?->email,
                 'role' => $teacher->role,
+                'access_status' => $teacher->access_status,
+                'is_active' => $teacher->is_active,
                 'section_count' => $sectionCount,
                 'student_count' => $studentCount,
                 'subject_count' => $subjectCount,

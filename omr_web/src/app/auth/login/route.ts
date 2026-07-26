@@ -5,13 +5,19 @@ import {
   apiTokenCookieOptions,
 } from "@/lib/api/laravel-client";
 import { tryGetApiBaseUrl } from "@/lib/api/env";
+import { COC_SCHOOL_NAME } from "@/lib/coc-school";
 
 type AuthResponse = {
   token?: string;
   user?: {
     email_verified_at?: string | null;
+    profile?: {
+      access_status?: string | null;
+    };
   };
   message?: string;
+  access_status?: string;
+  access_pending?: boolean;
   errors?: Record<string, string[]>;
 };
 
@@ -78,10 +84,9 @@ export async function POST(request: Request) {
 
     if (mode === "register") {
       const name = body.name?.trim() ?? "";
-      const school = body.school?.trim() ?? "";
-      if (!name || !school) {
+      if (!name) {
         return NextResponse.json(
-          { error: "Name and school are required for registration." },
+          { error: "Full name is required for registration." },
           { status: 400 },
         );
       }
@@ -97,7 +102,7 @@ export async function POST(request: Request) {
           password,
           password_confirmation: password,
           full_name: name,
-          school,
+          school: COC_SCHOOL_NAME,
         }),
       });
 
@@ -110,7 +115,12 @@ export async function POST(request: Request) {
       }
 
       const needsEmailConfirmation = !payload?.user?.email_verified_at;
-      if (!needsEmailConfirmation && payload.token) {
+      const accessPending =
+        payload?.access_pending === true ||
+        payload?.access_status === "pending" ||
+        payload?.user?.profile?.access_status === "pending";
+
+      if (!needsEmailConfirmation && payload?.token) {
         const cookieStore = await cookies();
         cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
       }
@@ -118,6 +128,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         needsEmailConfirmation,
+        accessPending: !needsEmailConfirmation && accessPending,
         message: payload?.message,
       });
     }
@@ -137,14 +148,15 @@ export async function POST(request: Request) {
 
     const payload = await readJsonBody(response);
     if (!response.ok || !payload?.token) {
+      const message = upstreamErrorMessage(response, payload, "Sign in failed.");
+      const lower = message.toLowerCase();
       const unverified =
-        payload?.user?.email_verified_at == null &&
-        (payload?.message?.toLowerCase().includes('not confirmed') ||
-          payload?.message?.toLowerCase().includes('not verified') ||
-          payload?.errors?.email?.some((m) =>
-            m.toLowerCase().includes('not confirmed') ||
-            m.toLowerCase().includes('not verified'),
-          ));
+        lower.includes("not confirmed") || lower.includes("not verified");
+      const pendingApproval =
+        lower.includes("waiting for school admin") ||
+        lower.includes("admin approval") ||
+        lower.includes("revoked by your school admin");
+
       if (unverified) {
         return NextResponse.json(
           {
@@ -154,14 +166,19 @@ export async function POST(request: Request) {
           { status: 403 },
         );
       }
+      if (pendingApproval) {
+        return NextResponse.json(
+          {
+            error: message,
+            accessPending: true,
+          },
+          { status: 403 },
+        );
+      }
       return NextResponse.json(
-        { error: upstreamErrorMessage(response, payload, "Sign in failed.") },
+        { error: message },
         { status: response.status || 400 },
       );
-    }
-
-    if (!payload) {
-      return NextResponse.json({ error: "Sign in failed." }, { status: 500 });
     }
 
     if (!payload.user?.email_verified_at) {

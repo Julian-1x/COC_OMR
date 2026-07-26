@@ -62,8 +62,17 @@ class EmailVerificationController extends Controller
         $token = null;
 
         if ($success && $user !== null) {
+            $user->loadMissing('teacherProfile');
+        }
+
+        if ($success && $user !== null && $user->isAccessApproved()) {
             $token = $user->createToken('email-verify')->plainTextToken;
         }
+
+        $accessStatus = $user?->teacherProfile?->access_status;
+        $accessPending = $success
+            && $user !== null
+            && ! $user->isAccessApproved();
 
         if ($platform === 'mobile') {
             $base = rtrim(config('app.mobile_verify_redirect'), '/');
@@ -71,7 +80,9 @@ class EmailVerificationController extends Controller
                 'token' => $token,
                 'verified' => $success ? '1' : '0',
                 'message' => $message,
-            ]));
+                'access_status' => $accessStatus,
+                'access_pending' => $accessPending ? '1' : null,
+            ], fn ($value) => $value !== null && $value !== ''));
 
             return redirect()->away("{$base}?{$query}");
         }
@@ -81,7 +92,9 @@ class EmailVerificationController extends Controller
             'token' => $token,
             'verified' => $success ? '1' : '0',
             'message' => $message,
-        ]));
+            'access_status' => $accessStatus,
+            'access_pending' => $accessPending ? '1' : null,
+        ], fn ($value) => $value !== null && $value !== ''));
 
         return redirect()->away("{$frontend}/auth/callback?{$query}");
     }

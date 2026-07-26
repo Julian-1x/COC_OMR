@@ -1,7 +1,7 @@
 name: omr_app
 description: OMR Scanner App for Cagayan de Oro College
 publish_to: "none"
-version: 1.4.11+40
+version: 1.5.18+60
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -42,8 +42,8 @@ dependencies:
   sqflite: ^2.3.3
   sqflite_common_ffi: ^2.3.3
 
-  # Supabase backend
-  supabase_flutter: ^2.12.0
+  # Laravel school API
+  http: ^1.2.2
   app_links: ^6.3.3
   sentry_flutter: ^8.14.2
 

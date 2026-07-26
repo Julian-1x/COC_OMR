@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:omr_app/constants/coc_school.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
@@ -9,12 +10,19 @@ class CloudTeacherAccount {
     required this.email,
     required this.name,
     required this.isActive,
+    this.accessStatus = 'approved',
+    this.school,
   });
 
   final String id;
   final String email;
   final String name;
   final bool isActive;
+  final String accessStatus;
+  final String? school;
+
+  bool get isApproved =>
+      isActive && accessStatus.toLowerCase() == 'approved';
 }
 
 class CloudAuthException implements Exception {
@@ -30,16 +38,20 @@ class TeacherRegistrationResult {
   const TeacherRegistrationResult({
     this.account,
     this.needsEmailConfirmation = false,
+    this.needsAdminApproval = false,
     this.pendingEmail,
     this.pendingName,
     this.pendingSchool,
+    this.message,
   });
 
   final CloudTeacherAccount? account;
   final bool needsEmailConfirmation;
+  final bool needsAdminApproval;
   final String? pendingEmail;
   final String? pendingName;
   final String? pendingSchool;
+  final String? message;
 }
 
 class CloudAuthService {
@@ -51,12 +63,13 @@ class CloudAuthService {
     required String name,
     required String email,
     required String password,
-    required String school,
+    String school = CocSchool.name,
   }) async {
     _ensureApiReady();
     final trimmedName = name.trim();
     final normalizedEmail = email.trim().toLowerCase();
-    final trimmedSchool = school.trim();
+    final trimmedSchool =
+        school.trim().isEmpty ? CocSchool.name : school.trim();
 
     try {
       final response = await ApiService.postJson(
@@ -79,6 +92,18 @@ class CloudAuthService {
           pendingEmail: normalizedEmail,
           pendingName: trimmedName,
           pendingSchool: trimmedSchool,
+          message: response['message']?.toString(),
+        );
+      }
+
+      if (_isAccessPending(response)) {
+        await ApiService.clearSession();
+        return TeacherRegistrationResult(
+          needsAdminApproval: true,
+          pendingEmail: normalizedEmail,
+          pendingName: trimmedName,
+          pendingSchool: trimmedSchool,
+          message: response['message']?.toString(),
         );
       }
 
@@ -86,6 +111,16 @@ class CloudAuthService {
       if (account == null) {
         throw const CloudAuthException(
           'Registration could not start. Check your internet and try again.',
+        );
+      }
+
+      if (!account.isApproved) {
+        await ApiService.clearSession();
+        return TeacherRegistrationResult(
+          needsAdminApproval: true,
+          pendingEmail: normalizedEmail,
+          pendingName: trimmedName,
+          pendingSchool: trimmedSchool,
         );
       }
 
@@ -189,10 +224,10 @@ class CloudAuthService {
         throw const CloudAuthException('Sign in failed. Try again.');
       }
 
-      if (!account.isActive) {
+      if (!account.isApproved) {
         await ApiService.clearSession();
         throw const CloudAuthException(
-          'This teacher account is disabled. Ask the admin to reactivate it.',
+          'Your account is waiting for school admin approval. Ask your COC admin to approve you before signing in.',
         );
       }
 
@@ -223,6 +258,13 @@ class CloudAuthService {
       await ApiService.clearSession();
       throw const CloudAuthException(
         'Email was confirmed but sign-in failed. Try signing in with your password.',
+      );
+    }
+
+    if (!account.isApproved) {
+      await ApiService.clearSession();
+      throw const CloudAuthException(
+        'Email confirmed. Your account is waiting for school admin approval. Ask your COC admin to approve you, then sign in.',
       );
     }
 
@@ -263,6 +305,11 @@ class CloudAuthService {
         : const <String, dynamic>{};
     final name = (profileMap['full_name'] as String?)?.trim();
     final isActive = profileMap['is_active'] != false;
+    final accessStatus =
+        profileMap['access_status']?.toString() ??
+        response['access_status']?.toString() ??
+        'approved';
+    final school = profileMap['school_name']?.toString();
 
     await ApiService.setSession(token: token, userId: id, email: email);
 
@@ -271,6 +318,8 @@ class CloudAuthService {
       email: email,
       name: name == null || name.isEmpty ? email : name,
       isActive: isActive,
+      accessStatus: accessStatus,
+      school: school,
     );
   }
 
@@ -291,12 +340,18 @@ class CloudAuthService {
         ? Map<String, dynamic>.from(profile)
         : const <String, dynamic>{};
     final name = (profileMap['full_name'] as String?)?.trim();
+    final accessStatus =
+        profileMap['access_status']?.toString() ??
+        response['access_status']?.toString() ??
+        'approved';
 
     return CloudTeacherAccount(
       id: id,
       email: email,
       name: name == null || name.isEmpty ? email : name,
       isActive: profileMap['is_active'] != false,
+      accessStatus: accessStatus,
+      school: profileMap['school_name']?.toString(),
     );
   }
 
@@ -307,6 +362,27 @@ class CloudAuthService {
     }
     final verifiedAt = user['email_verified_at'];
     return verifiedAt != null && verifiedAt.toString().isNotEmpty;
+  }
+
+  bool _isAccessPending(Map<String, dynamic> response) {
+    if (response['access_pending'] == true) {
+      return true;
+    }
+    final status = response['access_status']?.toString().toLowerCase();
+    if (status == 'pending' || status == 'revoked') {
+      return true;
+    }
+    final user = response['user'];
+    if (user is Map) {
+      final profile = user['profile'];
+      if (profile is Map) {
+        final profileStatus = profile['access_status']?.toString().toLowerCase();
+        if (profileStatus == 'pending' || profileStatus == 'revoked') {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   String _friendlyError(Object error) {
@@ -321,12 +397,20 @@ class CloudAuthService {
 
   String _friendlyApiMessage(ApiException error) {
     final normalized = error.message.toLowerCase();
+    if (normalized.contains('waiting for school admin') ||
+        normalized.contains('admin approval')) {
+      return 'Your account is waiting for school admin approval. Ask your COC admin to approve you before signing in.';
+    }
+    if (normalized.contains('revoked by your school admin')) {
+      return 'This account was revoked by your school admin. Contact your COC admin if you need access again.';
+    }
     if (normalized.contains('credentials') ||
         normalized.contains('incorrect')) {
       return 'The email or password is incorrect. Check the account details or reset your password.';
     }
     if (normalized.contains('email not confirmed') ||
-        normalized.contains('not verified')) {
+        normalized.contains('not verified') ||
+        normalized.contains('not been confirmed')) {
       return 'This email has not been confirmed yet. Open the confirmation email, then sign in again.';
     }
     if (normalized.contains('already been taken') ||

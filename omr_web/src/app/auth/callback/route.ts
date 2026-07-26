@@ -9,7 +9,12 @@ export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const token = searchParams.get("token");
   const verified = searchParams.get("verified");
+  const accessPending = searchParams.get("access_pending") === "1";
   const next = searchParams.get("next") ?? "/dashboard";
+
+  if (verified === "1" && accessPending) {
+    return NextResponse.redirect(`${origin}/login?pending=1&confirmed=1`);
+  }
 
   if (token && verified === "1") {
     const cookieStore = await cookies();

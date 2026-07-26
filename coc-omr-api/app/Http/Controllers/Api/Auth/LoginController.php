@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -29,12 +30,24 @@ class LoginController extends Controller
 
         /** @var \App\Models\User $user */
         $user = Auth::user();
+        $user->loadMissing('teacherProfile');
 
-        if ($user->teacherProfile && ! $user->teacherProfile->is_active) {
+        $profile = $user->teacherProfile;
+        $accessStatus = $profile?->access_status ?? CocSchool::ACCESS_PENDING;
+
+        if ($accessStatus === CocSchool::ACCESS_REVOKED || ($profile && ! $profile->is_active && $accessStatus !== CocSchool::ACCESS_PENDING)) {
             Auth::logout();
 
             throw ValidationException::withMessages([
-                'email' => ['This account is inactive. Contact your school IT lead.'],
+                'email' => ['This account was revoked by your school admin. Contact your COC admin if you need access again.'],
+            ]);
+        }
+
+        if ($accessStatus !== CocSchool::ACCESS_APPROVED || ! ($profile?->is_active ?? false)) {
+            Auth::logout();
+
+            throw ValidationException::withMessages([
+                'email' => ['Your account is waiting for school admin approval. Ask your COC admin to approve you before signing in.'],
             ]);
         }
 
@@ -53,6 +66,7 @@ class LoginController extends Controller
             'user' => RegisterController::userPayload($user),
             'token' => $token,
             'token_type' => 'Bearer',
+            'access_status' => CocSchool::ACCESS_APPROVED,
         ]);
     }
 }

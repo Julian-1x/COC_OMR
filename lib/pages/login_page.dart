@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:omr_app/constants/coc_school.dart';
 import 'package:omr_app/pages/dashboard_page.dart';
 import 'package:omr_app/pages/welcome_onboarding_page.dart';
 import 'package:omr_app/services/cloud_auth_service.dart';
@@ -12,6 +14,7 @@ import 'package:omr_app/services/onboarding_preferences_service.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
+import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/widgets/app_pin_input.dart';
@@ -24,6 +27,7 @@ enum _AuthMode { login, register }
 enum _LoginStage {
   onlineAuth,
   awaitingEmailConfirmation,
+  awaitingAdminApproval,
   offlinePinSetup,
   offlineUnlock,
 }
@@ -39,7 +43,6 @@ class _LoginPageState extends State<LoginPage> {
   final CloudAuthService _auth = CloudAuthService.instance;
   final LocalAuthService _localAuth = LocalAuthService.instance;
   final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _schoolController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _unlockPinController = TextEditingController();
@@ -77,7 +80,6 @@ class _LoginPageState extends State<LoginPage> {
     _connectivitySub?.cancel();
     _authLinkSub?.cancel();
     _nameController.dispose();
-    _schoolController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _unlockPinController.dispose();
@@ -145,7 +147,31 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
+    final accessPending = uri.queryParameters['access_pending'] == '1' ||
+        uri.queryParameters['access_status'] == 'pending' ||
+        uri.queryParameters['access_status'] == 'revoked';
+    final verified = uri.queryParameters['verified'] == '1';
     final token = uri.queryParameters['token']?.trim();
+
+    if (accessPending || (verified && (token == null || token.isEmpty))) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _stage = _LoginStage.awaitingAdminApproval;
+        _mode = _AuthMode.login;
+        _isLoading = false;
+        _isSubmitting = false;
+        _pendingConfirmationEmail =
+            _pendingConfirmationEmail ?? _emailController.text.trim().toLowerCase();
+      });
+      _showMessage(
+        'Email confirmed. Ask your COC admin to approve your account, then sign in.',
+        isError: false,
+      );
+      return;
+    }
+
     if (token == null || token.isEmpty) {
       return;
     }
@@ -164,10 +190,17 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) {
         return;
       }
-      _showMessage(
-        UserErrorMessages.friendlyError(error),
-        isError: true,
-      );
+      final message = UserErrorMessages.friendlyError(error);
+      if (message.toLowerCase().contains('admin approval') ||
+          message.toLowerCase().contains('waiting for school admin')) {
+        setState(() {
+          _stage = _LoginStage.awaitingAdminApproval;
+          _mode = _AuthMode.login;
+          _isLoading = false;
+          _isSubmitting = false;
+        });
+      }
+      _showMessage(message, isError: true);
     }
   }
 
@@ -180,6 +213,24 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     final account = await _auth.accountFromCurrentSession();
+    if (account != null && !account.isApproved) {
+      await ApiService.clearSession();
+      if (mounted) {
+        setState(() {
+          _stage = _LoginStage.awaitingAdminApproval;
+          _mode = _AuthMode.login;
+          _isLoading = false;
+          _isSubmitting = false;
+          _pendingConfirmationEmail = account.email;
+        });
+        _showMessage(
+          'Your account is waiting for school admin approval. Ask your COC admin to approve you, then sign in.',
+          isError: false,
+        );
+      }
+      return;
+    }
+
     final profile = await _localAuth.loadProfile();
     if (profile == null && account != null) {
       final resolvedAccount = account;
@@ -285,17 +336,12 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     final name = _nameController.text.trim();
-    final school = _schoolController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
     final isRegister = _mode == _AuthMode.register;
 
     if (isRegister && name.isEmpty) {
       _showMessage('Enter the teacher name.', isError: true);
-      return;
-    }
-    if (isRegister && school.isEmpty) {
-      _showMessage('Enter the school or department.', isError: true);
       return;
     }
     if (!_isValidEmail(email)) {
@@ -314,7 +360,7 @@ class _LoginPageState extends State<LoginPage> {
           name: name,
           email: email,
           password: password,
-          school: school,
+          school: CocSchool.name,
         );
 
         if (!mounted) {
@@ -329,6 +375,22 @@ class _LoginPageState extends State<LoginPage> {
                 registration.pendingEmail ?? email.trim().toLowerCase();
             _stage = _LoginStage.awaitingEmailConfirmation;
           });
+          return;
+        }
+
+        if (registration.needsAdminApproval) {
+          setState(() {
+            _isSubmitting = false;
+            _isNewRegistration = true;
+            _pendingConfirmationEmail =
+                registration.pendingEmail ?? email.trim().toLowerCase();
+            _stage = _LoginStage.awaitingAdminApproval;
+          });
+          _showMessage(
+            registration.message ??
+                'Ask your COC admin to approve your account, then sign in.',
+            isError: false,
+          );
           return;
         }
 
@@ -365,7 +427,15 @@ class _LoginPageState extends State<LoginPage> {
     } catch (error) {
       if (mounted) {
         setState(() => _isSubmitting = false);
-        _showMessage(UserErrorMessages.friendlyError(error), isError: true);
+        final message = UserErrorMessages.friendlyError(error);
+        if (message.toLowerCase().contains('admin approval') ||
+            message.toLowerCase().contains('waiting for school admin')) {
+          setState(() {
+            _stage = _LoginStage.awaitingAdminApproval;
+            _pendingConfirmationEmail = email.trim().toLowerCase();
+          });
+        }
+        _showMessage(message, isError: true);
       }
     }
   }
@@ -389,7 +459,7 @@ class _LoginPageState extends State<LoginPage> {
     try {
       await _localAuth.trustCloudAccount(
         name: account.name,
-        school: _schoolController.text.trim(),
+        school: account.school ?? CocSchool.name,
         email: account.email,
         cloudUserId: account.id,
         pin: pin,
@@ -517,7 +587,7 @@ class _LoginPageState extends State<LoginPage> {
 
     await _localAuth.installCloudProfile(
       name: cloudPin.name.isNotEmpty ? cloudPin.name : account.name,
-      school: cloudPin.school ?? _schoolController.text.trim(),
+      school: cloudPin.school ?? account.school ?? CocSchool.name,
       pinHash: cloudPin.pinHash,
       pinSalt: cloudPin.pinSalt,
       email: cloudPin.email ?? account.email,
@@ -593,6 +663,9 @@ class _LoginPageState extends State<LoginPage> {
     await LocalDataStore.instance.reloadForCurrentTeacher();
     if (!mounted) {
       return;
+    }
+    if (Platform.isAndroid) {
+      unawaited(ScannerEngine.warmUp());
     }
     _openDashboard();
   }
@@ -712,6 +785,8 @@ class _LoginPageState extends State<LoginPage> {
     switch (_stage) {
       case _LoginStage.awaitingEmailConfirmation:
         return _buildAwaitingEmailConfirmationPanel();
+      case _LoginStage.awaitingAdminApproval:
+        return _buildAwaitingAdminApprovalPanel();
       case _LoginStage.offlinePinSetup:
         return _buildPinSetupContent();
       case _LoginStage.offlineUnlock:
@@ -719,6 +794,44 @@ class _LoginPageState extends State<LoginPage> {
       case _LoginStage.onlineAuth:
         return _buildOnlineAuthPanel();
     }
+  }
+
+  Widget _buildAwaitingAdminApprovalPanel() {
+    final email = _pendingConfirmationEmail ?? _emailController.text.trim();
+
+    return AuthShell(
+      title: 'Waiting for approval',
+      subtitle:
+          'Your email is confirmed. A COC school admin must approve your account before you can use the app.',
+      badge: AuthBadgeType.online,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _statusNote(
+            icon: Icons.admin_panel_settings_outlined,
+            text:
+                'Ask your COC admin to open the web portal → Admin → Access control and approve you.\n\n'
+                'After they approve, come back here and sign in with the same email and password.',
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _statusNote(
+            icon: Icons.alternate_email_rounded,
+            text: email.isEmpty ? 'Your school email' : email,
+          ),
+          const SizedBox(height: AppSpacing.xl),
+          AppPrimaryButton(
+            label: 'Back to sign in',
+            icon: Icons.login_rounded,
+            onPressed: () {
+              setState(() {
+                _stage = _LoginStage.onlineAuth;
+                _mode = _AuthMode.login;
+              });
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAwaitingEmailConfirmationPanel() {
@@ -858,11 +971,10 @@ class _LoginPageState extends State<LoginPage> {
               icon: Icons.person_outline_rounded,
             ),
             const SizedBox(height: AppSpacing.md),
-            _textField(
-              controller: _schoolController,
-              label: 'School / Department',
-              hint: 'e.g. COC - SHS',
+            _statusNote(
               icon: Icons.apartment_rounded,
+              text:
+                  '${CocSchool.name}\nAccess is for COC instructors only. After email confirmation, a school admin must approve your account.',
             ),
             const SizedBox(height: AppSpacing.md),
           ],

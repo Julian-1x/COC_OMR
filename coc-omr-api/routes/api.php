@@ -47,7 +47,7 @@ Route::get('/health/mail-config', [MailDiagnosticsController::class, 'config']);
 Route::post('/health/mail-test', [MailDiagnosticsController::class, 'sendTest'])
     ->middleware('throttle:6,1');
 
-Route::middleware(['auth:sanctum', 'verified'])->group(function () {
+Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(function () {
     Route::post('/logout', LogoutController::class);
     Route::get('/me', MeController::class);
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
@@ -81,6 +81,9 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
     Route::prefix('admin')->middleware('school.admin')->group(function () {
         Route::get('/stats', [AdminController::class, 'stats']);
         Route::get('/teachers', [AdminController::class, 'teachers']);
+        Route::get('/access-requests', [AdminController::class, 'accessRequests']);
+        Route::post('/teachers/{teacherId}/approve', [AdminController::class, 'approve']);
+        Route::post('/teachers/{teacherId}/revoke', [AdminController::class, 'revoke']);
         Route::get('/teachers/{teacherId}', [AdminController::class, 'teacher']);
         Route::get('/teachers/{teacherId}/sections/{sectionName}/students', [AdminController::class, 'sectionStudents']);
     });

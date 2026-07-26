@@ -15,6 +15,10 @@ function statusBadgeClass(status: string): string {
       return "bg-emerald-100 text-emerald-800";
     case "Not started":
       return "bg-amber-100 text-amber-800";
+    case "Pending approval":
+      return "bg-amber-100 text-amber-900";
+    case "Revoked":
+      return "bg-red-100 text-red-800";
     default:
       return "bg-slate-100 text-slate-700";
   }
@@ -82,6 +86,17 @@ export default async function AdminDashboardPage() {
       ) : null}
 
       <Card title="Teachers" className="mt-6" subtitle="Open a teacher to see their classes and rosters">
+        <div className="mb-4">
+          <Link
+            href="/dashboard/admin/access"
+            className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-800"
+          >
+            Open access control
+          </Link>
+          <p className="mt-2 text-xs text-slate-500">
+            Approve or revoke which teachers can use the app and web portal.
+          </p>
+        </div>
         {teachers.length === 0 ? (
           <p className="text-sm text-slate-500">
             No teachers listed yet. Each teacher needs the same school name on their account.

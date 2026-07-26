@@ -5,10 +5,10 @@ namespace App\Http\Controllers\Api\Auth;
 use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
 use App\Models\User;
+use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
@@ -20,6 +20,7 @@ class RegisterController extends Controller
             'email' => ['required', 'email', 'max:255'],
             'password' => ['required', 'confirmed', Password::defaults()],
             'full_name' => ['required', 'string', 'max:255'],
+            // Accepted for backward compatibility with older clients; ignored.
             'school' => ['nullable', 'string', 'max:255'],
         ]);
 
@@ -48,9 +49,10 @@ class RegisterController extends Controller
         TeacherProfile::query()->create([
             'id' => $user->id,
             'full_name' => $validated['full_name'],
-            'school_name' => $validated['school'] ?? null,
+            'school_name' => CocSchool::NAME,
             'role' => 'teacher',
-            'is_active' => true,
+            'is_active' => false,
+            'access_status' => CocSchool::ACCESS_PENDING,
         ]);
 
         return $this->finishRegistration($user, resumed: false);
@@ -70,9 +72,10 @@ class RegisterController extends Controller
             ['id' => $user->id],
             [
                 'full_name' => $validated['full_name'],
-                'school_name' => $validated['school'] ?? null,
+                'school_name' => CocSchool::NAME,
                 'role' => 'teacher',
-                'is_active' => true,
+                'is_active' => false,
+                'access_status' => CocSchool::ACCESS_PENDING,
             ],
         );
 
@@ -88,14 +91,21 @@ class RegisterController extends Controller
             $verificationEmailSent = $this->sendVerificationEmail($user);
         }
 
+        $user->loadMissing('teacherProfile');
+        $approved = $user->isAccessApproved();
+
         $payload = [
             'user' => $this->userPayload($user),
             'token_type' => 'Bearer',
             'resumed_unverified_signup' => $resumed,
+            'access_status' => $user->teacherProfile?->access_status ?? CocSchool::ACCESS_PENDING,
         ];
 
-        if ($user->hasVerifiedEmail()) {
+        if ($user->hasVerifiedEmail() && $approved) {
             $payload['token'] = $user->createToken('mobile')->plainTextToken;
+        } elseif ($user->hasVerifiedEmail() && ! $approved) {
+            $payload['message'] = 'Your email is confirmed. Your account is waiting for school admin approval before you can use the app or web dashboard.';
+            $payload['access_pending'] = true;
         } else {
             $payload['message'] = $verificationEmailSent
                 ? ($resumed

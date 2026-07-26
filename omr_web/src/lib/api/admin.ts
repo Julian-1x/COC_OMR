@@ -5,23 +5,40 @@ export function normalizeRole(role: string | null | undefined): string {
   return role?.trim().toLowerCase() ?? "";
 }
 
+export function isAccessApproved(
+  profile: DbTeacherProfile | null | undefined,
+): boolean {
+  if (!profile) return false;
+  if (profile.is_active === false) return false;
+  const status = (profile.access_status ?? "approved").toLowerCase();
+  return status === "approved";
+}
+
 export function isSchoolAdmin(
   profile: DbTeacherProfile | null,
   _user?: Pick<ApiUser, "id"> | null,
 ): boolean {
-  if (profile?.is_active === false) return false;
+  if (!isAccessApproved(profile)) return false;
 
   const profileRole = normalizeRole(profile?.role);
   return profileRole === "admin" || profileRole === "school_admin";
 }
 
-export type TeacherMonitorStatus = "you" | "active" | "no_sync";
+export type TeacherMonitorStatus =
+  | "you"
+  | "active"
+  | "no_sync"
+  | "pending"
+  | "revoked";
+
+export type AccessStatus = "pending" | "approved" | "revoked";
 
 export type SchoolTeacherSummary = {
   id: string;
   full_name: string;
   email: string | null;
   role: string;
+  accessStatus: AccessStatus | string;
   sectionCount: number;
   studentCount: number;
   subjectCount: number;
@@ -29,6 +46,16 @@ export type SchoolTeacherSummary = {
   pendingReviewCount: number;
   lastCloudUpdate: string | null;
   status: TeacherMonitorStatus;
+};
+
+export type AccessRequestTeacher = {
+  id: string;
+  full_name: string;
+  email: string | null;
+  role: string;
+  access_status: AccessStatus | string;
+  school_name: string | null;
+  created_at: string | null;
 };
 
 export type SchoolAdminStats = {
@@ -62,6 +89,7 @@ type LaravelTeacherSummary = {
   full_name: string;
   email: string | null;
   role: string;
+  access_status?: string;
   section_count: number;
   student_count: number;
   subject_count: number;
@@ -77,6 +105,7 @@ function mapTeacherSummary(row: LaravelTeacherSummary): SchoolTeacherSummary {
     full_name: row.full_name,
     email: row.email,
     role: row.role,
+    accessStatus: row.access_status ?? "approved",
     sectionCount: row.section_count,
     studentCount: row.student_count,
     subjectCount: row.subject_count,
@@ -93,6 +122,10 @@ export function teacherStatusLabel(status: TeacherMonitorStatus): string {
       return "You";
     case "no_sync":
       return "Not started";
+    case "pending":
+      return "Pending approval";
+    case "revoked":
+      return "Revoked";
     default:
       return "Active";
   }
@@ -105,6 +138,29 @@ export async function fetchSchoolTeacherSummaries(
 ): Promise<SchoolTeacherSummary[]> {
   const { teachers } = await api.get<{ teachers: LaravelTeacherSummary[] }>("/admin/teachers");
   return (teachers ?? []).map(mapTeacherSummary);
+}
+
+export async function fetchAccessRequests(
+  api: ApiClient,
+): Promise<AccessRequestTeacher[]> {
+  const { teachers } = await api.get<{ teachers: AccessRequestTeacher[] }>(
+    "/admin/access-requests",
+  );
+  return teachers ?? [];
+}
+
+export async function approveTeacherAccess(
+  api: ApiClient,
+  teacherId: string,
+): Promise<void> {
+  await api.post(`/admin/teachers/${teacherId}/approve`);
+}
+
+export async function revokeTeacherAccess(
+  api: ApiClient,
+  teacherId: string,
+): Promise<void> {
+  await api.post(`/admin/teachers/${teacherId}/revoke`);
 }
 
 export async function fetchSchoolAdminStats(

@@ -10,8 +10,12 @@ class MeController extends Controller
 {
     public function __invoke(Request $request): JsonResponse
     {
+        $user = $request->user();
+        $user->loadMissing('teacherProfile');
+
         return response()->json([
-            'user' => RegisterController::userPayload($request->user()),
+            'user' => RegisterController::userPayload($user),
+            'access_status' => $user->teacherProfile?->access_status,
         ]);
     }
 }

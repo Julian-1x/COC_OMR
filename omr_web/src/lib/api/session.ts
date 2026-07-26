@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
-import { isSchoolAdmin } from "@/lib/api/admin";
+import { isAccessApproved, isSchoolAdmin } from "@/lib/api/admin";
 import {
   ApiClient,
+  ApiError,
   ApiUser,
 } from "@/lib/api/laravel-client";
 import {
@@ -19,9 +20,21 @@ export async function requireTeacherSession(): Promise<{
   if (!token) redirect("/login");
 
   const api = createServerApiClient(token);
-  const { user } = await api.get<{ user: ApiUser }>("/me");
-
-  return { api, user, profile: user.profile };
+  try {
+    const { user } = await api.get<{ user: ApiUser }>("/me");
+    if (!isAccessApproved(user.profile)) {
+      redirect("/login?pending=1");
+    }
+    return { api, user, profile: user.profile };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      redirect("/login");
+    }
+    if (error instanceof ApiError && error.status === 403) {
+      redirect("/login?pending=1");
+    }
+    throw error;
+  }
 }
 
 export async function requireAdminSession(): Promise<{

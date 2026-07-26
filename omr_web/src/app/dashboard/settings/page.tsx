@@ -118,15 +118,22 @@ export default async function SettingsPage() {
         {admin ? (
           <Card title="School admin" className="lg:col-span-2">
             <p className="text-sm text-slate-600">
-              See teachers, classes, and rosters across your school. You cannot change another teacher&apos;s
-              data from here — only view.
+              Monitor teachers across COC, and approve or revoke who may use the phone app and this portal.
             </p>
-            <Link
-              href="/dashboard/admin"
-              className="mt-3 inline-block rounded-xl bg-emerald-500 px-4 py-2 text-sm font-extrabold text-white hover:bg-emerald-600"
-            >
-              Open school overview
-            </Link>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Link
+                href="/dashboard/admin"
+                className="inline-block rounded-xl bg-emerald-500 px-4 py-2 text-sm font-extrabold text-white hover:bg-emerald-600"
+              >
+                Open school overview
+              </Link>
+              <Link
+                href="/dashboard/admin/access"
+                className="inline-block rounded-xl border border-emerald-200 bg-white px-4 py-2 text-sm font-extrabold text-emerald-800 hover:bg-emerald-50"
+              >
+                Access control
+              </Link>
+            </div>
           </Card>
         ) : null}
       </div>
