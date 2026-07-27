@@ -33,7 +33,7 @@ class LoginController extends Controller
         $user = Auth::user();
         $user->loadMissing('teacherProfile');
 
-        // Free-plan bootstrap: listed emails become school_admin without Render Shell.
+        // Free-plan bootstrap: listed emails become super_admin without Render Shell.
         if (AdminBootstrap::promoteIfListed($user)) {
             $user->load('teacherProfile');
         }

@@ -6,15 +6,15 @@ use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-class EnsureSchoolAdmin
+class EnsureSuperAdmin
 {
     public function handle(Request $request, Closure $next): Response
     {
         $user = $request->user();
 
-        if (! $user || ! $user->canManageAccess()) {
+        if (! $user || ! $user->isSuperAdmin()) {
             return response()->json([
-                'message' => 'Admin access required.',
+                'message' => 'Super admin access required.',
             ], 403);
         }
 

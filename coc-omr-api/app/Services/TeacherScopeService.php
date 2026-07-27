@@ -51,10 +51,20 @@ class TeacherScopeService
             return TeacherProfile::query()->whereRaw('1 = 0');
         }
 
-        // Single-tenant COC: school admins see every teacher, including older
-        // accounts that typed a different free-text school name.
-        if ($school === CocSchool::NAME) {
+        if ($user->isSuperAdmin() && $school === CocSchool::NAME) {
             return TeacherProfile::query()->orderBy('full_name');
+        }
+
+        if ($user->isDeptAdmin()) {
+            $department = $user->department();
+            if ($department === null) {
+                return TeacherProfile::query()->whereRaw('1 = 0');
+            }
+
+            return TeacherProfile::query()
+                ->where('school_name', CocSchool::NAME)
+                ->where('department', $department)
+                ->orderBy('full_name');
         }
 
         return TeacherProfile::query()
@@ -90,21 +100,35 @@ class TeacherScopeService
      */
     private function schoolWideQuery(User $user, Builder $query): Builder
     {
-        if (! $user->isSchoolAdmin()) {
+        if (! $user->canManageAccess()) {
             return $query->where('owner_teacher_id', $user->id);
         }
 
-        $school = $user->schoolName();
-        if ($school === null || $school === '') {
-            return $query->where('owner_teacher_id', $user->id);
+        if ($user->isSuperAdmin()) {
+            $school = $user->schoolName();
+            if ($school === CocSchool::NAME) {
+                return $query;
+            }
+            if ($school === null || $school === '') {
+                return $query->where('owner_teacher_id', $user->id);
+            }
+
+            $teacherIds = TeacherProfile::query()
+                ->where('school_name', $school)
+                ->pluck('id');
+
+            return $query->whereIn('owner_teacher_id', $teacherIds);
         }
 
-        if ($school === CocSchool::NAME) {
-            return $query;
+        // Department admin: only rows owned by teachers in their department.
+        $department = $user->department();
+        if ($department === null) {
+            return $query->where('owner_teacher_id', $user->id);
         }
 
         $teacherIds = TeacherProfile::query()
-            ->where('school_name', $school)
+            ->where('school_name', CocSchool::NAME)
+            ->where('department', $department)
             ->pluck('id');
 
         return $query->whereIn('owner_teacher_id', $teacherIds);

@@ -5,6 +5,7 @@ import { Card, StatCard } from "@/components/ui/card";
 import {
   fetchSchoolAdminStats,
   fetchSchoolTeacherSummaries,
+  isSuperAdmin,
   teacherStatusLabel,
 } from "@/lib/api/admin";
 import { requireAdminSession } from "@/lib/api/session";
@@ -28,6 +29,7 @@ export default async function AdminDashboardPage() {
   const { user, profile, api } = await requireAdminSession();
   const schoolName = profile.school_name?.trim() ?? "";
   const schoolLabel = schoolName || "your school";
+  const viewerIsSuperAdmin = isSuperAdmin(profile, user);
 
   const [stats, teachers] = schoolName
     ? await Promise.all([
@@ -52,8 +54,13 @@ export default async function AdminDashboardPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-slate-800">School overview</h1>
         <p className="mt-1 text-sm text-slate-500">
-          See how teachers at <strong>{schoolLabel}</strong> are using COC OMR. View only — teachers manage
-          their own classes on their phones.
+          See how teachers at <strong>{schoolLabel}</strong>
+          {viewerIsSuperAdmin
+            ? ""
+            : profile.department
+              ? ` (${profile.department})`
+              : ""}{" "}
+          are using COC OMR. View only — teachers manage their own classes on their phones.
         </p>
       </div>
 
@@ -86,16 +93,31 @@ export default async function AdminDashboardPage() {
       ) : null}
 
       <Card title="Teachers" className="mt-6" subtitle="Open a teacher to see their classes and rosters">
-        <div className="mb-4">
-          <Link
-            href="/dashboard/admin/access"
-            className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-800"
-          >
-            Open access control
-          </Link>
-          <p className="mt-2 text-xs text-slate-500">
-            Approve or revoke which teachers can use the app and web portal.
-          </p>
+        <div className="mb-4 flex flex-wrap gap-3">
+          <div>
+            <Link
+              href="/dashboard/admin/access"
+              className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-800"
+            >
+              Open access control
+            </Link>
+            <p className="mt-2 text-xs text-slate-500">
+              Approve or revoke which teachers can use the app and web portal.
+            </p>
+          </div>
+          {viewerIsSuperAdmin ? (
+            <div>
+              <Link
+                href="/dashboard/admin/departments"
+                className="inline-flex rounded-xl border border-emerald-700 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-50"
+              >
+                Department admins
+              </Link>
+              <p className="mt-2 text-xs text-slate-500">
+                Assign who can approve instructors in each department.
+              </p>
+            </div>
+          ) : null}
         </div>
         {teachers.length === 0 ? (
           <p className="text-sm text-slate-500">

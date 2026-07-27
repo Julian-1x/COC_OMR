@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\EnsureSchoolAdmin;
+use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\EnsureTeacherApproved;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -23,6 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'verified' => \App\Http\Middleware\EnsureEmailIsVerified::class,
             'school.admin' => EnsureSchoolAdmin::class,
+            'super.admin' => EnsureSuperAdmin::class,
             'teacher.approved' => EnsureTeacherApproved::class,
         ]);
     })

@@ -1,5 +1,9 @@
 import { redirect } from "next/navigation";
-import { isAccessApproved, isSchoolAdmin } from "@/lib/api/admin";
+import {
+  isAccessApproved,
+  isSchoolAdmin,
+  isSuperAdmin,
+} from "@/lib/api/admin";
 import {
   ApiClient,
   ApiError,
@@ -54,4 +58,16 @@ export async function requireAdminSession(): Promise<{
     user: session.user,
     profile: session.profile,
   };
+}
+
+export async function requireSuperAdminSession(): Promise<{
+  api: ApiClient;
+  user: ApiUser;
+  profile: DbTeacherProfile;
+}> {
+  const session = await requireAdminSession();
+  if (!isSuperAdmin(session.profile, session.user)) {
+    redirect("/dashboard/admin");
+  }
+  return session;
 }

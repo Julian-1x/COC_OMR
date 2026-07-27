@@ -12,6 +12,7 @@ import {
   LogOut,
   Settings,
   Shield,
+  Users,
 } from "lucide-react";
 import { BrandHeader } from "@/components/brand";
 import {
@@ -30,9 +31,16 @@ const teacherNav = [
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
-const adminNav = [
-  { href: "/dashboard/admin", label: "Overview", icon: Shield },
+const adminNavBase = [
+  { href: "/dashboard/admin", label: "Overview", icon: Shield, exact: true as const },
   { href: "/dashboard/admin/access", label: "Access", icon: ClipboardList },
+];
+
+const adminNavSuper = [
+  { href: "/dashboard/admin/departments", label: "Dept admins", icon: Users },
+];
+
+const adminNavTail = [
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -76,11 +84,16 @@ function PortalModeSwitch({
               : "text-slate-600 hover:text-slate-900",
           )}
         >
-          School admin
+          Admin desk
         </button>
       </div>
     </div>
   );
+}
+
+function navItemActive(pathname: string, href: string, exact?: boolean): boolean {
+  if (exact) return pathname === href;
+  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export function DashboardShell({
@@ -88,12 +101,14 @@ export function DashboardShell({
   teacherName,
   schoolName,
   isAdmin = false,
+  isSuperAdmin = false,
   initialMode = "teacher",
 }: {
   children: React.ReactNode;
   teacherName?: string;
   schoolName?: string;
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
   initialMode?: PortalMode;
 }) {
   const pathname = usePathname();
@@ -104,7 +119,12 @@ export function DashboardShell({
     setMode(readPortalModeCookie());
   }, []);
 
-  const subtitle = isAdmin && mode === "admin" ? "School monitoring" : "Teacher desk";
+  const subtitle = isAdmin && mode === "admin" ? "Admin monitoring" : "Teacher desk";
+  const adminNav = [
+    ...adminNavBase,
+    ...(isSuperAdmin ? adminNavSuper : []),
+    ...adminNavTail,
+  ];
   const nav = isAdmin && mode === "admin" ? adminNav : teacherNav;
 
   function switchMode(next: PortalMode) {
@@ -132,7 +152,11 @@ export function DashboardShell({
           {isAdmin ? <PortalModeSwitch mode={mode} onChange={switchMode} /> : null}
           <nav className="mt-6 flex flex-1 flex-col gap-1">
             {nav.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const active = navItemActive(
+                pathname,
+                item.href,
+                "exact" in item ? Boolean(item.exact) : false,
+              );
               const Icon = item.icon;
               return (
                 <Link
@@ -171,7 +195,11 @@ export function DashboardShell({
             ) : null}
             <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
               {nav.map((item) => {
-                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                const active = navItemActive(
+                  pathname,
+                  item.href,
+                  "exact" in item ? Boolean(item.exact) : false,
+                );
                 return (
                   <Link
                     key={item.href}

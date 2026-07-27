@@ -15,6 +15,12 @@ final class CocSchool
 
     public const ACCESS_REVOKED = 'revoked';
 
+    public const ROLE_TEACHER = 'teacher';
+
+    public const ROLE_DEPT_ADMIN = 'dept_admin';
+
+    public const ROLE_SUPER_ADMIN = 'super_admin';
+
     /** @var list<string> */
     public const DEPARTMENTS = [
         'COE',
@@ -42,5 +48,25 @@ final class CocSchool
     public static function normalizeDepartment(string $department): string
     {
         return strtoupper(trim($department));
+    }
+
+    public static function isAccessAdminRole(string $role): bool
+    {
+        return in_array($role, [
+            self::ROLE_SUPER_ADMIN,
+            self::ROLE_DEPT_ADMIN,
+            // Legacy aliases still accepted until clients catch up.
+            'admin',
+            'school_admin',
+        ], true);
+    }
+
+    public static function isSuperAdminRole(string $role): bool
+    {
+        return in_array($role, [
+            self::ROLE_SUPER_ADMIN,
+            'admin',
+            'school_admin',
+        ], true);
     }
 }

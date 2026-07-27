@@ -49,7 +49,7 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->hasOne(TeacherProfile::class, 'id');
     }
 
-    public function isSchoolAdmin(): bool
+    public function isSuperAdmin(): bool
     {
         $profile = $this->teacherProfile;
 
@@ -57,7 +57,36 @@ class User extends Authenticatable implements MustVerifyEmail
             return false;
         }
 
-        return in_array($profile->role, ['admin', 'school_admin'], true);
+        return CocSchool::isSuperAdminRole((string) $profile->role);
+    }
+
+    public function isDeptAdmin(): bool
+    {
+        $profile = $this->teacherProfile;
+
+        if (! $profile || ! $profile->isApproved()) {
+            return false;
+        }
+
+        return $profile->role === CocSchool::ROLE_DEPT_ADMIN
+            && is_string($profile->department)
+            && CocSchool::isValidDepartment($profile->department);
+    }
+
+    /**
+     * Can open Access control (super or department admin).
+     */
+    public function canManageAccess(): bool
+    {
+        return $this->isSuperAdmin() || $this->isDeptAdmin();
+    }
+
+    /**
+     * @deprecated Prefer canManageAccess() / isSuperAdmin() / isDeptAdmin().
+     */
+    public function isSchoolAdmin(): bool
+    {
+        return $this->canManageAccess();
     }
 
     public function isAccessApproved(): bool
@@ -70,22 +99,60 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->teacherProfile?->school_name;
     }
 
+    public function department(): ?string
+    {
+        $department = $this->teacherProfile?->department;
+
+        return is_string($department) && $department !== ''
+            ? CocSchool::normalizeDepartment($department)
+            : null;
+    }
+
+    public function canManageTeacherProfile(TeacherProfile $teacher): bool
+    {
+        if ($this->isSuperAdmin()) {
+            return true;
+        }
+
+        if (! $this->isDeptAdmin()) {
+            return false;
+        }
+
+        $adminDept = $this->department();
+        $teacherDept = is_string($teacher->department) && $teacher->department !== ''
+            ? CocSchool::normalizeDepartment($teacher->department)
+            : null;
+
+        return $adminDept !== null
+            && $teacherDept !== null
+            && $adminDept === $teacherDept;
+    }
+
     public function teacherInSameSchool(string $teacherId): bool
     {
+        if (! $this->canManageAccess()) {
+            return false;
+        }
+
         $school = $this->schoolName();
         if ($school === null || $school === '') {
             return false;
         }
 
-        // Single-tenant COC admin can manage any teacher account.
-        if ($school === CocSchool::NAME) {
-            return TeacherProfile::query()->whereKey($teacherId)->exists();
+        $other = TeacherProfile::query()->find($teacherId);
+        if ($other === null) {
+            return false;
         }
 
-        $other = TeacherProfile::query()->find($teacherId);
+        if ($this->isSuperAdmin() && $school === CocSchool::NAME) {
+            return true;
+        }
 
-        return $other !== null
-            && $other->school_name !== null
+        if ($this->isDeptAdmin()) {
+            return $this->canManageTeacherProfile($other);
+        }
+
+        return $other->school_name !== null
             && $other->school_name === $school;
     }
 

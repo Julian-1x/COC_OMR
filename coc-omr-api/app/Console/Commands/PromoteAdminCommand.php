@@ -9,10 +9,10 @@ use Illuminate\Console\Command;
 class PromoteAdminCommand extends Command
 {
     protected $signature = 'omr:promote-admin
-                            {email : Teacher email to promote}
-                            {--demote : Remove school_admin role (keeps approved teacher access)}';
+                            {email : Teacher email to promote to super_admin}
+                            {--demote : Remove super_admin role (keeps approved teacher access)}';
 
-    protected $description = 'Promote a verified teacher to school_admin for COC (or demote).';
+    protected $description = 'Promote a verified teacher to COC super_admin (or demote).';
 
     public function handle(): int
     {
@@ -33,7 +33,7 @@ class PromoteAdminCommand extends Command
         }
 
         if ($this->option('demote')) {
-            $profile->role = 'teacher';
+            $profile->role = CocSchool::ROLE_TEACHER;
             $profile->applyAccessStatus(CocSchool::ACCESS_APPROVED);
             $profile->school_name = $profile->school_name ?: CocSchool::NAME;
             $profile->save();
@@ -47,13 +47,13 @@ class PromoteAdminCommand extends Command
             $this->warn('Email is not verified yet. Promoting anyway — they still need to verify before login.');
         }
 
-        $profile->role = 'school_admin';
+        $profile->role = CocSchool::ROLE_SUPER_ADMIN;
         $profile->applyAccessStatus(CocSchool::ACCESS_APPROVED);
         $profile->school_name = CocSchool::NAME;
         $profile->save();
 
-        $this->info("Promoted {$email} to school_admin at ".CocSchool::NAME.'.');
-        $this->line('They can sign in on the web and open Dashboard → Admin → Access control.');
+        $this->info("Promoted {$email} to super_admin at ".CocSchool::NAME.'.');
+        $this->line('They can sign in on the web and manage department admins + Access control.');
 
         return self::SUCCESS;
     }

@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   fetchAccessRequests,
   fetchSchoolTeacherSummaries,
+  isSuperAdmin,
 } from "@/lib/api/admin";
 import { requireAdminSession } from "@/lib/api/session";
 import { AccessControlPanel } from "./access-control-panel";
@@ -9,6 +10,7 @@ import { AccessControlPanel } from "./access-control-panel";
 export default async function AdminAccessPage() {
   const { user, profile, api } = await requireAdminSession();
   const schoolName = profile.school_name?.trim() ?? "";
+  const viewerIsSuperAdmin = isSuperAdmin(profile, user);
 
   const [pending, teachers] = schoolName
     ? await Promise.all([
@@ -34,7 +36,9 @@ export default async function AdminAccessPage() {
         </p>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Access control</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Decide which COC teachers may use the phone app and this web portal.
+          {viewerIsSuperAdmin
+            ? "Approve or revoke any COC instructor."
+            : `Approve or revoke instructors in ${profile.department ?? "your department"}.`}
         </p>
       </div>
 
@@ -45,7 +49,13 @@ export default async function AdminAccessPage() {
           the API host.
         </div>
       ) : (
-        <AccessControlPanel pending={pending} approved={approved} revoked={revoked} />
+        <AccessControlPanel
+          pending={pending}
+          approved={approved}
+          revoked={revoked}
+          viewerIsSuperAdmin={viewerIsSuperAdmin}
+          viewerDepartment={profile.department}
+        />
       )}
     </>
   );

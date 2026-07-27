@@ -14,14 +14,49 @@ export function isAccessApproved(
   return status === "approved";
 }
 
+/** Super admin or legacy school_admin/admin aliases. */
+export function isSuperAdminRole(role: string | null | undefined): boolean {
+  const r = normalizeRole(role);
+  return r === "super_admin" || r === "admin" || r === "school_admin";
+}
+
+export function isDeptAdminRole(role: string | null | undefined): boolean {
+  return normalizeRole(role) === "dept_admin";
+}
+
+/** Anyone who can open Admin desk (super or department admin). */
+export function isAccessAdminRole(role: string | null | undefined): boolean {
+  return isSuperAdminRole(role) || isDeptAdminRole(role);
+}
+
+export function isSuperAdmin(
+  profile: DbTeacherProfile | null,
+  _user?: Pick<ApiUser, "id"> | null,
+): boolean {
+  return isAccessApproved(profile) && isSuperAdminRole(profile?.role);
+}
+
+export function isDeptAdmin(
+  profile: DbTeacherProfile | null,
+  _user?: Pick<ApiUser, "id"> | null,
+): boolean {
+  return isAccessApproved(profile) && isDeptAdminRole(profile?.role);
+}
+
+/** @deprecated Prefer isSuperAdmin / isDeptAdmin / isAccessAdminRole. */
 export function isSchoolAdmin(
   profile: DbTeacherProfile | null,
   _user?: Pick<ApiUser, "id"> | null,
 ): boolean {
   if (!isAccessApproved(profile)) return false;
+  return isAccessAdminRole(profile?.role);
+}
 
-  const profileRole = normalizeRole(profile?.role);
-  return profileRole === "admin" || profileRole === "school_admin";
+export function roleDisplayLabel(role: string | null | undefined): string {
+  const r = normalizeRole(role);
+  if (isSuperAdminRole(r)) return "Super admin";
+  if (isDeptAdminRole(r)) return "Dept admin";
+  return "Instructor";
 }
 
 export type TeacherMonitorStatus =
@@ -165,6 +200,44 @@ export async function revokeTeacherAccess(
   teacherId: string,
 ): Promise<void> {
   await api.post(`/admin/teachers/${teacherId}/revoke`);
+}
+
+export type DepartmentAdminRow = {
+  id: string;
+  full_name: string;
+  email: string | null;
+  department: string | null;
+  access_status: AccessStatus | string;
+  role: string;
+};
+
+export async function fetchDepartmentAdmins(api: ApiClient): Promise<{
+  departments: string[];
+  admins: DepartmentAdminRow[];
+}> {
+  const payload = await api.get<{
+    departments: string[];
+    admins: DepartmentAdminRow[];
+  }>("/admin/department-admins");
+  return {
+    departments: payload.departments ?? [],
+    admins: payload.admins ?? [],
+  };
+}
+
+export async function makeDepartmentAdmin(
+  api: ApiClient,
+  teacherId: string,
+  department: string,
+): Promise<void> {
+  await api.post(`/admin/teachers/${teacherId}/make-dept-admin`, { department });
+}
+
+export async function revokeDepartmentAdmin(
+  api: ApiClient,
+  teacherId: string,
+): Promise<void> {
+  await api.post(`/admin/teachers/${teacherId}/revoke-dept-admin`);
 }
 
 export async function fetchSchoolAdminStats(

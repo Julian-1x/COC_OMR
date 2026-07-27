@@ -141,6 +141,14 @@ class AdminController extends Controller
             return response()->json(['message' => 'You cannot change your own access status here.'], 422);
         }
 
+        if (! $admin->canManageTeacherProfile($teacher)) {
+            return response()->json(['message' => 'You can only approve instructors in your department.'], 403);
+        }
+
+        if (CocSchool::isAccessAdminRole((string) $teacher->role) && ! $admin->isSuperAdmin()) {
+            return response()->json(['message' => 'Only a super admin can change another admin account.'], 403);
+        }
+
         $teacher->applyAccessStatus(CocSchool::ACCESS_APPROVED);
         $teacher->school_name = CocSchool::NAME;
         $teacher->save();
@@ -152,6 +160,7 @@ class AdminController extends Controller
                 'full_name' => $teacher->full_name,
                 'email' => $teacher->user?->email,
                 'access_status' => $teacher->access_status,
+                'department' => $teacher->department,
                 'is_active' => $teacher->is_active,
             ],
         ]);
@@ -167,12 +176,28 @@ class AdminController extends Controller
         }
 
         if ($teacher->id === $admin->id) {
-            return response()->json(['message' => 'You cannot revoke your own admin access here.'], 422);
+            return response()->json(['message' => 'You cannot revoke your own access here.'], 422);
         }
 
-        if (in_array($teacher->role, ['admin', 'school_admin'], true)) {
+        if (! $admin->canManageTeacherProfile($teacher)) {
+            return response()->json(['message' => 'You can only revoke instructors in your department.'], 403);
+        }
+
+        if (CocSchool::isSuperAdminRole((string) $teacher->role)) {
             return response()->json([
-                'message' => 'Cannot revoke another school admin from the portal. Use the promote-admin command carefully.',
+                'message' => 'Cannot revoke a super admin from Access control.',
+            ], 422);
+        }
+
+        if ($teacher->role === CocSchool::ROLE_DEPT_ADMIN && ! $admin->isSuperAdmin()) {
+            return response()->json([
+                'message' => 'Only a super admin can revoke a department admin. Use Department admins.',
+            ], 422);
+        }
+
+        if ($teacher->role === CocSchool::ROLE_DEPT_ADMIN) {
+            return response()->json([
+                'message' => 'Use Department admins to remove department admin power first.',
             ], 422);
         }
 
@@ -188,7 +213,112 @@ class AdminController extends Controller
                 'full_name' => $teacher->full_name,
                 'email' => $teacher->user?->email,
                 'access_status' => $teacher->access_status,
+                'department' => $teacher->department,
                 'is_active' => $teacher->is_active,
+            ],
+        ]);
+    }
+
+    public function departmentAdmins(Request $request): JsonResponse
+    {
+        $admins = TeacherProfile::query()
+            ->with('user')
+            ->where('role', CocSchool::ROLE_DEPT_ADMIN)
+            ->where('school_name', CocSchool::NAME)
+            ->orderBy('department')
+            ->orderBy('full_name')
+            ->get();
+
+        return response()->json([
+            'departments' => CocSchool::DEPARTMENTS,
+            'admins' => $admins->map(fn (TeacherProfile $teacher) => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'department' => $teacher->department,
+                'access_status' => $teacher->access_status,
+                'role' => $teacher->role,
+            ])->values()->all(),
+        ]);
+    }
+
+    public function makeDeptAdmin(Request $request, string $teacherId): JsonResponse
+    {
+        $validated = $request->validate([
+            'department' => ['required', 'string', 'in:'.implode(',', CocSchool::DEPARTMENTS)],
+        ]);
+
+        $admin = $request->user();
+        $teacher = TeacherProfile::query()->with('user')->find($teacherId);
+
+        if ($teacher === null || $teacher->school_name !== CocSchool::NAME) {
+            return response()->json(['message' => 'Teacher not found.'], 404);
+        }
+
+        if ($teacher->id === $admin->id) {
+            return response()->json(['message' => 'You cannot change your own role here.'], 422);
+        }
+
+        if (CocSchool::isSuperAdminRole((string) $teacher->role)) {
+            return response()->json(['message' => 'Cannot change another super admin role here.'], 422);
+        }
+
+        if (! $teacher->isApproved()) {
+            return response()->json([
+                'message' => 'Approve this instructor first, then assign them as department admin.',
+            ], 422);
+        }
+
+        $department = CocSchool::normalizeDepartment($validated['department']);
+        $teacher->role = CocSchool::ROLE_DEPT_ADMIN;
+        $teacher->department = $department;
+        $teacher->school_name = CocSchool::NAME;
+        $teacher->applyAccessStatus(CocSchool::ACCESS_APPROVED);
+        $teacher->save();
+
+        return response()->json([
+            'message' => "Assigned as {$department} department admin.",
+            'teacher' => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'role' => $teacher->role,
+                'department' => $teacher->department,
+                'access_status' => $teacher->access_status,
+            ],
+        ]);
+    }
+
+    public function revokeDeptAdmin(Request $request, string $teacherId): JsonResponse
+    {
+        $admin = $request->user();
+        $teacher = TeacherProfile::query()->with('user')->find($teacherId);
+
+        if ($teacher === null || $teacher->school_name !== CocSchool::NAME) {
+            return response()->json(['message' => 'Teacher not found.'], 404);
+        }
+
+        if ($teacher->id === $admin->id) {
+            return response()->json(['message' => 'You cannot change your own role here.'], 422);
+        }
+
+        if ($teacher->role !== CocSchool::ROLE_DEPT_ADMIN) {
+            return response()->json(['message' => 'That account is not a department admin.'], 422);
+        }
+
+        $teacher->role = CocSchool::ROLE_TEACHER;
+        $teacher->applyAccessStatus(CocSchool::ACCESS_APPROVED);
+        $teacher->save();
+
+        return response()->json([
+            'message' => 'Department admin power removed. They remain an approved instructor.',
+            'teacher' => [
+                'id' => $teacher->id,
+                'full_name' => $teacher->full_name,
+                'email' => $teacher->user?->email,
+                'role' => $teacher->role,
+                'department' => $teacher->department,
+                'access_status' => $teacher->access_status,
             ],
         ]);
     }

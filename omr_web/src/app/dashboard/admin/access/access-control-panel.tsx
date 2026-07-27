@@ -3,17 +3,28 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
-import type { AccessRequestTeacher, SchoolTeacherSummary } from "@/lib/api/admin";
+import {
+  isAccessAdminRole,
+  isDeptAdminRole,
+  isSuperAdminRole,
+  roleDisplayLabel,
+  type AccessRequestTeacher,
+  type SchoolTeacherSummary,
+} from "@/lib/api/admin";
 import { approveTeacherAction, revokeTeacherAction } from "./actions";
 
 export function AccessControlPanel({
   pending,
   approved,
   revoked,
+  viewerIsSuperAdmin = false,
+  viewerDepartment = null,
 }: {
   pending: AccessRequestTeacher[];
   approved: SchoolTeacherSummary[];
   revoked: SchoolTeacherSummary[];
+  viewerIsSuperAdmin?: boolean;
+  viewerDepartment?: string | null;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +48,12 @@ export function AccessControlPanel({
     });
   }
 
+  const scopeHint = viewerIsSuperAdmin
+    ? "All COC departments."
+    : viewerDepartment
+      ? `Your department: ${viewerDepartment}.`
+      : "Your department only.";
+
   return (
     <div className="space-y-6">
       {error ? (
@@ -49,7 +66,7 @@ export function AccessControlPanel({
         <h2 className="text-lg font-extrabold text-slate-800">Pending approval</h2>
         <p className="mt-1 text-sm text-slate-600">
           These teachers registered and confirmed email. Approve them to unlock the app and web
-          dashboard.
+          dashboard. {scopeHint}
         </p>
         {pending.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No pending requests.</p>
@@ -82,7 +99,9 @@ export function AccessControlPanel({
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4">
         <h2 className="text-lg font-extrabold text-slate-800">Approved teachers</h2>
-        <p className="mt-1 text-sm text-slate-600">Revoke to cut off app and web access immediately.</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Revoke to cut off app and web access immediately. Admin accounts are managed separately.
+        </p>
         {approved.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No approved teachers yet.</p>
         ) : (
@@ -99,8 +118,12 @@ export function AccessControlPanel({
               </thead>
               <tbody>
                 {approved.map((teacher) => {
-                  const isAdminRole =
-                    teacher.role === "admin" || teacher.role === "school_admin";
+                  const protectedAdmin = isAccessAdminRole(teacher.role);
+                  const blockHint = isSuperAdminRole(teacher.role)
+                    ? "Super admin"
+                    : isDeptAdminRole(teacher.role)
+                      ? "Dept admin"
+                      : "Admin";
                   return (
                     <tr key={teacher.id} className="border-b border-slate-100">
                       <td className="px-2 py-2 font-semibold text-slate-800">
@@ -108,11 +131,13 @@ export function AccessControlPanel({
                       </td>
                       <td className="px-2 py-2 text-slate-600">{teacher.email ?? "—"}</td>
                       <td className="px-2 py-2 text-slate-600">{teacher.department ?? "—"}</td>
-                      <td className="px-2 py-2 text-slate-600">{teacher.role}</td>
+                      <td className="px-2 py-2 text-slate-600">
+                        {roleDisplayLabel(teacher.role)}
+                      </td>
                       <td className="px-2 py-2 text-right">
-                        {teacher.status === "you" || isAdminRole ? (
+                        {teacher.status === "you" || protectedAdmin ? (
                           <span className="text-xs font-semibold text-slate-400">
-                            {teacher.status === "you" ? "You" : "Admin"}
+                            {teacher.status === "you" ? "You" : blockHint}
                           </span>
                         ) : (
                           <Button
