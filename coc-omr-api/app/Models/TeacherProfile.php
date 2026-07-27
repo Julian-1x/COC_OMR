@@ -22,6 +22,7 @@ class TeacherProfile extends Model
         'is_active',
         'access_status',
         'school_name',
+        'department',
         'pin_hash',
         'pin_salt',
     ];

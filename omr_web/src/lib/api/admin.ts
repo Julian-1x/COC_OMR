@@ -39,6 +39,7 @@ export type SchoolTeacherSummary = {
   email: string | null;
   role: string;
   accessStatus: AccessStatus | string;
+  department?: string | null;
   sectionCount: number;
   studentCount: number;
   subjectCount: number;
@@ -55,6 +56,7 @@ export type AccessRequestTeacher = {
   role: string;
   access_status: AccessStatus | string;
   school_name: string | null;
+  department?: string | null;
   created_at: string | null;
 };
 
@@ -90,6 +92,7 @@ type LaravelTeacherSummary = {
   email: string | null;
   role: string;
   access_status?: string;
+  department?: string | null;
   section_count: number;
   student_count: number;
   subject_count: number;
@@ -106,6 +109,7 @@ function mapTeacherSummary(row: LaravelTeacherSummary): SchoolTeacherSummary {
     email: row.email,
     role: row.role,
     accessStatus: row.access_status ?? "approved",
+    department: row.department,
     sectionCount: row.section_count,
     studentCount: row.student_count,
     subjectCount: row.subject_count,

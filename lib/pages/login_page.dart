@@ -52,6 +52,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _isLoading = true;
   bool _isSubmitting = false;
   bool _obscurePassword = true;
+  String? _selectedDepartment;
   CloudTeacherAccount? _pendingTrustedAccount;
   LocalTeacherProfile? _offlineProfile;
   bool _isNewRegistration = false;
@@ -344,6 +345,12 @@ class _LoginPageState extends State<LoginPage> {
       _showMessage('Enter the teacher name.', isError: true);
       return;
     }
+    if (isRegister &&
+        (_selectedDepartment == null ||
+            !CocSchool.isValidDepartment(_selectedDepartment!))) {
+      _showMessage('Select your COC department.', isError: true);
+      return;
+    }
     if (!_isValidEmail(email)) {
       _showMessage('Enter a valid email address.', isError: true);
       return;
@@ -361,6 +368,7 @@ class _LoginPageState extends State<LoginPage> {
           email: email,
           password: password,
           school: CocSchool.name,
+          department: _selectedDepartment!,
         );
 
         if (!mounted) {
@@ -973,8 +981,15 @@ class _LoginPageState extends State<LoginPage> {
             const SizedBox(height: AppSpacing.md),
             _statusNote(
               icon: Icons.apartment_rounded,
+              text: CocSchool.name,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _departmentDropdown(),
+            const SizedBox(height: AppSpacing.sm),
+            _statusNote(
+              icon: Icons.info_outline_rounded,
               text:
-                  '${CocSchool.name}\nAccess is for COC instructors only. After email confirmation, a school admin must approve your account.',
+                  'After email confirmation, a school admin must approve your account before you can use the app.',
             ),
             const SizedBox(height: AppSpacing.md),
           ],
@@ -1275,6 +1290,35 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _departmentDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _fieldLabel('Department'),
+        const SizedBox(height: AppSpacing.xs),
+        DropdownButtonFormField<String>(
+          key: ValueKey<String>(_selectedDepartment ?? 'dept-none'),
+          initialValue: _selectedDepartment,
+          decoration: _inputDecoration(
+            hint: 'Select department',
+            icon: Icons.school_outlined,
+          ),
+          items: CocSchool.departments
+              .map(
+                (code) => DropdownMenuItem<String>(
+                  value: code,
+                  child: Text(code),
+                ),
+              )
+              .toList(),
+          onChanged: _isSubmitting
+              ? null
+              : (value) => setState(() => _selectedDepartment = value),
+        ),
+      ],
     );
   }
 

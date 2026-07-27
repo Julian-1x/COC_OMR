@@ -122,6 +122,7 @@ class AdminController extends Controller
                 'role' => $teacher->role,
                 'access_status' => $teacher->access_status,
                 'school_name' => $teacher->school_name,
+                'department' => $teacher->department,
                 'created_at' => $teacher->created_at?->toIso8601String(),
             ])->values()->all(),
         ]);
@@ -228,6 +229,7 @@ class AdminController extends Controller
                 'email' => $teacher->user?->email,
                 'role' => $teacher->role,
                 'access_status' => $teacher->access_status,
+                'department' => $teacher->department,
                 'is_active' => $teacher->is_active,
                 'section_count' => $sectionCount,
                 'student_count' => $studentCount,

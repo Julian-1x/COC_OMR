@@ -12,6 +12,7 @@ class CloudTeacherAccount {
     required this.isActive,
     this.accessStatus = 'approved',
     this.school,
+    this.department,
   });
 
   final String id;
@@ -20,6 +21,7 @@ class CloudTeacherAccount {
   final bool isActive;
   final String accessStatus;
   final String? school;
+  final String? department;
 
   bool get isApproved =>
       isActive && accessStatus.toLowerCase() == 'approved';
@@ -63,6 +65,7 @@ class CloudAuthService {
     required String name,
     required String email,
     required String password,
+    required String department,
     String school = CocSchool.name,
   }) async {
     _ensureApiReady();
@@ -70,6 +73,12 @@ class CloudAuthService {
     final normalizedEmail = email.trim().toLowerCase();
     final trimmedSchool =
         school.trim().isEmpty ? CocSchool.name : school.trim();
+    final normalizedDepartment = department.trim().toUpperCase();
+    if (!CocSchool.isValidDepartment(normalizedDepartment)) {
+      throw const CloudAuthException(
+        'Select your COC department (COE, SCCJ, CMA, CIT, CEA, or CAHS).',
+      );
+    }
 
     try {
       final response = await ApiService.postJson(
@@ -80,6 +89,7 @@ class CloudAuthService {
           'password_confirmation': password,
           'full_name': trimmedName,
           'school': trimmedSchool,
+          'department': normalizedDepartment,
         },
         auth: false,
       );
@@ -320,6 +330,7 @@ class CloudAuthService {
       isActive: isActive,
       accessStatus: accessStatus,
       school: school,
+      department: profileMap['department']?.toString(),
     );
   }
 
@@ -352,6 +363,7 @@ class CloudAuthService {
       isActive: profileMap['is_active'] != false,
       accessStatus: accessStatus,
       school: profileMap['school_name']?.toString(),
+      department: profileMap['department']?.toString(),
     );
   }
 

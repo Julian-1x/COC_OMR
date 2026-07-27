@@ -20,11 +20,13 @@ class RegisterController extends Controller
             'email' => ['required', 'email', 'max:255'],
             'password' => ['required', 'confirmed', Password::defaults()],
             'full_name' => ['required', 'string', 'max:255'],
+            'department' => ['required', 'string', 'in:'.implode(',', CocSchool::DEPARTMENTS)],
             // Accepted for backward compatibility with older clients; ignored.
             'school' => ['nullable', 'string', 'max:255'],
         ]);
 
         $email = strtolower($validated['email']);
+        $department = CocSchool::normalizeDepartment($validated['department']);
         $existing = User::query()->where('email', $email)->first();
 
         if ($existing?->hasVerifiedEmail()) {
@@ -35,7 +37,7 @@ class RegisterController extends Controller
 
         if ($existing !== null) {
             return $this->finishRegistration(
-                $this->updateUnverifiedUser($existing, $validated),
+                $this->updateUnverifiedUser($existing, $validated, $department),
                 resumed: true,
             );
         }
@@ -50,6 +52,7 @@ class RegisterController extends Controller
             'id' => $user->id,
             'full_name' => $validated['full_name'],
             'school_name' => CocSchool::NAME,
+            'department' => $department,
             'role' => 'teacher',
             'is_active' => false,
             'access_status' => CocSchool::ACCESS_PENDING,
@@ -61,7 +64,7 @@ class RegisterController extends Controller
     /**
      * @param  array<string, mixed>  $validated
      */
-    private function updateUnverifiedUser(User $user, array $validated): User
+    private function updateUnverifiedUser(User $user, array $validated, string $department): User
     {
         $user->update([
             'name' => $validated['full_name'],
@@ -73,6 +76,7 @@ class RegisterController extends Controller
             [
                 'full_name' => $validated['full_name'],
                 'school_name' => CocSchool::NAME,
+                'department' => $department,
                 'role' => 'teacher',
                 'is_active' => false,
                 'access_status' => CocSchool::ACCESS_PENDING,

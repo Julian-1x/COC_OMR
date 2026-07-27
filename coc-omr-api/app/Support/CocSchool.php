@@ -15,6 +15,16 @@ final class CocSchool
 
     public const ACCESS_REVOKED = 'revoked';
 
+    /** @var list<string> */
+    public const DEPARTMENTS = [
+        'COE',
+        'SCCJ',
+        'CMA',
+        'CIT',
+        'CEA',
+        'CAHS',
+    ];
+
     public static function isValidAccessStatus(string $status): bool
     {
         return in_array($status, [
@@ -22,5 +32,15 @@ final class CocSchool
             self::ACCESS_APPROVED,
             self::ACCESS_REVOKED,
         ], true);
+    }
+
+    public static function isValidDepartment(string $department): bool
+    {
+        return in_array(strtoupper(trim($department)), self::DEPARTMENTS, true);
+    }
+
+    public static function normalizeDepartment(string $department): string
+    {
+        return strtoupper(trim($department));
     }
 }

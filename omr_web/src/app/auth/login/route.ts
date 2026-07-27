@@ -5,7 +5,7 @@ import {
   apiTokenCookieOptions,
 } from "@/lib/api/laravel-client";
 import { tryGetApiBaseUrl } from "@/lib/api/env";
-import { COC_SCHOOL_NAME } from "@/lib/coc-school";
+import { COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 
 type AuthResponse = {
   token?: string;
@@ -72,6 +72,7 @@ export async function POST(request: Request) {
       password?: string;
       name?: string;
       school?: string;
+      department?: string;
     };
 
     const mode = body.mode ?? "login";
@@ -84,9 +85,16 @@ export async function POST(request: Request) {
 
     if (mode === "register") {
       const name = body.name?.trim() ?? "";
+      const department = body.department?.trim().toUpperCase() ?? "";
       if (!name) {
         return NextResponse.json(
           { error: "Full name is required for registration." },
+          { status: 400 },
+        );
+      }
+      if (!isCocDepartment(department)) {
+        return NextResponse.json(
+          { error: "Select a valid COC department (COE, SCCJ, CMA, CIT, CEA, or CAHS)." },
           { status: 400 },
         );
       }
@@ -103,6 +111,7 @@ export async function POST(request: Request) {
           password_confirmation: password,
           full_name: name,
           school: COC_SCHOOL_NAME,
+          department,
         }),
       });
 

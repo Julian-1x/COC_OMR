@@ -62,7 +62,10 @@ export function AccessControlPanel({
               >
                 <div>
                   <p className="font-bold text-slate-800">{teacher.full_name}</p>
-                  <p className="text-sm text-slate-500">{teacher.email ?? "No email"}</p>
+                  <p className="text-sm text-slate-500">
+                    {teacher.email ?? "No email"}
+                    {teacher.department ? ` · ${teacher.department}` : ""}
+                  </p>
                 </div>
                 <Button
                   type="button"
@@ -89,6 +92,7 @@ export function AccessControlPanel({
                 <tr className="border-b text-xs font-bold uppercase text-slate-500">
                   <th className="px-2 py-2 text-left">Teacher</th>
                   <th className="px-2 py-2 text-left">Email</th>
+                  <th className="px-2 py-2 text-left">Dept</th>
                   <th className="px-2 py-2 text-left">Role</th>
                   <th className="px-2 py-2 text-left" />
                 </tr>
@@ -103,6 +107,7 @@ export function AccessControlPanel({
                         {teacher.full_name}
                       </td>
                       <td className="px-2 py-2 text-slate-600">{teacher.email ?? "—"}</td>
+                      <td className="px-2 py-2 text-slate-600">{teacher.department ?? "—"}</td>
                       <td className="px-2 py-2 text-slate-600">{teacher.role}</td>
                       <td className="px-2 py-2 text-right">
                         {teacher.status === "you" || isAdminRole ? (
@@ -141,7 +146,10 @@ export function AccessControlPanel({
               >
                 <div>
                   <p className="font-bold text-slate-800">{teacher.full_name}</p>
-                  <p className="text-sm text-slate-500">{teacher.email ?? "No email"}</p>
+                  <p className="text-sm text-slate-500">
+                    {teacher.email ?? "No email"}
+                    {teacher.department ? ` · ${teacher.department}` : ""}
+                  </p>
                 </div>
                 <Button
                   type="button"

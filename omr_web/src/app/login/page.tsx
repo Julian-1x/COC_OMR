@@ -7,7 +7,7 @@ import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured } from "@/lib/api/env";
-import { COC_SCHOOL_NAME } from "@/lib/coc-school";
+import { COC_DEPARTMENTS, COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
 
 function LoginForm() {
@@ -17,6 +17,7 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [department, setDepartment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -244,6 +245,10 @@ function LoginForm() {
         );
       }
 
+      if (mode === "register" && !isCocDepartment(department)) {
+        throw new Error("Select your COC department.");
+      }
+
       const response = await fetch("/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -253,6 +258,7 @@ function LoginForm() {
           password,
           name,
           school: COC_SCHOOL_NAME,
+          department: mode === "register" ? department : undefined,
         }),
       });
 
@@ -374,7 +380,24 @@ function LoginForm() {
               <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">School</p>
                 <p>{COC_SCHOOL_NAME}</p>
-                <p className="mt-1 text-xs">
+              </div>
+              <div className="mb-3">
+                <Label htmlFor="department">Department</Label>
+                <select
+                  id="department"
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  required
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800 outline-none focus:border-emerald-400"
+                >
+                  <option value="">Select department</option>
+                  {COC_DEPARTMENTS.map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
                   Access is for COC instructors only. After email confirmation, a school admin must
                   approve your account.
                 </p>
