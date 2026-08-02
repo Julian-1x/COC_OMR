@@ -35,6 +35,7 @@ export function ResultsContent({
   students,
   subjects,
   sections,
+  allowedSectionNames,
   showArchived = false,
   schoolYear,
   yearOptions = [],
@@ -44,6 +45,8 @@ export function ResultsContent({
   students: DbStudent[];
   subjects: DbSubject[];
   sections: { name: string; school_year?: string | null; term_label?: string | null }[];
+  /** Sections in the current Active/Archived + year filter — used for the dropdown only. */
+  allowedSectionNames?: Set<string>;
   showArchived?: boolean;
   schoolYear?: string;
   yearOptions?: string[];
@@ -65,7 +68,12 @@ export function ResultsContent({
     const needle = nameSearch.trim().toLowerCase();
     return scans.filter((scan) => {
       const student = studentMap.get(scan.student_omr_id);
-      if (sectionFilter && student?.section_name !== sectionFilter) return false;
+      if (sectionFilter) {
+        if (student?.section_name !== sectionFilter) return false;
+      } else if (allowedSectionNames && allowedSectionNames.size > 0 && student?.section_name) {
+        // Default view: hide scans from sections outside the current term filter unless searching.
+        if (!needle && !allowedSectionNames.has(student.section_name)) return false;
+      }
       if (subjectFilter && scan.subject_local_id !== subjectFilter && scan.subject_name !== subjectFilter) {
         return false;
       }
@@ -82,7 +90,7 @@ export function ResultsContent({
       }
       return true;
     });
-  }, [scans, studentMap, sectionFilter, subjectFilter, nameSearch, reviewFilter, subjects]);
+  }, [scans, studentMap, sectionFilter, subjectFilter, nameSearch, reviewFilter, subjects, allowedSectionNames]);
 
   function setReviewFilterAndUrl(next: ReviewFilter) {
     setReviewFilter(next);
@@ -179,6 +187,12 @@ export function ResultsContent({
           >
             Item analysis
           </Link>
+          <p className="w-full text-xs text-slate-500 sm:w-auto">
+            Per-student missed-question handouts:{" "}
+            <Link href="/dashboard/results/analysis" className="font-bold text-emerald-700 hover:underline">
+              Item analysis → Student feedback PDF
+            </Link>
+          </p>
         </div>
       </div>
 

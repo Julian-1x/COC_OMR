@@ -26,6 +26,8 @@ class NativeScannerCamera implements ScannerCamera {
 
   bool _viewBound = false;
 
+  bool _torchEnabled = false;
+
   Offset _lastFocusPoint = const Offset(0.5, 0.55);
 
   /// Called when the platform view is bound and capture is ready.
@@ -44,6 +46,14 @@ class NativeScannerCamera implements ScannerCamera {
 
   @override
   double get previewAspectRatio => _previewAspectRatio;
+
+  @override
+  bool get torchSupported => _torchSupported;
+
+  @override
+  bool get torchEnabled => _torchEnabled;
+
+  bool _torchSupported = false;
 
   int? get viewId => _viewId;
 
@@ -81,6 +91,7 @@ class NativeScannerCamera implements ScannerCamera {
       }
 
       _viewBound = true;
+      await _refreshTorchAvailability();
       onViewReady?.call();
     } on PlatformException catch (error) {
       debugPrint('Native camera bind failed: ${error.code} ${error.message}');
@@ -174,6 +185,50 @@ class NativeScannerCamera implements ScannerCamera {
     }
 
     return bytes;
+  }
+
+  Future<void> _refreshTorchAvailability() async {
+    final viewId = _viewId;
+    if (viewId == null) {
+      _torchSupported = false;
+      return;
+    }
+    try {
+      final supported = await _channel.invokeMethod<bool>(
+        'isTorchSupported',
+        {'viewId': viewId},
+      );
+      _torchSupported = supported == true;
+    } catch (error) {
+      debugPrint('Native torch availability check failed: $error');
+      _torchSupported = false;
+    }
+  }
+
+  @override
+  Future<void> setTorchEnabled(bool enabled) async {
+    final viewId = _viewId;
+    if (viewId == null || !_torchSupported) {
+      return;
+    }
+    try {
+      final applied = await _channel.invokeMethod<bool>(
+        'setTorchEnabled',
+        {
+          'viewId': viewId,
+          'enabled': enabled,
+        },
+      );
+      _torchEnabled = applied == true;
+    } catch (error) {
+      debugPrint('Native torch toggle failed: $error');
+    }
+  }
+
+  @override
+  Future<bool> toggleTorch() async {
+    await setTorchEnabled(!_torchEnabled);
+    return _torchEnabled;
   }
 
   @override

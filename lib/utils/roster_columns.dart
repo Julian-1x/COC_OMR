@@ -191,13 +191,17 @@ class RosterColumnMap {
         return exact;
       }
     }
+    // Substring match only for multi-word / longer keys (avoids SESSION NAME → "name").
     for (var i = 0; i < header.length; i++) {
       final cell = header[i];
       if (cell.isEmpty) {
         continue;
       }
       for (final key in keys) {
-        if (cell == key || cell.contains(key)) {
+        if (key.length < 5 && !key.contains(' ')) {
+          continue;
+        }
+        if (cell.contains(key)) {
           return i;
         }
       }
@@ -224,11 +228,12 @@ class RosterColumnMap {
     'student name',
     'full name',
     'fullname',
-    'name',
     'complete name',
     'learner name',
+    'name',
   ];
 
+  /// Section only — ignore COURSE / SUBJECT / SESSION NAME from school exports.
   static const _sectionHeaderKeys = [
     'section name',
     'year and section',
@@ -237,11 +242,7 @@ class RosterColumnMap {
     'yr & section',
     'class section',
     'section',
-    'class',
     'block',
-    'course',
-    'group',
-    'strand',
   ];
 
   static const _firstNameHeaderKeys = [

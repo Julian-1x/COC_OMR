@@ -41,6 +41,47 @@ abstract final class AppBottomSheet {
     );
   }
 
+  /// Bottom sheet capped to [heightFactor] of the screen so long lists scroll.
+  static Future<T?> showScrollable<T>({
+    required BuildContext context,
+    required Widget Function(BuildContext context) builder,
+    double heightFactor = 0.85,
+    bool showDragHandle = true,
+  }) {
+    assert(heightFactor > 0 && heightFactor <= 1);
+    return showModalBottomSheet<T>(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      showDragHandle: showDragHandle,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        final maxHeight = MediaQuery.sizeOf(context).height * heightFactor;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: builder(context),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Caps [child] so a scroll view can scroll inside an `isScrollControlled` sheet.
+  static Widget constrainScrollBody({
+    required BuildContext context,
+    required Widget child,
+    double heightFactor = 0.85,
+  }) {
+    final maxHeight = MediaQuery.sizeOf(context).height * heightFactor;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: child,
+    );
+  }
+
   static Widget header({
     required String title,
     String? subtitle,

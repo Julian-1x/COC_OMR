@@ -20,6 +20,13 @@ public final class OpenCvIosPlugin: NSObject, FlutterPlugin {
       result(OmrNativeBridge.isOpenCvReady() ? "pong" : "not_ready")
     case "isReady":
       result(OmrNativeBridge.isOpenCvReady())
+    case "ensureReady", "retryInit":
+      result(OmrNativeBridge.isOpenCvReady())
+    case "getInitError":
+      result([
+        "ready": OmrNativeBridge.isOpenCvReady(),
+        "error": "",
+      ] as [String: Any])
     case "getDeviceInfo":
       result(OmrNativeBridge.deviceInfo())
     case "process":

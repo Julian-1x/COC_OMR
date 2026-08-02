@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "OMR App - Supabase",
+      "name": "OMR App - Laravel API",
       "request": "launch",
       "type": "dart",
       "toolArgs": [

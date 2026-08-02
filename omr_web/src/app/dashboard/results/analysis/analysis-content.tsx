@@ -18,6 +18,10 @@ import {
   sortedDistributionKeys,
   type QuestionAnalysis,
 } from "@/lib/omr/item-analysis";
+import {
+  buildStudentFeedbackRows,
+  exportStudentFeedbackPdf,
+} from "@/lib/omr/student-feedback";
 import { scanPassed } from "@/lib/omr/passing-score";
 import { downloadBlob, downloadText } from "@/lib/utils";
 
@@ -76,6 +80,7 @@ export function AnalysisContent({
   const [subjectId, setSubjectId] = useState(subjects[0]?.local_id ?? "");
   const [sectionFilter, setSectionFilter] = useState("");
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingFeedback, setExportingFeedback] = useState(false);
 
   const subject = subjects.find((s) => s.local_id === subjectId);
   const sections = [...new Set(students.map((s) => s.section_name))].sort();
@@ -125,6 +130,35 @@ export function AnalysisContent({
   const hardest = report
     ? [...report.questions].sort((a, b) => questionDifficulty(a) - questionDifficulty(b)).slice(0, 5)
     : [];
+
+  const feedbackRows = useMemo(() => {
+    if (!subject) return [];
+    return buildStudentFeedbackRows(subject, relevantScans, students);
+  }, [relevantScans, students, subject]);
+
+  async function downloadStudentFeedbackPdf() {
+    if (!subject || feedbackRows.length === 0) return;
+    const sectionLabel = sectionFilter || undefined;
+    const confirmed = window.confirm(
+      `Export student feedback PDF?\n\n` +
+        `${feedbackRows.length} student${feedbackRows.length === 1 ? "" : "s"} in ${subject.name}` +
+        (sectionLabel ? ` — ${sectionLabel}` : "") +
+        `.\n\nEach student gets one page with missed questions and correct answers.`,
+    );
+    if (!confirmed) return;
+
+    setExportingFeedback(true);
+    try {
+      const bytes = await exportStudentFeedbackPdf(subject, feedbackRows, { sectionLabel });
+      const suffix = sectionLabel ? sectionLabel.replace(/\s+/g, "_") : "all_sections";
+      downloadBlob(
+        new Blob([Uint8Array.from(bytes)], { type: "application/pdf" }),
+        `student_feedback_${subject.name.replace(/\s+/g, "_")}_${suffix}.pdf`,
+      );
+    } finally {
+      setExportingFeedback(false);
+    }
+  }
 
   function downloadCsv() {
     if (!subject || !report) return;
@@ -196,13 +230,26 @@ export function AnalysisContent({
               ))}
             </Select>
           </div>
-          <div className="flex items-end gap-2">
-            <Button type="button" variant="secondary" onClick={downloadCsv} disabled={!report}>
-              CSV
-            </Button>
-            <Button type="button" onClick={() => void downloadPdf()} disabled={!report || exportingPdf}>
-              {exportingPdf ? "PDF…" : "PDF"}
-            </Button>
+          <div className="flex flex-col gap-2 md:items-end">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="secondary" onClick={downloadCsv} disabled={!report}>
+                CSV
+              </Button>
+              <Button type="button" onClick={() => void downloadPdf()} disabled={!report || exportingPdf}>
+                {exportingPdf ? "PDF…" : "PDF"}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => void downloadStudentFeedbackPdf()}
+                disabled={!report || feedbackRows.length === 0 || exportingFeedback}
+              >
+                {exportingFeedback ? "Feedback…" : "Student feedback PDF"}
+              </Button>
+            </div>
+            <p className="text-xs text-slate-500 md:text-right">
+              Student feedback: one page per student — missed questions and correct answers only.
+            </p>
           </div>
         </div>
       </Card>

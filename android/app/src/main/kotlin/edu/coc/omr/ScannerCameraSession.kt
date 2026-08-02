@@ -3,72 +3,35 @@ package edu.coc.omr
 
 
 import android.content.Context
-
 import android.util.Log
-
 import android.util.Size
-
 import android.view.Surface
-
 import android.view.ViewGroup
-
 import androidx.camera.core.Camera
-
 import androidx.camera.core.CameraSelector
-
 import androidx.camera.core.FocusMeteringAction
-
 import androidx.camera.core.ImageCapture
-
 import androidx.camera.core.ImageCaptureException
-
 import androidx.camera.core.Preview
-
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
-
 import androidx.camera.core.resolutionselector.ResolutionSelector
-
 import androidx.camera.core.resolutionselector.ResolutionStrategy
-
 import androidx.camera.lifecycle.ProcessCameraProvider
-
 import androidx.camera.view.PreviewView
-
 import androidx.core.content.ContextCompat
-
 import androidx.lifecycle.LifecycleOwner
-
 import io.flutter.plugin.common.MethodChannel
-
 import java.io.File
-
 import java.util.concurrent.ExecutorService
-
 import java.util.concurrent.Executors
 
-
-
 class ScannerCameraSession(
-
     private val context: Context,
-
     val previewView: PreviewView,
-
 ) {
-
     companion object {
-
         private const val TAG = "ScannerCamera"
-
-        // 4:3 sensor — portrait preview is 3:4; high-res stream avoids upscale blur in the view.
-
-        private val PREVIEW_SIZE = Size(1920, 1440)
-
-        private val CAPTURE_SIZE = Size(3264, 2448)
-
     }
-
-
 
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
@@ -86,7 +49,17 @@ class ScannerCameraSession(
 
     private var isBound = false
 
+    private var torchEnabled = false
 
+    private val scanTier: DeviceScanTier by lazy { DeviceScanTier.warm(context) }
+
+    private fun preferredPreviewSize(): Size = scanTier.previewSize
+
+    private fun preferredCaptureSize(): Size = scanTier.captureSize
+
+    private fun preferredJpegQuality(): Int = scanTier.jpegQuality
+
+    private fun captureFallbackRule(): Int = scanTier.captureFallbackRule
 
     init {
 
@@ -207,39 +180,34 @@ class ScannerCameraSession(
 
                     .setTargetRotation(targetRotation)
 
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
 
                     .setResolutionSelector(buildCaptureResolutionSelector())
 
-                    .setJpegQuality(98)
+                    .setJpegQuality(preferredJpegQuality())
 
                     .build()
 
 
 
                 camera = provider.bindToLifecycle(
-
                     lifecycleOwner,
-
                     CameraSelector.DEFAULT_BACK_CAMERA,
-
                     preview,
-
                     imageCapture,
-
                 )
 
-
-
                 camera?.cameraControl?.setZoomRatio(1.0f)
-
                 isBound = true
 
-
+                val boundCapture = imageCapture?.resolutionInfo?.resolution
+                Log.i(
+                    TAG,
+                    "Camera bound view=${viewWidth}x$viewHeight previewAspect=$previewAspect " +
+                        "capture=${boundCapture?.width}x${boundCapture?.height} tier=$scanTier",
+                )
 
                 previewAspect = computePreviewAspect()
-
-                Log.i(TAG, "Camera bound view=${viewWidth}x$viewHeight previewAspect=$previewAspect")
 
                 focusOnSheetCenter()
 
@@ -288,49 +256,39 @@ class ScannerCameraSession(
 
 
     private fun buildPreviewResolutionSelector(): ResolutionSelector {
-
+        val previewSize = preferredPreviewSize()
+        Log.i(
+            TAG,
+            "Preview target ${previewSize.width}x${previewSize.height} " +
+                "tier=$scanTier",
+        )
         return ResolutionSelector.Builder()
-
             .setResolutionStrategy(
-
                 ResolutionStrategy(
-
-                    PREVIEW_SIZE,
-
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
-
+                    previewSize,
+                    captureFallbackRule(),
                 ),
-
             )
-
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-
             .build()
-
     }
 
-
-
     private fun buildCaptureResolutionSelector(): ResolutionSelector {
-
+        val captureSize = preferredCaptureSize()
+        Log.i(
+            TAG,
+            "Capture target ${captureSize.width}x${captureSize.height} " +
+                "tier=$scanTier",
+        )
         return ResolutionSelector.Builder()
-
             .setResolutionStrategy(
-
                 ResolutionStrategy(
-
-                    CAPTURE_SIZE,
-
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
-
+                    captureSize,
+                    captureFallbackRule(),
                 ),
-
             )
-
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-
             .build()
-
     }
 
 
@@ -354,11 +312,8 @@ class ScannerCameraSession(
 
 
     fun setFocusPoint(x: Float, y: Float) {
-
         if (!isBound) {
-
             return
-
         }
 
         val normalizedX = x.coerceIn(0f, 1f)
@@ -394,7 +349,24 @@ class ScannerCameraSession(
 
     }
 
+    fun isTorchSupported(): Boolean {
+        return camera?.cameraInfo?.hasFlashUnit() == true
+    }
 
+    fun setTorchEnabled(enabled: Boolean): Boolean {
+        if (!isBound) {
+            return false
+        }
+        val control = camera?.cameraControl ?: return false
+        return try {
+            control.enableTorch(enabled)
+            torchEnabled = enabled
+            true
+        } catch (error: Exception) {
+            Log.w(TAG, "Torch toggle failed: ${error.message}")
+            false
+        }
+    }
 
     fun capture(result: MethodChannel.Result) {
 

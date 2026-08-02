@@ -5,7 +5,7 @@
 
 ## What we store
 
-| Data | On your phone | In the cloud (Supabase) |
+| Data | On your phone | In the cloud (school Laravel server) |
 |------|---------------|-------------------------|
 | Teacher name, school, email | Yes | Yes (profile) |
 | Offline PIN | Hashed on phone; hash also backed up to your account | Salted hash only (not the digits) |
@@ -17,7 +17,7 @@
 
 - **You** — on your phone after PIN unlock
 - **You** — in the cloud after sign-in (your account only)
-- **Developers** — Supabase dashboard for support (not daily use)
+- **Developers / school IT** — server database for support and backups (not daily classroom use)
 - **Other teachers** — cannot see your data
 
 ## Your choices

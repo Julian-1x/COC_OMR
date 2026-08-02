@@ -19,10 +19,10 @@ Then:
 
 ```powershell
 copy secrets.json.example secrets.json
-# Edit secrets.json with your Supabase URL and publishable key
+# Edit secrets.json with your Laravel API_BASE_URL
 ```
 
-See [supabase/SETUP.md](supabase/SETUP.md) for full Supabase project setup.
+See [laravel/SETUP.md](laravel/SETUP.md) for full API server setup.
 
 ## Build release APK
 

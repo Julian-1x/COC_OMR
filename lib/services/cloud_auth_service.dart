@@ -187,6 +187,31 @@ class CloudAuthService {
     await LocalDataStore.instance.clearMemoryOnAuthReset();
   }
 
+  /// Returns false when the cloud session is invalid (revoked, deleted, expired).
+  Future<bool> validateActiveSession({bool signOutOnInvalid = false}) async {
+    if (!ApiService.hasActiveSession) {
+      return false;
+    }
+
+    try {
+      final response = await ApiService.getJson('/me');
+      final account = _accountFromMeResponse(response);
+      if (account == null || !account.isApproved) {
+        await ApiService.clearSession();
+        if (signOutOnInvalid) {
+          await signOut();
+        }
+        return false;
+      }
+      return true;
+    } catch (error) {
+      if (error is ApiException && error.sessionInvalidated && signOutOnInvalid) {
+        await signOut();
+      }
+      return false;
+    }
+  }
+
   Future<CloudTeacherAccount?> accountFromCurrentSession() async {
     if (!ApiService.hasActiveSession) {
       return null;
@@ -197,6 +222,9 @@ class CloudAuthService {
       return _accountFromMeResponse(response);
     } catch (error) {
       debugPrint('Failed to resolve session account: $error');
+      if (error is ApiException && error.sessionInvalidated) {
+        return null;
+      }
       final userId = ApiService.currentUserId;
       final email = ApiService.currentEmail;
       if (userId == null) {

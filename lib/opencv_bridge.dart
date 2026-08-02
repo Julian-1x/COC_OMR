@@ -116,16 +116,28 @@ class OpenCVBridge {
         confidence: 0.0,
         errorMessage:
             'Scan took too long. Hold steady, tap the paper to focus, and try again.',
-        debugInfo: {'timeout': true},
+        debugInfo: {'timeout': true, 'failureReason': 'TIMEOUT'},
       );
     } on PlatformException catch (e) {
       debugPrint('OpenCV bridge error: ${e.message}');
+      final code = e.code;
+      final failureReason = switch (code) {
+        'BUSY' => 'BUSY',
+        'PROCESS_TIMEOUT' => 'TIMEOUT',
+        'OUT_OF_MEMORY' || 'LOW_MEMORY' => 'OUT_OF_MEMORY',
+        'OPENCV_NOT_READY' => 'ENGINE_NOT_READY',
+        'IMAGE_TOO_LARGE' => 'IMAGE_TOO_LARGE',
+        _ => 'PLATFORM_ERROR',
+      };
       return OmrScanResult(
         success: false,
         answers: {},
         confidence: 0.0,
         errorMessage: e.message ?? 'Platform error',
-        debugInfo: {'platformError': e.code},
+        debugInfo: {
+          'platformError': code,
+          'failureReason': failureReason,
+        },
       );
     } catch (e) {
       debugPrint('Unexpected error: $e');
@@ -149,28 +161,51 @@ class OpenCVBridge {
     }
   }
 
-  /// Check if OpenCV is fully ready for processing
+  /// Check if OpenCV is fully ready for processing.
+  /// Fast status only — does not wait for a load to finish.
   static Future<bool> isReady() async {
     try {
-      final result = await _channel.invokeMethod('isReady');
+      final result = await _channel
+          .invokeMethod<bool>('isReady')
+          .timeout(const Duration(seconds: 3), onTimeout: () => false);
       return result == true;
     } catch (e) {
       return false;
     }
   }
 
-  /// Ask Android to restart OpenCV native load (after a failed start).
-  static Future<void> retryInit() async {
+  /// Native init status: `{ready: bool, error: String}`.
+  static Future<Map<String, dynamic>?> getInitStatus() async {
     try {
-      await _channel.invokeMethod('retryInit');
+      final result = await _channel
+          .invokeMethod('getInitError')
+          .timeout(const Duration(seconds: 3));
+      if (result is Map) {
+        return Map<String, dynamic>.from(result);
+      }
+      return null;
+    } catch (e) {
+      debugPrint('OpenCV getInitStatus error: $e');
+      return null;
+    }
+  }
+
+  /// Wait for native OpenCV without restarting an in-flight load.
+  static Future<bool> retryInit() async {
+    try {
+      final result = await _channel
+          .invokeMethod<bool>('retryInit')
+          .timeout(const Duration(seconds: 90));
+      return result == true || await isReady();
     } catch (e) {
       debugPrint('OpenCV retryInit error: $e');
+      return isReady();
     }
   }
 
   /// Block until native OpenCV is loaded (or timeout). Call at app start.
   static Future<bool> ensureReady({
-    Duration timeout = const Duration(seconds: 12),
+    Duration timeout = const Duration(seconds: 90),
   }) async {
     if (await isReady()) {
       return true;
@@ -178,11 +213,15 @@ class OpenCVBridge {
     try {
       final result =
           await _channel.invokeMethod<bool>('ensureReady').timeout(timeout);
-      return result == true;
+      if (result == true) {
+        return true;
+      }
+    } on TimeoutException {
+      debugPrint('OpenCV ensureReady timed out after ${timeout.inSeconds}s');
     } catch (e) {
       debugPrint('OpenCV ensureReady error: $e');
-      return isReady();
     }
+    return isReady();
   }
 
   /// Get device info for adaptive processing decisions

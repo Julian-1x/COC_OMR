@@ -1,7 +1,8 @@
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/utils/answer_key_sections.dart';
 import 'package:omr_app/utils/student_identity.dart';
 
-/// Rows downloaded from Supabase before merging into local SQLite.
+/// Rows downloaded from the cloud API before merging into local SQLite.
 class CloudPullSnapshot {
   const CloudPullSnapshot({
     this.sections = const <Section>[],
@@ -77,20 +78,47 @@ class CloudSnapshotMerger {
       scanResults: scanResults.merged,
     );
 
+    final activeSectionNames = sections.merged.map((s) => s.name);
+    var healedSubjectCount = 0;
+    final healedSubjects = <Subject>[];
+    for (final subject in subjects.merged) {
+      final healed = restoreMissingSectionLinks(
+        subject,
+        activeSectionNames: activeSectionNames,
+      );
+      if (!identical(healed, subject) &&
+          !_sameSectionNames(healed.sectionNames, subject.sectionNames)) {
+        healedSubjectCount++;
+      }
+      healedSubjects.add(healed);
+    }
+
     return (
       sections: sections.merged,
       students: deduped.students,
-      subjects: subjects.merged,
+      subjects: healedSubjects,
       scanResults: deduped.scanResults,
       deadlines: deadlines.merged,
       summary: CloudMergeSummary(
         sections: sections.applied,
         students: students.applied + deduped.mergedCount,
-        subjects: subjects.applied,
+        subjects: subjects.applied + healedSubjectCount,
         scanResults: scanResults.applied,
         deadlines: deadlines.applied,
       ),
     );
+  }
+
+  static bool _sameSectionNames(List<String>? a, List<String>? b) {
+    final left = (a ?? const <String>[])
+        .map(normalizeSectionName)
+        .where((name) => name.isNotEmpty)
+        .toSet();
+    final right = (b ?? const <String>[])
+        .map(normalizeSectionName)
+        .where((name) => name.isNotEmpty)
+        .toSet();
+    return left.length == right.length && left.containsAll(right);
   }
 
   static _MergeResult<Section> _mergeSections(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -20,8 +20,20 @@ export function SectionRosterPanel({
   const router = useRouter();
   const [schoolId, setSchoolId] = useState("");
   const [name, setName] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const filteredStudents = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return students;
+    return students.filter(
+      (student) =>
+        student.name.toLowerCase().includes(q) ||
+        student.school_id.toLowerCase().includes(q) ||
+        student.omr_id.includes(q),
+    );
+  }, [students, searchQuery]);
 
   async function addStudent(e: React.FormEvent) {
     e.preventDefault();
@@ -90,6 +102,21 @@ export function SectionRosterPanel({
       </Card>
 
       <Card>
+        {students.length > 0 ? (
+          <div className="mb-4 max-w-md">
+            <Label htmlFor="rosterSearch">Search students</Label>
+            <Input
+              id="rosterSearch"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Name, student ID, or OMR ID…"
+              aria-label="Search students in roster"
+            />
+            <p className="mt-1 text-xs font-semibold text-slate-500">
+              Showing {filteredStudents.length} of {students.length}
+            </p>
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead>
@@ -101,22 +128,32 @@ export function SectionRosterPanel({
               </tr>
             </thead>
             <tbody>
-              {students.map((student) => (
-                <tr key={student.id} className="border-b border-slate-100">
-                  <td className="px-2 py-2 font-mono font-bold text-emerald-800">{student.omr_id}</td>
-                  <td className="px-2 py-2">{student.school_id}</td>
-                  <td className="px-2 py-2 font-semibold text-slate-800">{student.name}</td>
-                  <td className="px-2 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => void deleteStudentRow(student.omr_id)}
-                      className="text-xs font-bold text-red-600 hover:underline"
-                    >
-                      Remove
-                    </button>
+              {filteredStudents.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-2 py-6 text-center text-sm text-slate-500">
+                    {students.length === 0
+                      ? "No students yet — add one above or import a roster."
+                      : `No students match "${searchQuery.trim()}".`}
                   </td>
                 </tr>
-              ))}
+              ) : (
+                filteredStudents.map((student) => (
+                  <tr key={student.id} className="border-b border-slate-100">
+                    <td className="px-2 py-2 font-mono font-bold text-emerald-800">{student.omr_id}</td>
+                    <td className="px-2 py-2">{student.school_id}</td>
+                    <td className="px-2 py-2 font-semibold text-slate-800">{student.name}</td>
+                    <td className="px-2 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => void deleteStudentRow(student.omr_id)}
+                        className="text-xs font-bold text-red-600 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

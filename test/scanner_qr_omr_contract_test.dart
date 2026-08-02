@@ -36,10 +36,12 @@ void main() {
           Map<String, dynamic>.from(jsonDecode(qrData) as Map),
         );
 
-        expect(payload.hasExplicitLayout, isTrue);
+        expect(payload.hasExplicitLayout, isFalse,
+            reason: 'Print QR is lean — layout comes from scanner session');
         expect(payload.totalQuestions, itemCount);
-        expect(payload.layout?.templateId, OmrTemplateSpec.forItemCount(itemCount).templateId);
+        expect(payload.layout, isNull);
         expect(payload.resolveSubject()?.id, subject.id);
+        expect(payload.isCocIssued, isTrue);
       }
     });
 
@@ -73,6 +75,63 @@ void main() {
 
       final payload = SubjectSheetQrPayload.fromJson(qrJson);
       expect(payload.resolveSubject()?.id, 'SUB-B');
+    });
+
+    test('QR payload includes COC app issuer tag', () {
+      final subject = Subject(
+        id: 'SUB-50',
+        name: 'Math',
+        answerKey: <int, String>{for (int i = 1; i <= 50; i++) i: 'A'},
+        totalQuestions: 50,
+        sectionNames: const <String>['G10-A'],
+        ownerTeacherId: 'teacher-1',
+        cloudId: 'cloud-subject-1',
+      );
+      globalSubjects.add(subject);
+
+      final qrData = AnswerSheetGenerator.buildSheetQrCodeData(subject);
+      final json = Map<String, dynamic>.from(jsonDecode(qrData) as Map);
+      expect(json['a'] ?? json['app'], SubjectSheetQrPayload.cocOmrAppId);
+      expect(json['ot'] ?? json['ownerTeacherId'], 'teacher-1');
+      expect(json['ci'] ?? json['subjectCloudId'], 'cloud-subject-1');
+
+      final payload = SubjectSheetQrPayload.fromJson(json);
+      expect(payload.isCocIssued, isTrue);
+      expect(payload.ownerTeacherId, 'teacher-1');
+      // Lean print QR — no layout blob (session supplies grid).
+      expect(json.containsKey('l') || json.containsKey('layout'), isFalse);
+      expect(json.containsKey('ps') || json.containsKey('passingScore'), isFalse);
+      expect(json.containsKey('on') || json.containsKey('ownerTeacherName'), isFalse);
+
+      // Keep the printed symbol sparse enough for phone cameras to decode.
+      expect(qrData.length, lessThan(220),
+          reason: 'Dense QR payloads fail to scan from printed sheets');
+    });
+
+    test('foreign app tag is not treated as COC sheet', () {
+      final payload = SubjectSheetQrPayload.fromJson({
+        'app': 'evalbee',
+        'v': 2,
+        'sheetId': 'X-1',
+        'subjectId': 'S1',
+        'subjectName': 'Math',
+        'questions': 50,
+        'passingScore': 30,
+      });
+      expect(payload.isCocIssued, isFalse);
+    });
+
+    test('legacy COC QR without app tag still counts as ours', () {
+      final payload = SubjectSheetQrPayload.fromJson({
+        'v': 2,
+        'sheetId': 'SHEET-1',
+        'subjectId': 'SUB-1',
+        'subjectName': 'Math',
+        'questions': 50,
+        'passingScore': 30,
+      });
+      expect(payload.app, isNull);
+      expect(payload.isCocIssued, isTrue);
     });
 
     test('OMR ID roster linking and scoring stay consistent', () {

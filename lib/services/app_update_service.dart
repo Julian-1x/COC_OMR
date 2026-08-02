@@ -1,9 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/services/api_service.dart';
 
 /// Result of an update check. [updateAvailable] is only true when a newer
-/// build number is published in Supabase `app_releases`.
+/// build number is published on the school API `app_releases` table.
 class AppUpdateInfo {
   const AppUpdateInfo({
     required this.updateAvailable,
@@ -22,18 +22,6 @@ class AppUpdateInfo {
   final bool mandatory;
 }
 
-/// Optional, safe update check.
-///
-/// Reads a single public row from a Supabase `app_releases` table:
-///   - `build_number` (int)   — latest published build
-///   - `version_name` (text)  — e.g. "1.0.1"
-///   - `download_url` (text)  — where to get the APK
-///   - `notes` (text, null)   — short "what's new"
-///   - `mandatory` (bool)     — force update
-///
-/// If Supabase is not ready or the table/row is missing, this returns
-/// `updateAvailable: false` and never throws — so it can't produce false
-/// prompts before the school sets it up.
 class AppUpdateService {
   AppUpdateService._();
 
@@ -42,8 +30,7 @@ class AppUpdateService {
     final currentBuild = int.tryParse(info.buildNumber) ?? 0;
     final currentVersion = '${info.version}+${info.buildNumber}';
 
-    final client = SupabaseService.client;
-    if (client == null) {
+    if (!ApiService.isReady || !ApiService.hasActiveSession) {
       return AppUpdateInfo(
         updateAvailable: false,
         currentVersion: currentVersion,
@@ -51,14 +38,9 @@ class AppUpdateService {
     }
 
     try {
-      final row = await client
-          .from('app_releases')
-          .select('build_number, version_name, download_url, notes, mandatory')
-          .order('build_number', ascending: false)
-          .limit(1)
-          .maybeSingle();
-
-      if (row == null) {
+      final response = await ApiService.getJson('/app-releases/latest');
+      final row = response['release'];
+      if (row is! Map) {
         return AppUpdateInfo(
           updateAvailable: false,
           currentVersion: currentVersion,

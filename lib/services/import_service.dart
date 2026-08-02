@@ -5,7 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/local_data_store.dart';
-import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/academic_term.dart';
 import 'package:omr_app/utils/roster_columns.dart';
 import 'package:omr_app/utils/roster_spreadsheet.dart';
@@ -140,7 +140,7 @@ class ImportService {
     } catch (error) {
       debugPrint('Roster file decode failed: $error');
       throw const FormatException(
-        'Could not read that roster file. Save as .xlsx or .csv with Student ID, Name, and Section.',
+        'Could not read that Class List Report. Use the school .xlsx (Student ID, Student Name, Section) or .csv.',
       );
     }
   }
@@ -160,7 +160,7 @@ class ImportService {
     try {
       await LocalDataStore.instance.reloadForCurrentTeacher();
       final result = await FilePicker.platform.pickFiles(
-        dialogTitle: 'Select Student Roster (.xlsx or .csv)',
+        dialogTitle: 'Select Class List Report (.xlsx or .csv)',
         type: FileType.custom,
         allowedExtensions: const ['csv', 'xlsx'],
         withData: true,
@@ -201,7 +201,7 @@ class ImportService {
   /// show a confirmation (new / duplicate / skipped) before committing.
   static Future<ImportPreview?> prepareImportFromPicker() async {
     final result = await FilePicker.platform.pickFiles(
-      dialogTitle: 'Select Student Roster (.xlsx or .csv)',
+      dialogTitle: 'Select Class List Report (.xlsx or .csv)',
       type: FileType.custom,
       allowedExtensions: const ['csv', 'xlsx'],
       withData: true,
@@ -285,7 +285,7 @@ class ImportService {
   static Future<int?> previewImport() async {
     try {
       final result = await FilePicker.platform.pickFiles(
-        dialogTitle: 'Select Student Roster (.xlsx or .csv)',
+        dialogTitle: 'Select Class List Report (.xlsx or .csv)',
         type: FileType.custom,
         allowedExtensions: const ['csv', 'xlsx'],
         withData: true,
@@ -346,7 +346,7 @@ class ImportService {
     final errors = <String>[];
     final importedStudents = <Student>[];
     final sectionsByName = <String, Section>{};
-    final ownerTeacherId = SupabaseService.currentUserId;
+    final ownerTeacherId = ApiService.currentUserId;
 
     final existingStudentIds = globalStudentDatabase
         .map((student) => normalizeSchoolId(student.schoolId))
@@ -580,7 +580,7 @@ class ImportService {
     } catch (error) {
       debugPrint('Roster import failed: $error');
       throw const FormatException(
-        'Could not read that roster file. Save as .xlsx or .csv with Student ID, Name, and Section.',
+        'Could not read that Class List Report. Use the school .xlsx (Student ID, Student Name, Section) or .csv.',
       );
     }
   }

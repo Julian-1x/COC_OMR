@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/widgets/app_card.dart';
 
 class OmrIdListPage extends StatefulWidget {
@@ -97,20 +98,15 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
       return sections.first;
     }
 
-    return showModalBottomSheet<String>(
+    return AppBottomSheet.showScrollable<String>(
       context: context,
-      backgroundColor: Colors.white,
       showDragHandle: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+      builder: (context) {
+        return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Padding(
-              padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
               child: Text(
                 'Choose a section',
                 style: TextStyle(
@@ -127,9 +123,8 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                 style: TextStyle(color: brandMuted, height: 1.35),
               ),
             ),
-            Flexible(
+            Expanded(
               child: ListView(
-                shrinkWrap: true,
                 children: sections
                     .map(
                       (section) => ListTile(
@@ -148,8 +143,8 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
               ),
             ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 

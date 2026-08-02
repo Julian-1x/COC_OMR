@@ -1,6 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:omr_app/services/supabase_service.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:omr_app/services/api_service.dart';
 
 class PinSyncException implements Exception {
   const PinSyncException(this.message);
@@ -35,25 +34,16 @@ class TeacherPinSyncService {
   static final TeacherPinSyncService instance = TeacherPinSyncService._();
 
   Future<CloudPinCredentials?> fetchForCurrentUser() async {
-    final client = SupabaseService.client;
-    final userId = client?.auth.currentUser?.id;
-    if (client == null || userId == null) {
+    final userId = ApiService.currentUserId;
+    if (!ApiService.hasActiveSession || userId == null) {
       return null;
     }
 
     try {
-      final row = await client
-          .from('teacher_profiles')
-          .select('pin_hash, pin_salt, full_name, school_name')
-          .eq('id', userId)
-          .maybeSingle();
-      if (row == null) {
-        return null;
-      }
-
-      final pinHash = (row['pin_hash'] as String?)?.trim();
-      final pinSalt = (row['pin_salt'] as String?)?.trim();
-      final name = (row['full_name'] as String?)?.trim();
+      final response = await ApiService.getJson('/profile/pin');
+      final pinHash = (response['pin_hash'] as String?)?.trim();
+      final pinSalt = (response['pin_salt'] as String?)?.trim();
+      final name = (response['full_name'] as String?)?.trim();
       if (pinHash == null ||
           pinHash.isEmpty ||
           pinSalt == null ||
@@ -63,13 +53,12 @@ class TeacherPinSyncService {
         return null;
       }
 
-      final user = client.auth.currentUser;
       return CloudPinCredentials(
         pinHash: pinHash,
         pinSalt: pinSalt,
         name: name,
-        school: (row['school_name'] as String?)?.trim(),
-        email: user?.email?.trim().toLowerCase(),
+        school: (response['school_name'] as String?)?.trim(),
+        email: ApiService.currentEmail,
         cloudUserId: userId,
       );
     } catch (error) {
@@ -82,49 +71,18 @@ class TeacherPinSyncService {
     required String pinHash,
     required String pinSalt,
   }) async {
-    final client = SupabaseService.client;
-    final user = client?.auth.currentUser;
-    final userId = user?.id;
-    if (client == null || userId == null) {
+    if (!ApiService.hasActiveSession) {
       throw const PinSyncException(
         'Sign in online before saving your PIN to the cloud.',
       );
     }
 
-    final timestamp = DateTime.now().toUtc().toIso8601String();
-    final pinPayload = <String, Object?>{
-      'pin_hash': pinHash,
-      'pin_salt': pinSalt,
-      'updated_at': timestamp,
-    };
-
     try {
-      final updated = await client
-          .from('teacher_profiles')
-          .update(pinPayload)
-          .eq('id', userId)
-          .select('id')
-          .maybeSingle();
-
-      if (updated != null) {
-        return;
-      }
-
-      final metadata = user?.userMetadata ?? const <String, dynamic>{};
-      final fullName = (metadata['full_name'] as String?)?.trim() ??
-          user?.email?.trim() ??
-          'Teacher';
-      final school = (metadata['school'] as String?)?.trim();
-
-      await client.from('teacher_profiles').upsert({
-        'id': userId,
-        'full_name': fullName,
-        'school_name': school == null || school.isEmpty ? null : school,
-        'role': 'teacher',
-        'is_active': true,
-        ...pinPayload,
+      await ApiService.putJson('/profile/pin', <String, dynamic>{
+        'pin_hash': pinHash,
+        'pin_salt': pinSalt,
       });
-    } on PostgrestException catch (error) {
+    } on ApiException catch (error) {
       throw PinSyncException(_friendlyPinUploadError(error));
     } catch (error) {
       debugPrint('Failed to upload cloud PIN credentials: $error');
@@ -132,16 +90,13 @@ class TeacherPinSyncService {
     }
   }
 
-  String _friendlyPinUploadError(PostgrestException error) {
+  String _friendlyPinUploadError(ApiException error) {
     final message = error.message.toLowerCase();
-    if (message.contains('pin_hash') ||
-        message.contains('pin_salt') ||
-        error.code == '42703') {
+    if (message.contains('pin_hash') || message.contains('pin_salt')) {
       return 'Cloud PIN backup is not enabled on the school server yet. '
           'Your PIN works on this phone — ask IT to run the latest database update.';
     }
-    if (message.contains('row-level security') ||
-        message.contains('permission denied')) {
+    if (message.contains('permission') || error.statusCode == 403) {
       return 'Could not save PIN to your account. Sign out, sign in again on Wi‑Fi, then retry.';
     }
     return 'Could not back up PIN to the cloud. Check Wi‑Fi and try again from Settings.';
@@ -150,7 +105,7 @@ class TeacherPinSyncService {
   Future<void> syncLocalPinIfMissing({
     required Future<({String hash, String salt})?> Function() readLocal,
   }) async {
-    if (!SupabaseService.hasActiveSession) {
+    if (!ApiService.hasActiveSession) {
       return;
     }
 

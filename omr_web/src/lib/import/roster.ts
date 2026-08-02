@@ -41,27 +41,38 @@ function readCell(cell: unknown): string {
   return String(cell).trim();
 }
 
+/** Official COC / PHINMA export columns we keep. Everything else is ignored. */
 const schoolIdHeaderKeys = [
   "student id",
   "school id",
   "student number",
   "student no",
+  "learner reference number",
   "lrn",
   "id number",
+  "id no",
   "id",
 ];
 
-const nameHeaderKeys = ["name", "student name", "full name", "learner name"];
+const nameHeaderKeys = [
+  "student name",
+  "full name",
+  "complete name",
+  "learner name",
+  "fullname",
+  "name",
+];
+
 const firstNameHeaderKeys = ["first name", "firstname", "given name"];
 const lastNameHeaderKeys = ["last name", "lastname", "surname", "family name"];
+
+/** Section only — do not treat COURSE / SUBJECT / SESSION as section. */
 const sectionHeaderKeys = [
-  "section",
   "section name",
-  "class",
-  "class section",
   "year and section",
+  "class section",
+  "section",
   "block",
-  "strand",
 ];
 
 function headerHasMatch(header: string[], keys: string[]): boolean {
@@ -95,27 +106,31 @@ function detectHeaderRow(rows: unknown[][]): number {
   return bestScore >= 2 ? bestIndex : rows.length > 0 ? 0 : -1;
 }
 
-function mapHeaders(header: string[]): Record<string, number> {
-  const find = (keys: string[]) => {
+function findHeaderIndex(header: string[], keys: string[]): number {
+  // Prefer exact header matches first (avoids SESSION NAME matching "name").
+  for (const key of keys) {
+    const exact = header.indexOf(key);
+    if (exact !== -1) return exact;
+  }
+  // Then allow multi-word / longer keys as substring matches only.
+  for (let i = 0; i < header.length; i++) {
+    const cell = header[i];
+    if (!cell) continue;
     for (const key of keys) {
-      const exact = header.indexOf(key);
-      if (exact !== -1) return exact;
+      if (key.length < 5 && !key.includes(" ")) continue;
+      if (cell.includes(key)) return i;
     }
-    for (let i = 0; i < header.length; i++) {
-      const cell = header[i];
-      if (!cell) continue;
-      for (const key of keys) {
-        if (cell === key || cell.includes(key)) return i;
-      }
-    }
-    return -1;
-  };
+  }
+  return -1;
+}
+
+function mapHeaders(header: string[]): Record<string, number> {
   return {
-    schoolId: find(schoolIdHeaderKeys),
-    name: find(nameHeaderKeys),
-    firstName: find(firstNameHeaderKeys),
-    lastName: find(lastNameHeaderKeys),
-    section: find(sectionHeaderKeys),
+    schoolId: findHeaderIndex(header, schoolIdHeaderKeys),
+    name: findHeaderIndex(header, nameHeaderKeys),
+    firstName: findHeaderIndex(header, firstNameHeaderKeys),
+    lastName: findHeaderIndex(header, lastNameHeaderKeys),
+    section: findHeaderIndex(header, sectionHeaderKeys),
   };
 }
 

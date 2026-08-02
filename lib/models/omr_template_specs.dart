@@ -56,14 +56,16 @@ class OmrPageConstants {
   static const double timingMarkEndY = 780.0;
 
   // QR code position (top-right of header)
-  static const double qrCodeSize = 72.0;
-  static const double qrCodeX = pageWidth - marginRight - qrCodeSize; // 495
-  static const double qrCodeY = marginTop; // 34
+  // Lean payload (no layout in QR) + this size keeps modules readable on phones.
+  // Must not extend past omrIdTop (114) — do not raise without moving OMR ID.
+  static const double qrCodeSize = 80.0;
+  static const double qrCodeX = pageWidth - marginRight - qrCodeSize;
+  static const double qrCodeY = marginTop;
 
   // Header section (subject name, code, etc.)
   static const double headerTop = marginTop;
-  static const double headerHeight = 72.0; // Same as QR height
-  static const double headerBottom = headerTop + headerHeight; // 106
+  static const double headerHeight = 80.0;
+  static const double headerBottom = headerTop + headerHeight; // 114 = omrIdTop
 
   // OMR ID section (4-digit student ID bubbles)
   static const double omrIdTop = 114.0; // 8pt below header

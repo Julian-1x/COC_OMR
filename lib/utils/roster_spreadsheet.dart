@@ -9,6 +9,9 @@ import 'package:flutter/foundation.dart';
 class RosterSpreadsheetDecoder {
   const RosterSpreadsheetDecoder._();
 
+  /// Optional OOXML namespace prefix, e.g. `x:row` or bare `row`.
+  static const String _nsPrefix = r'(?:[\w.-]+:)?';
+
   static List<List<dynamic>> decode({
     required Uint8List bytes,
     String? extension,
@@ -104,8 +107,8 @@ class RosterSpreadsheetDecoder {
 
     debugPrint('Roster xlsx decode failed:\n${errors.join('\n')}');
     throw const FormatException(
-      'Could not read that Excel file. Try Save As → .xlsx or export as .csv, '
-      'with Student ID, Name, and Section columns.',
+      'Could not read that Excel file. Use the school Class List Report (.xlsx) '
+      'with Student ID, Student Name, and Section columns — or export as .csv.',
     );
   }
 
@@ -127,14 +130,34 @@ class RosterSpreadsheetDecoder {
     return const <List<dynamic>>[];
   }
 
-  static dynamic _excelCellValue(dynamic cell) {
-    if (cell is Data) {
-      return cell.value;
+  static String _excelCellValue(dynamic cell) {
+    if (cell == null) {
+      return '';
     }
-    return cell;
+    if (cell is Data) {
+      return _stringifyExcelValue(cell.value);
+    }
+    return _stringifyExcelValue(cell);
   }
 
-  /// Minimal Office Open XML reader for simple single-sheet rosters.
+  static String _stringifyExcelValue(dynamic value) {
+    if (value == null) {
+      return '';
+    }
+    final text = value.toString().trim();
+    if (text.isEmpty || text == 'null') {
+      return '';
+    }
+    // Some CellValue toString() forms look like "TextCellValue(Hello)".
+    final wrapped = RegExp(r'^[A-Za-z]+CellValue\((.*)\)$', dotAll: true)
+        .firstMatch(text);
+    if (wrapped != null) {
+      return wrapped.group(1)?.trim() ?? text;
+    }
+    return text;
+  }
+
+  /// Minimal Office Open XML reader for school exports (incl. namespaced XML).
   static List<List<dynamic>> _decodeXlsxOoxml(Uint8List bytes) {
     final archive = ZipDecoder().decodeBytes(bytes);
     final sharedStrings = _readSharedStrings(archive);
@@ -146,7 +169,8 @@ class RosterSpreadsheetDecoder {
   }
 
   static List<String> _readSharedStrings(Archive archive) {
-    final matches = archive.files.where((entry) => entry.name == 'xl/sharedStrings.xml');
+    final matches =
+        archive.files.where((entry) => entry.name == 'xl/sharedStrings.xml');
     if (matches.isEmpty) {
       return const <String>[];
     }
@@ -154,10 +178,17 @@ class RosterSpreadsheetDecoder {
 
     final xml = utf8.decode(file.content as List<int>, allowMalformed: true);
     final strings = <String>[];
-    final siPattern = RegExp(r'<si[^>]*>(.*?)</si>', dotAll: true);
+    final siPattern = RegExp(
+      '<${_nsPrefix}si\\b[^>]*>(.*?)</${_nsPrefix}si>',
+      dotAll: true,
+    );
+    final tPattern = RegExp(
+      '<${_nsPrefix}t\\b[^>]*>(.*?)</${_nsPrefix}t>',
+      dotAll: true,
+    );
     for (final si in siPattern.allMatches(xml)) {
       final chunk = si.group(1) ?? '';
-      final text = RegExp(r'<t[^>]*>(.*?)</t>', dotAll: true)
+      final text = tPattern
           .allMatches(chunk)
           .map((match) => _unescapeXml(match.group(1) ?? ''))
           .join();
@@ -168,11 +199,14 @@ class RosterSpreadsheetDecoder {
 
   static ArchiveFile? _firstWorksheetXml(Archive archive) {
     final sheets = archive.files
-        .where(
-          (entry) =>
-              entry.name.startsWith('xl/worksheets/sheet') &&
-              entry.name.endsWith('.xml'),
-        )
+        .where((entry) {
+          final name = entry.name.replaceAll('\\', '/');
+          if (!name.startsWith('xl/worksheets/')) {
+            return false;
+          }
+          final fileName = name.split('/').last;
+          return fileName.startsWith('sheet') && fileName.endsWith('.xml');
+        })
         .toList()
       ..sort((a, b) => a.name.compareTo(b.name));
     if (sheets.isEmpty) {
@@ -186,8 +220,14 @@ class RosterSpreadsheetDecoder {
     List<String> sharedStrings,
   ) {
     final xml = utf8.decode(sheetFile.content as List<int>, allowMalformed: true);
-    final rowPattern = RegExp(r'<row[^>]*>(.*?)</row>', dotAll: true);
-    final cellPattern = RegExp(r'<c\b([^>]*)>(.*?)</c>', dotAll: true);
+    final rowPattern = RegExp(
+      '<${_nsPrefix}row\\b[^>]*>(.*?)</${_nsPrefix}row>',
+      dotAll: true,
+    );
+    final cellPattern = RegExp(
+      '<${_nsPrefix}c\\b([^>]*)>(.*?)</${_nsPrefix}c>',
+      dotAll: true,
+    );
 
     final rows = <int, Map<int, String>>{};
     for (final rowMatch in rowPattern.allMatches(xml)) {
@@ -235,15 +275,18 @@ class RosterSpreadsheetDecoder {
     final typeMatch = RegExp(r'\bt="([^"]+)"').firstMatch(attrs);
     final cellType = typeMatch?.group(1);
 
-    final inlineText = RegExp(r'<t[^>]*>(.*?)</t>', dotAll: true)
-        .firstMatch(body)
-        ?.group(1);
+    final inlineText = RegExp(
+      '<${_nsPrefix}t\\b[^>]*>(.*?)</${_nsPrefix}t>',
+      dotAll: true,
+    ).firstMatch(body)?.group(1);
     if (inlineText != null) {
       return _unescapeXml(inlineText);
     }
 
-    final rawValue =
-        RegExp(r'<v>(.*?)</v>', dotAll: true).firstMatch(body)?.group(1);
+    final rawValue = RegExp(
+      '<${_nsPrefix}v\\b[^>]*>(.*?)</${_nsPrefix}v>',
+      dotAll: true,
+    ).firstMatch(body)?.group(1);
     if (rawValue == null) {
       return '';
     }

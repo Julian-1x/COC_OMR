@@ -25,6 +25,16 @@ abstract class ScannerCamera {
 
   Future<Uint8List> capture();
 
+  /// Whether this device/camera supports a torch (flashlight).
+  bool get torchSupported;
+
+  /// Current torch state.
+  bool get torchEnabled;
+
+  Future<void> setTorchEnabled(bool enabled);
+
+  Future<bool> toggleTorch();
+
   /// Preview widget sized to [viewSize] (cover-fit inside caller's frame).
   Widget buildPreview({
     required Size viewSize,

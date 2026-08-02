@@ -1,10 +1,17 @@
 package edu.coc.omr
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.util.Base64
 import android.util.Log
 import androidx.exifinterface.media.ExifInterface
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import org.opencv.android.Utils
 import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
@@ -13,6 +20,8 @@ import org.json.JSONObject
 import org.json.JSONArray
 import kotlin.math.*
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -30,7 +39,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 8. Read answer bubbles (A-E per question)
  * 9. Cross-validate and calculate confidence scores
  */
-class OmrProcessor {
+class OmrProcessor(
+    private val appContext: Context? = null,
+) {
     companion object {
         private const val TAG = "OmrProcessor"
         
@@ -92,16 +103,37 @@ class OmrProcessor {
         private const val ROW_MARK_X = 18.0  // Left edge marks
         private const val ROW_MARK_SIZE = 4.0
         
-        // Low-end device optimization constants
-        private const val MAX_IMAGE_DIMENSION = 2400  // Max dimension before downscaling
-        private const val LOW_MEMORY_THRESHOLD_MB = 150  // Consider device low-memory if < 150MB free
-        private const val PROCESSING_TIMEOUT_MS = 15000L  // 15 second timeout
-        private const val MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  // 20MB max input
+        // Adaptive decode ceilings live on DeviceScanTier; these are fallbacks only.
+        private const val MAX_IMAGE_DIMENSION = 2000
+        private const val LOW_MEMORY_THRESHOLD_MB = 120
+        private const val PROCESSING_TIMEOUT_MS = 15000L
+        private const val MAX_IMAGE_SIZE_BYTES = 16 * 1024 * 1024
         
         // Low-quality camera handling constants
         private const val MIN_BLUR_THRESHOLD = 100.0  // Laplacian variance threshold for blur detection
         private const val MIN_CONTRAST_RATIO = 1.5  // Minimum contrast ratio for reliable detection
         private const val NOISE_THRESHOLD = 15.0  // Max acceptable noise level
+        private const val TIMING_MARK_FAIL_THRESHOLD = 0.40  // Below this, alignment is too poor to grade
+        /** Below this mean gray (0–255) after enhancement, refuse to grade. */
+        private const val HARD_DARK_BRIGHTNESS = 42.0
+        /** Original capture darker than this gets stronger safe enhancement. */
+        private const val DARK_CAPTURE_BRIGHTNESS = 80.0
+        /** Extra bubble fill threshold when capture was dark (reduces false marks). */
+        private const val DARK_FILL_THRESHOLD_BOOST = 0.06
+        /** If fewer than this fraction of questions yield a mark, treat as grid misalignment. */
+        private const val MIN_ANSWER_YIELD = 0.12
+        /** Local refine radius (px on 595-wide warp) around predicted bubble centers. */
+        private const val BUBBLE_REFINE_RADIUS_PX = 2
+
+        // Printed QR box in page points (OmrPageConstants: 80pt square, top-right),
+        // padded so a slightly skewed capture still contains the whole symbol.
+        private const val QR_BOX_LEFT = 470.0
+        private const val QR_BOX_TOP = 20.0
+        private const val QR_BOX_RIGHT = 582.0
+        private const val QR_BOX_BOTTOM = 128.0
+
+        /** Magnification of the source-resolution QR crop, best first. */
+        private val QR_SOURCE_CROP_SCALES = doubleArrayOf(5.0, 3.0, 8.0)
     }
     
     /**
@@ -180,12 +212,26 @@ class OmrProcessor {
                 put("confidence", confidence)
                 put("qrData", qrData)
                 put("errorMessage", errorMessage)
-                put("debugInfo", JSONObject(debugInfo.mapValues { 
-                    when (val v = it.value) {
-                        is List<*> -> JSONArray(v)
-                        else -> v
-                    }
+                put("debugInfo", JSONObject(debugInfo.mapValues { entry ->
+                    jsonCompatValue(entry.value)
                 }))
+            }
+        }
+
+        private fun jsonCompatValue(value: Any?): Any? {
+            return when (value) {
+                null -> JSONObject.NULL
+                is Number, is Boolean, is String -> value
+                is Map<*, *> -> JSONObject(value.entries.associate { (k, v) ->
+                    k.toString() to jsonCompatValue(v)
+                })
+                is List<*> -> JSONArray().also { arr ->
+                    value.forEach { arr.put(jsonCompatValue(it)) }
+                }
+                is Array<*> -> JSONArray().also { arr ->
+                    value.forEach { arr.put(jsonCompatValue(it)) }
+                }
+                else -> value.toString()
             }
         }
     }
@@ -203,11 +249,12 @@ class OmrProcessor {
             val height1 = distance(topLeft, bottomLeft)
             val height2 = distance(topRight, bottomRight)
             
-            // Widths and heights should be similar (within 20%)
+            // Phone perspective often stretches one edge; 0.72 still rejects crossed/bad quads
+            // while accepting real desk captures that 0.80 wrongly discarded.
             val widthRatio = minOf(width1, width2) / maxOf(width1, width2)
             val heightRatio = minOf(height1, height2) / maxOf(height1, height2)
             
-            return widthRatio > 0.8 && heightRatio > 0.8
+            return widthRatio > 0.72 && heightRatio > 0.72
         }
         
         private fun distance(p1: Point, p2: Point): Double {
@@ -231,35 +278,82 @@ class OmrProcessor {
     )
     
     /**
-     * Determine processing quality based on available memory
+     * OMR ID read outcome. [needsReview] is set when 3 of 4 columns are clean and one
+     * column was ambiguous/blank — [id] then holds a best-guess so roster lookup can
+     * still match, with [ambiguousColumn] telling the review UI which digit to verify.
+     */
+    data class OmrIdReadResult(
+        val id: String,
+        val confidence: Double,
+        val needsReview: Boolean,
+        val ambiguousColumn: Int
+    )
+    
+    private val baseScanTier: DeviceScanTier by lazy {
+        val ctx = appContext
+        if (ctx != null) {
+            DeviceScanTier.warm(ctx)
+        } else {
+            DeviceScanTier.cachedOrNull()
+                ?: DeviceScanTier.fromHeapClassMb(
+                    (Runtime.getRuntime().maxMemory() / 1024 / 1024).toInt(),
+                )
+        }
+    }
+
+    /**
+     * Determine processing quality from remaining heap capacity (not freeMemory alone).
      */
     private fun determineProcessingQuality(): ProcessingQuality {
-        val runtime = Runtime.getRuntime()
-        val freeMemoryMB = (runtime.freeMemory() / 1024 / 1024).toInt()
-        val maxMemoryMB = (runtime.maxMemory() / 1024 / 1024).toInt()
-        val availableRatio = freeMemoryMB.toFloat() / maxMemoryMB
-        
-        Log.d(TAG, "Memory: ${freeMemoryMB}MB free / ${maxMemoryMB}MB max (${(availableRatio * 100).toInt()}%)")
-        
+        val remainingMB = DeviceScanTier.remainingHeapMb().toInt()
+        val maxMemoryMB = (Runtime.getRuntime().maxMemory() / 1024 / 1024).toInt()
+
+        Log.d(TAG, "Memory: remaining=${remainingMB}MB / max=${maxMemoryMB}MB tier=$baseScanTier")
+
         return when {
-            freeMemoryMB < 80 -> ProcessingQuality.FAST
-            freeMemoryMB < LOW_MEMORY_THRESHOLD_MB -> ProcessingQuality.BALANCED
+            remainingMB < 48 || baseScanTier == DeviceScanTier.LOW -> ProcessingQuality.FAST
+            remainingMB < LOW_MEMORY_THRESHOLD_MB || baseScanTier == DeviceScanTier.MID ->
+                ProcessingQuality.BALANCED
             else -> ProcessingQuality.HIGH
         }
     }
+
+    /** Longest decode edge from device tier, optionally tightened under memory pressure. */
+    private fun maxDecodeDimension(quality: ProcessingQuality, turboMode: Boolean): Int {
+        val tier = DeviceScanTier.forProcessing(baseScanTier)
+        var maxDim = tier.decodeMaxDimension
+        if (quality == ProcessingQuality.FAST) {
+            maxDim = minOf(maxDim, DeviceScanTier.LOW.decodeMaxDimension)
+        } else if (quality == ProcessingQuality.BALANCED) {
+            maxDim = minOf(maxDim, DeviceScanTier.MID.decodeMaxDimension)
+        }
+        // Turbo skips the slowest filters but still keeps enough pixels for marks/bubbles.
+        if (turboMode) {
+            maxDim = minOf(maxDim, DeviceScanTier.HIGH.decodeMaxDimension)
+        }
+        return maxDim
+    }
     
     /**
-     * Check if we have enough memory to process
+     * Check if we have enough memory to process.
+     * Uses remaining capacity to [Runtime.maxMemory], not only freeMemory() in the
+     * currently committed heap (which is often low and rejected scans incorrectly).
      */
-    private fun checkMemoryAvailable(requiredMB: Int = 50): Boolean {
+    private fun checkMemoryAvailable(requiredMB: Int = 40): Boolean {
         val runtime = Runtime.getRuntime()
-        val freeMemoryMB = runtime.freeMemory() / 1024 / 1024
-        
-        if (freeMemoryMB < requiredMB) {
-            Log.w(TAG, "Low memory warning: ${freeMemoryMB}MB free, ${requiredMB}MB required")
-            // Request garbage collection
+        fun remainingHeapMb(): Long {
+            val max = runtime.maxMemory()
+            val used = runtime.totalMemory() - runtime.freeMemory()
+            return (max - used) / (1024 * 1024)
+        }
+
+        var remaining = remainingHeapMb()
+        Log.d(TAG, "Memory check: remaining=${remaining}MB required≈${requiredMB}MB")
+        if (remaining < requiredMB) {
+            Log.w(TAG, "Low memory warning: ${remaining}MB remaining, ${requiredMB}MB preferred")
             System.gc()
-            return freeMemoryMB >= requiredMB / 2  // Still allow if at least half available
+            remaining = remainingHeapMb()
+            return remaining >= (requiredMB / 2).coerceAtLeast(24)
         }
         return true
     }
@@ -305,9 +399,26 @@ class OmrProcessor {
         val sessionLayout = config.sessionLayout
         val turboMode = config.turboMode
         val debugInfo = mutableMapOf<String, Any>()
+        val pipelineStages = mutableListOf<String>()
         val startTime = System.currentTimeMillis()
         debugInfo["turboMode"] = turboMode
         debugInfo["layoutFromSession"] = sessionLayout != null
+
+        fun stageOk(label: String) {
+            val line = "✓ $label"
+            pipelineStages.add(line)
+            Log.i(TAG, line)
+        }
+
+        fun stageFail(label: String, why: String): ProcessingResult {
+            val line = "✗ $label — $why"
+            pipelineStages.add(line)
+            debugInfo["pipelineStages"] = pipelineStages.toList()
+            debugInfo["failedStage"] = label
+            debugInfo["failedWhy"] = why
+            Log.e(TAG, line)
+            return errorResult(why, debugInfo)
+        }
         
         // Validate input size
         if (imageBytes.size > MAX_IMAGE_SIZE_BYTES) {
@@ -321,15 +432,26 @@ class OmrProcessor {
         if (!checkMemoryAvailable()) {
             return errorResult("Device memory too low. Please close other apps and try again.", debugInfo)
         }
+        System.gc()
         
         // Turbo keeps corner detection accurate but avoids the slowest quality path.
         val quality = if (turboMode && sessionLayout != null) {
-            ProcessingQuality.BALANCED
+            val memQuality = determineProcessingQuality()
+            if (memQuality == ProcessingQuality.FAST) ProcessingQuality.FAST else ProcessingQuality.BALANCED
         } else {
             determineProcessingQuality()
         }
         debugInfo["processingQuality"] = quality.name
-        Log.d(TAG, "Using processing quality: $quality (turbo=$turboMode)")
+        val decodeMax = maxDecodeDimension(quality, turboMode)
+        val processTier = DeviceScanTier.forProcessing(baseScanTier)
+        debugInfo["decodeMaxDimension"] = decodeMax
+        debugInfo["scanTier"] = processTier.name
+        debugInfo["baseScanTier"] = baseScanTier.name
+        Log.d(
+            TAG,
+            "Using quality=$quality decodeMax=$decodeMax tier=$processTier " +
+                "(base=$baseScanTier turbo=$turboMode)",
+        )
         
         // Mats for cleanup (use nullable for safety)
         var originalMat: Mat? = null
@@ -340,15 +462,17 @@ class OmrProcessor {
         
         try {
             // Step 1: Decode image (respect EXIF rotation from camera capture)
-            bitmap = decodeBitmapForAnalysis(imageBytes, MAX_IMAGE_DIMENSION)
+            bitmap = decodeBitmapForAnalysis(imageBytes, decodeMax)
             if (bitmap == null) {
-                return errorResult("Failed to decode image", debugInfo)
+                return stageFail("Camera Image Loaded", "Failed to decode image bytes")
             }
+            stageOk("Camera Image Loaded (${bitmap.width}x${bitmap.height})")
 
             debugInfo["imageWidth"] = bitmap.width
             debugInfo["imageHeight"] = bitmap.height
             debugInfo["decodeMs"] = System.currentTimeMillis() - startTime
-            Log.d(TAG, "Image decoded: ${bitmap.width}x${bitmap.height}")
+            debugInfo["exifApplied"] = true
+            stageOk("EXIF Rotation Applied")
             
             // Check timeout
             if (System.currentTimeMillis() - startTime > PROCESSING_TIMEOUT_MS / 3) {
@@ -384,20 +508,36 @@ class OmrProcessor {
                     "brightness=${String.format("%.1f", imageQuality.brightnessScore)}")
             
             val cornersStartMs = System.currentTimeMillis()
+            val wasDarkCapture = imageQuality.brightnessScore < DARK_CAPTURE_BRIGHTNESS
+            debugInfo["wasDarkCapture"] = wasDarkCapture
             if (!imageQuality.isAcceptable && !(turboMode && imageQuality.blurScore >= MIN_BLUR_THRESHOLD * 0.5)) {
                 // Try to enhance the image before giving up (skipped in turbo when sharp enough)
                 Log.w(TAG, "Image quality issues: ${imageQuality.issues}. Attempting enhancement...")
                 enhanceImageForLowQualityCamera(grayMat, imageQuality)
                 debugInfo["imageEnhanced"] = true
             }
+            val postEnhanceBrightness = Core.mean(grayMat).`val`[0]
+            debugInfo["postEnhanceBrightness"] = postEnhanceBrightness
+            if (postEnhanceBrightness < HARD_DARK_BRIGHTNESS) {
+                debugInfo["failureReason"] = "TOO_DARK"
+                debugInfo["pipelineStages"] = pipelineStages.toList()
+                return stageFail(
+                    "Quality Check",
+                    "Too dark to scan safely. Turn on the phone light or move to a brighter area.",
+                )
+            }
+            stageOk("Quality Check Passed (blur=${imageQuality.blurScore.toInt()})")
             
             // Step 4: Detect corner markers using quality-appropriate method
             val corners = detectCornerMarkersAdaptive(grayMat, quality, debugInfo)
             if (corners == null || !corners.isValid()) {
-                // Provide specific feedback based on quality issues
-                val errorMsg = buildCornerDetectionErrorMessage(imageQuality)
-                return errorResult(errorMsg, debugInfo)
+                val failureReason = classifyCornerFailure(imageQuality, debugInfo)
+                debugInfo["failureReason"] = failureReason
+                val errorMsg = buildCornerDetectionErrorMessage(imageQuality, debugInfo, failureReason)
+                debugInfo["pipelineStages"] = pipelineStages.toList()
+                return stageFail("Corner Detection", errorMsg)
             }
+            stageOk("Corner Detection Passed via ${debugInfo["cornerDetectionSucceededVia"]}")
             
             debugInfo["cornersDetected"] = true
             debugInfo["cornerPositions"] = listOf(
@@ -419,36 +559,67 @@ class OmrProcessor {
             warpedMat = applyPerspectiveTransform(grayMat, corners)
             debugInfo["warpedSize"] = "${warpedMat.cols()}x${warpedMat.rows()}"
             debugInfo["warpMs"] = System.currentTimeMillis() - warpStartMs
+            stageOk("Perspective Warp Successful (${warpedMat.cols()}x${warpedMat.rows()})")
             
+            // Step 5.5: Decode the QR from the ORIGINAL frame before releasing it.
+            // The 595px warp leaves the printed QR ~80px wide (~1.4px per module),
+            // which is mathematically undecodable — crop it at source resolution.
+            val sourceQrStartMs = System.currentTimeMillis()
+            val sourceQrData = if (quality == ProcessingQuality.FAST && sessionLayout == null) {
+                null
+            } else {
+                decodeQrFromSourceFrame(grayMat, corners, debugInfo)
+            }
+            debugInfo["sourceQrMs"] = System.currentTimeMillis() - sourceQrStartMs
+            debugInfo["sourceQrDetected"] = sourceQrData != null
+
             // Release grayscale since we have warped
             grayMat.release()
             grayMat = null
             
-            // Step 6: Validate alignment using timing marks
-            val timingMarkScore = if (turboMode || quality != ProcessingQuality.FAST) {
-                validateTimingMarks(warpedMat, debugInfo)
-            } else {
-                0.75
-            }
+            // Step 6: Validate alignment using timing marks.
+            // Never fake this score — low-memory FAST mode previously skipped checks and
+            // graded misaligned warps, which produced empty/wrong answer maps.
+            val timingMarkScore = validateTimingMarks(warpedMat, debugInfo)
             debugInfo["timingMarkScore"] = timingMarkScore
+            val timingFound = (debugInfo["timingMarksFound"] as? Number)?.toInt() ?: 0
+            val timingExpected = (debugInfo["timingMarksExpected"] as? Number)?.toInt() ?: 0
+            if (timingMarkScore < TIMING_MARK_FAIL_THRESHOLD) {
+                debugInfo["failureReason"] = "TIMING_MARKS"
+                debugInfo["cornersDetected"] = true
+                attachDebugOverlay(
+                    warpedMat = warpedMat,
+                    layout = sessionLayout ?: calculateFallbackLayout(totalQuestions),
+                    answers = emptyMap(),
+                    fillThreshold = DEFAULT_FILL_THRESHOLD,
+                    debugInfo = debugInfo,
+                )
+                return stageFail(
+                    "Timing Marks Detected",
+                    buildTimingMarkErrorMessage(timingMarkScore, debugInfo),
+                )
+            }
+            stageOk("Timing Marks Detected ($timingFound/$timingExpected, ${(timingMarkScore * 100).toInt()}%)")
             if (timingMarkScore < 0.5) {
                 Log.w(TAG, "Low timing mark score: $timingMarkScore - alignment may be off")
             }
             
-            // Step 7: QR decode (skipped when session layout is locked for turbo speed)
+            // Step 7: Always try QR — needed to reject EvalBee / foreign sheets even in turbo.
+            // Session layout still wins for bubble positions when present.
             val qrStartMs = System.currentTimeMillis()
-            val qrData = if (sessionLayout != null) {
-                Log.d(TAG, "Using session-locked layout — skipping QR decode")
-                null
-            } else if (quality == ProcessingQuality.FAST) {
-                Log.d(TAG, "Skipping QR detection in FAST mode")
+            val qrData = sourceQrData ?: if (quality == ProcessingQuality.FAST && sessionLayout == null) {
+                Log.d(TAG, "Skipping QR detection in FAST mode (no session layout)")
                 null
             } else {
                 detectQRCode(warpedMat, debugInfo)
             }
             debugInfo["qrMs"] = System.currentTimeMillis() - qrStartMs
             debugInfo["qrDetected"] = qrData != null
-            debugInfo["qrSkippedForSession"] = sessionLayout != null
+            debugInfo["qrSkippedForSession"] = false
+            debugInfo["sessionLayoutLocked"] = sessionLayout != null
+
+            val qrIdentity = classifyQrIdentity(qrData, debugInfo)
+            debugInfo["sheetQrIdentity"] = qrIdentity
             
             // Step 7.5: Layout from session, QR v2, or fallback
             val layout = sessionLayout
@@ -456,17 +627,31 @@ class OmrProcessor {
                 ?: calculateFallbackLayout(totalQuestions)
             debugInfo["layoutTemplate"] = layout.templateId
             debugInfo["layoutFromQr"] = sessionLayout == null && layout.templateId != "LEGACY"
+            debugInfo["layoutCols"] = layout.columns
+            debugInfo["layoutRows"] = layout.rows
+            debugInfo["layoutGridTop"] = layout.gridTop
+            debugInfo["layoutRowHeight"] = layout.rowHeight
             Log.d(TAG, "Using layout: template=${layout.templateId}, cols=${layout.columns}, rows=${layout.rows}")
+            stageOk("Layout Loaded (${layout.templateId}, ${layout.columns}x${layout.rows})")
             
             // Step 8: Auto-calibrate fill threshold using calibration marks in footer
             val calibration = calibrateFillThreshold(warpedMat, debugInfo)
-            val fillThreshold = if (calibration.isCalibrated) calibration.fillThreshold else DEFAULT_FILL_THRESHOLD
+            var fillThreshold = if (calibration.isCalibrated) calibration.fillThreshold else DEFAULT_FILL_THRESHOLD
+            if (wasDarkCapture) {
+                fillThreshold = (fillThreshold + DARK_FILL_THRESHOLD_BOOST).coerceAtMost(0.55)
+                debugInfo["darkFillThresholdBoost"] = DARK_FILL_THRESHOLD_BOOST
+            }
             debugInfo["fillThreshold"] = fillThreshold
             debugInfo["calibrationSuccess"] = calibration.isCalibrated
+            stageOk(
+                "Threshold Calculated (${String.format("%.2f", fillThreshold)}" +
+                    if (calibration.isCalibrated) ", calibrated)" else ", default)",
+            )
             
             // Step 9: Apply adaptive threshold for bubble detection
             thresholdMat = Mat()
-            val blockSize = if (quality == ProcessingQuality.FAST) 11 else 15
+            var blockSize = if (quality == ProcessingQuality.FAST) 11 else 15
+            if (blockSize % 2 == 0) blockSize += 1
             Imgproc.adaptiveThreshold(
                 warpedMat, thresholdMat,
                 255.0,
@@ -475,37 +660,154 @@ class OmrProcessor {
                 blockSize, 4.0
             )
             
-            // Step 9.5: Validate template using row marks (skip in turbo when timing marks OK)
-            if (layout.templateId != "LEGACY" && !(turboMode && timingMarkScore >= 0.65)) {
-                val rowMarkValidation = validateRowMarks(warpedMat, layout, debugInfo)
-                debugInfo["rowMarkValidation"] = rowMarkValidation
-                if (rowMarkValidation < 0.6) {
-                    Log.w(TAG, "Low row mark validation score: $rowMarkValidation - template mismatch possible")
-                    debugInfo["templateMismatchWarning"] = true
+            // Step 9.5: Row marks — always run (including LEGACY) for foreign-sheet gate
+            val rowMarkValidation = validateRowMarks(warpedMat, layout, debugInfo)
+            debugInfo["rowMarkValidation"] = rowMarkValidation
+            if (rowMarkValidation < 0.6) {
+                Log.w(TAG, "Low row mark validation score: $rowMarkValidation - template mismatch possible")
+                debugInfo["templateMismatchWarning"] = true
+            }
+
+            // Step 9.6: Reject EvalBee / non-COC paper before reading OMR ID or answers.
+            // When the teacher opened the scanner for a COC answer key, session layout is
+            // already locked — do not treat unread QR / weak row marks as a foreign sheet.
+            if (sessionLayout != null) {
+                when (qrIdentity) {
+                    "foreign" -> {
+                        val foreignApp = debugInfo["sheetQrForeignApp"]?.toString()?.trim()
+                        if (!foreignApp.isNullOrEmpty()) {
+                            debugInfo["failureReason"] = "FOREIGN_SHEET"
+                            debugInfo["sheetOriginClassification"] = "foreign_qr"
+                            attachDebugOverlay(warpedMat, layout, emptyMap(), fillThreshold, debugInfo)
+                            return stageFail(
+                                "Sheet Identity",
+                                "This does not look like a COC OMR answer sheet. Print sheets from this app (Prepare → Print Sheets), then scan again.",
+                            )
+                        }
+                        debugInfo["sheetOriginClassification"] = "coc_session"
+                        stageOk("Sheet Identity (COC session)")
+                    }
+                    "coc", "coc_legacy" -> stageOk("Sheet Identity (COC QR)")
+                    else -> {
+                        debugInfo["sheetOriginClassification"] = "coc_session"
+                        stageOk("Sheet Identity (COC session)")
+                    }
                 }
+            } else if (qrIdentity == "foreign") {
+                debugInfo["failureReason"] = "FOREIGN_SHEET"
+                debugInfo["sheetOriginClassification"] = "foreign_qr"
+                attachDebugOverlay(warpedMat, layout, emptyMap(), fillThreshold, debugInfo)
+                return stageFail(
+                    "Sheet Identity",
+                    "This does not look like a COC OMR answer sheet. Print sheets from this app (Prepare → Print Sheets), then scan again.",
+                )
+            } else if (qrIdentity == "none" || qrIdentity == "unknown") {
+                // No COC QR — require our printed geometry (row marks + timing).
+                val geometryLooksCoc =
+                    timingMarkScore >= 0.85 ||
+                    (timingMarkScore >= 0.50 && rowMarkValidation >= 0.55)
+                debugInfo["sheetGeometryLooksCoc"] = geometryLooksCoc
+                if (!geometryLooksCoc) {
+                    debugInfo["failureReason"] = "FOREIGN_SHEET"
+                    debugInfo["sheetOriginClassification"] = "foreign_geometry"
+                    attachDebugOverlay(warpedMat, layout, emptyMap(), fillThreshold, debugInfo)
+                    return stageFail(
+                        "Sheet Identity",
+                        "This does not look like a COC OMR answer sheet. Use a sheet printed from this app — other OMR apps' papers cannot be graded here.",
+                    )
+                }
+                debugInfo["sheetOriginClassification"] = "coc_geometry"
+                stageOk("Sheet Identity (COC geometry)")
+            } else {
+                debugInfo["sheetOriginClassification"] = "coc_qr"
+                stageOk("Sheet Identity (COC QR)")
             }
             
             // Step 10: Detect OMR ID with validation
             val omrIdResult = detectOmrIdWithValidation(thresholdMat, warpedMat, fillThreshold, debugInfo)
-            if (omrIdResult == null) {
-                return errorResult("Could not read OMR ID. Ensure all 4 digits are clearly filled.", debugInfo)
+            if (omrIdResult != null) {
+                debugInfo["omrId"] = omrIdResult.id
+                debugInfo["omrIdConfidence"] = omrIdResult.confidence
+                stageOk("OMR ID Read (${omrIdResult.id})")
+            } else {
+                debugInfo["failureReason"] = "OMR_ID"
+                val idHint = if (debugInfo["omrIdNotFilled"] == true) {
+                    "OMR ID not filled in"
+                } else {
+                    "OMR ID unclear"
+                }
+                pipelineStages.add("✗ OMR ID Read — $idHint (continuing to answers)")
             }
-            debugInfo["omrId"] = omrIdResult.first
-            debugInfo["omrIdConfidence"] = omrIdResult.second
-            
-            // Step 11: Detect answers using layout from QR (v2) or fallback calculation (v1)
+
+            // Step 11: Detect answers even when OMR ID failed — blank vs marked still matters.
+            stageOk("Bubble Detection Started")
             val bubbleStartMs = System.currentTimeMillis()
-            val answersResult = detectAnswersWithLayout(thresholdMat, warpedMat, totalQuestions, layout, fillThreshold, debugInfo)
+            val answersResult = detectAnswersWithLayout(
+                thresholdMat, warpedMat, totalQuestions, layout, fillThreshold, debugInfo,
+            )
             debugInfo["bubbleMs"] = System.currentTimeMillis() - bubbleStartMs
             debugInfo["answersDetected"] = answersResult.first.size
             debugInfo["answersConfidence"] = answersResult.second
+            val blankCount = (totalQuestions - answersResult.first.size).coerceAtLeast(0)
+            debugInfo["blankAnswersCount"] = blankCount
+            stageOk("Answers Extracted (${answersResult.first.size}/$totalQuestions, blank=$blankCount)")
+
+            attachDebugOverlay(warpedMat, layout, answersResult.first, fillThreshold, debugInfo)
+
+            if (omrIdResult == null) {
+                val idErrorMessage = if (debugInfo["omrIdNotFilled"] == true) {
+                    "OMR ID not filled in. Bubble the 4-digit ID with a dark pencil, or type it below."
+                } else {
+                    "Could not read OMR ID clearly. Darken the ID bubbles or type the 4-digit ID below."
+                }
+                debugInfo["pipelineStages"] = pipelineStages.toList()
+                debugInfo["processingTimeMs"] = System.currentTimeMillis() - startTime
+                return ProcessingResult(
+                    success = false,
+                    omrId = null,
+                    answers = answersResult.first,
+                    confidence = answersResult.second * 0.5,
+                    qrData = qrData,
+                    errorMessage = idErrorMessage,
+                    debugInfo = debugInfo,
+                )
+            }
+
+            // Never silently return a "success" when the grid clearly missed the bubbles.
+            // A deliberately blank sheet (OMR ID only) must still succeed with empty answers.
+            val answered = answersResult.first.size
+            val noSelections = (debugInfo["noSelectionsLayout"] as? Number)?.toInt() ?: 0
+            val yield = if (totalQuestions > 0) answered.toDouble() / totalQuestions else 0.0
+            val rowMarkScore = (debugInfo["rowMarkValidation"] as? Number)?.toDouble()
+            val templateMismatch = debugInfo["templateMismatchWarning"] == true
+            val geometryWeak = timingMarkScore < 0.55 ||
+                (rowMarkScore != null && rowMarkScore < 0.55) ||
+                templateMismatch
+            val sparseAndEmptyLooking =
+                yield < MIN_ANSWER_YIELD && noSelections >= (totalQuestions * 0.7).toInt()
+            if (answered == 0 && geometryWeak) {
+                debugInfo["failureReason"] = "GRID_MISALIGNED"
+                return stageFail(
+                    "Answers Extracted",
+                    "Sheet was found but answer bubbles could not be read ($answered of $totalQuestions). " +
+                        "Hold the sheet flatter, keep all timing marks in frame, and print at 100% scale.",
+                )
+            }
+            if (sparseAndEmptyLooking && geometryWeak) {
+                debugInfo["failureReason"] = "GRID_MISALIGNED"
+                return stageFail(
+                    "Answers Extracted",
+                    "Sheet was found but answer bubbles could not be read ($answered of $totalQuestions). " +
+                        "Hold the sheet flatter, keep all timing marks in frame, and print at 100% scale.",
+                )
+            }
             
             // Step 12: Calculate overall confidence
             val layoutConfirmed = sessionLayout != null || qrData != null
             val confidence = calculateOverallConfidence(
                 timingMarkScore = timingMarkScore,
                 calibrationSuccess = calibration.isCalibrated,
-                omrIdConfidence = omrIdResult.second,
+                omrIdConfidence = omrIdResult.confidence,
                 answersConfidence = answersResult.second,
                 qrDetected = layoutConfirmed,
                 debugInfo = debugInfo
@@ -513,11 +815,13 @@ class OmrProcessor {
             
             val processingTimeMs = System.currentTimeMillis() - startTime
             debugInfo["processingTimeMs"] = processingTimeMs
+            debugInfo["pipelineStages"] = pipelineStages.toList()
+            stageOk("Results Returned (${processingTimeMs}ms, conf=${String.format("%.2f", confidence)})")
             Log.d(TAG, "Processing completed in ${processingTimeMs}ms")
             
             return ProcessingResult(
                 success = true,
-                omrId = omrIdResult.first,
+                omrId = omrIdResult.id,
                 answers = answersResult.first,
                 confidence = confidence,
                 qrData = qrData,
@@ -528,9 +832,14 @@ class OmrProcessor {
         } catch (e: OutOfMemoryError) {
             Log.e(TAG, "Out of memory during processing", e)
             System.gc()  // Try to recover
+            debugInfo["pipelineStages"] = pipelineStages.toList()
+            debugInfo["failureReason"] = "OUT_OF_MEMORY"
             return errorResult("Device ran out of memory. Please close other apps and try again.", debugInfo)
         } catch (e: Exception) {
             Log.e(TAG, "Processing error: ${e.message}", e)
+            debugInfo["pipelineStages"] = pipelineStages.toList()
+            debugInfo["failureReason"] = "ENGINE_ERROR"
+            debugInfo["exceptionClass"] = e.javaClass.simpleName
             return errorResult("Processing error: ${e.message}", debugInfo)
         } finally {
             // Guaranteed cleanup
@@ -589,6 +898,7 @@ class OmrProcessor {
             )
 
             if (corners == null || !corners.isValid()) {
+                val failureReason = classifyCornerFailure(imageQuality, debugInfo)
                 val confidence = (
                     normalizedBrightness(imageQuality.brightnessScore) * 0.35 +
                         imageQuality.contrastScore.coerceIn(0.0, 1.0) * 0.25 +
@@ -600,7 +910,7 @@ class OmrProcessor {
                     isAligned = false,
                     hasGoodLighting = hasGoodLighting,
                     confidence = confidence,
-                    hint = buildPreCaptureHint(imageQuality)
+                    hint = buildPreCaptureHint(imageQuality, failureReason)
                 )
             }
 
@@ -723,10 +1033,14 @@ class OmrProcessor {
             inJustDecodeBounds = true
         }
         BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null
+        }
 
         val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
         var sampleSize = 1
-        while (maxDim / sampleSize > maxDimension * 2) {
+        // Decode near the target size — avoid loading a full 12MP bitmap then shrinking.
+        while (maxDim / sampleSize > maxDimension) {
             sampleSize *= 2
         }
 
@@ -734,7 +1048,13 @@ class OmrProcessor {
             inJustDecodeBounds = false
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.RGB_565
+            inDither = true
         }
+
+        Log.d(
+            TAG,
+            "Decode ${bounds.outWidth}x${bounds.outHeight} sample=$sampleSize targetMax=$maxDimension",
+        )
 
         val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
             ?: return null
@@ -805,13 +1125,89 @@ class OmrProcessor {
         return (blurScore / (MIN_BLUR_THRESHOLD * 2.0)).coerceIn(0.0, 1.0)
     }
 
-    private fun buildPreCaptureHint(quality: ImageQuality): String {
-        return when {
-            quality.brightnessScore < 60 -> "Improve lighting"
-            quality.brightnessScore > 230 -> "Reduce glare"
-            quality.blurScore < MIN_BLUR_THRESHOLD * 0.6 -> "Hold steady"
-            quality.contrastScore < 0.15 -> "Improve sheet contrast"
-            else -> "Position sheet in frame"
+    private fun buildPreCaptureHint(quality: ImageQuality, failureReason: String? = null): String {
+        return when (failureReason) {
+            "NO_SHEET" -> "No answer sheet detected"
+            "CORNERS_INCOMPLETE" -> "Show all four corner squares"
+            "TOO_BLURRY" -> "Hold steady — image blurry"
+            "TOO_DARK" -> "Too dark — tap Light or add a lamp"
+            "TOO_BRIGHT" -> "Reduce glare"
+            "LOW_CONTRAST" -> "Improve sheet contrast"
+            "NOISY_IMAGE" -> "Clean lens and retry"
+            else -> when {
+                quality.brightnessScore < 60 -> "Improve lighting"
+                quality.brightnessScore > 230 -> "Reduce glare"
+                quality.blurScore < MIN_BLUR_THRESHOLD * 0.6 -> "Hold steady"
+                quality.contrastScore < 0.15 -> "Improve sheet contrast"
+                else -> "Position answer sheet in frame"
+            }
+        }
+    }
+
+    /**
+     * Classify why corner detection failed so Flutter can show a specific message.
+     */
+    private fun classifyCornerFailure(
+        quality: ImageQuality,
+        debugInfo: MutableMap<String, Any>
+    ): String {
+        if (quality.blurScore < MIN_BLUR_THRESHOLD * 0.3) return "TOO_BLURRY"
+        if (quality.brightnessScore < 50) return "TOO_DARK"
+        if (quality.brightnessScore > 230) return "TOO_BRIGHT"
+        if (quality.contrastScore < 0.15) return "LOW_CONTRAST"
+        if (quality.noiseScore > NOISE_THRESHOLD * 2) return "NOISY_IMAGE"
+
+        val missing = debugInfo["missingQuadrants"]
+        if (missing is List<*> && missing.isNotEmpty()) return "CORNERS_INCOMPLETE"
+
+        val candidates = (debugInfo["balancedCandidates"] as? Number)?.toInt() ?: 0
+        val cornerVia = debugInfo["cornerDetectionSucceededVia"]?.toString()
+        if (candidates < 2 && cornerVia == "none") return "NO_SHEET"
+
+        return "CORNERS_INCOMPLETE"
+    }
+
+    /**
+     * Build a helpful error message based on image quality and detection context.
+     */
+    private fun buildCornerDetectionErrorMessage(
+        quality: ImageQuality,
+        debugInfo: MutableMap<String, Any>,
+        failureReason: String
+    ): String {
+        return when (failureReason) {
+            "NO_SHEET" ->
+                "No answer sheet detected. Point the camera at a printed OMR page with all four black corner squares visible."
+            "CORNERS_INCOMPLETE" ->
+                "Corner markers not fully visible. Move back so the entire sheet fits in the frame, including all four corner squares."
+            "TOO_BLURRY" ->
+                "Image is too blurry. Hold your phone steady and tap to focus before capturing."
+            "TOO_DARK" ->
+                "Image is too dark. Move to a brighter area or turn on a light."
+            "TOO_BRIGHT" ->
+                "Image is overexposed. Reduce lighting or avoid direct light on the sheet."
+            "LOW_CONTRAST" ->
+                "Cannot distinguish the sheet from the background. Lay the paper flat with even lighting."
+            "NOISY_IMAGE" ->
+                "Image is very noisy. Clean your camera lens and ensure good lighting."
+            else ->
+                "Could not detect all 4 corner markers. Ensure the entire sheet is visible with good lighting."
+        }
+    }
+
+    private fun buildTimingMarkErrorMessage(
+        timingMarkScore: Double,
+        debugInfo: MutableMap<String, Any>
+    ): String {
+        val found = debugInfo["timingMarksFound"]
+        val expected = debugInfo["timingMarksExpected"]
+        val pct = (timingMarkScore * 100).toInt()
+        return if (found is Number && expected is Number && expected.toInt() > 0) {
+            "Timing marks not clear enough ($pct% — ${found.toInt()} of ${expected.toInt()}). " +
+                "Align the sheet edges with the green tick guides and keep the page flat."
+        } else {
+            "Timing marks not clear enough ($pct%). " +
+                "Align the sheet edges with the green tick guides. Re-print at 100% scale if the sheet was shrunk."
         }
     }
 
@@ -915,18 +1311,26 @@ class OmrProcessor {
      * Applies adaptive techniques based on detected issues
      */
     private fun enhanceImageForLowQualityCamera(grayMat: Mat, quality: ImageQuality) {
-        // 1. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for low contrast
-        if (quality.contrastScore < 0.4) {
+        val veryDark = quality.brightnessScore < 55.0
+        val dark = quality.brightnessScore < DARK_CAPTURE_BRIGHTNESS
+
+        // 1. CLAHE for low contrast or dark captures
+        if (quality.contrastScore < 0.4 || dark) {
             Log.d(TAG, "Applying CLAHE for contrast enhancement")
-            val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+            val clipLimit = if (veryDark) 2.5 else 2.0
+            val clahe = Imgproc.createCLAHE(clipLimit, Size(8.0, 8.0))
             clahe.apply(grayMat, grayMat)
         }
         
         // 2. Adjust brightness if too dark or too bright
-        if (quality.brightnessScore < 80) {
-            // Image is dark - brighten it
-            val alpha = 1.2  // Contrast multiplier
-            val beta = 40.0   // Brightness addition
+        if (veryDark) {
+            val alpha = 1.45
+            val beta = 65.0
+            grayMat.convertTo(grayMat, -1, alpha, beta)
+            Log.d(TAG, "Applied strong brightness correction (very dark image)")
+        } else if (dark) {
+            val alpha = 1.28
+            val beta = 48.0
             grayMat.convertTo(grayMat, -1, alpha, beta)
             Log.d(TAG, "Applied brightness correction (dark image)")
         } else if (quality.brightnessScore > 200) {
@@ -963,23 +1367,10 @@ class OmrProcessor {
     }
     
     /**
-     * Build a helpful error message based on image quality issues
+     * Build a helpful error message based on image quality issues (legacy callers).
      */
     private fun buildCornerDetectionErrorMessage(quality: ImageQuality): String {
-        return when {
-            quality.blurScore < MIN_BLUR_THRESHOLD * 0.3 -> 
-                "Image is too blurry. Hold your phone steady and tap to focus before capturing."
-            quality.brightnessScore < 50 ->
-                "Image is too dark. Move to a brighter area or turn on a light."
-            quality.brightnessScore > 230 ->
-                "Image is overexposed. Reduce lighting or avoid direct light on the sheet."
-            quality.contrastScore < 0.15 ->
-                "Cannot distinguish the sheet. Ensure the paper is flat with even lighting."
-            quality.noiseScore > NOISE_THRESHOLD * 2 ->
-                "Image is very noisy. Clean your camera lens and ensure good lighting."
-            else ->
-                "Could not detect all 4 corner markers. Ensure the entire sheet is visible with good lighting."
-        }
+        return buildCornerDetectionErrorMessage(quality, mutableMapOf(), classifyCornerFailure(quality, mutableMapOf()))
     }
     
     /**
@@ -1006,20 +1397,30 @@ class OmrProcessor {
             }
         }
         
+        if (corners != null && corners.isValid()) {
+            debugInfo["cornerDetectionSucceededVia"] = debugInfo["cornerMethod"] ?: "primary"
+            return corners
+        }
+        
         // If primary method failed, try multi-threshold approach (good for low-quality cameras)
-        if (corners == null || !corners.isValid()) {
-            Log.d(TAG, "Primary corner detection failed, trying multi-threshold approach")
-            debugInfo["usingMultiThreshold"] = true
-            corners = detectCornersMultiThreshold(grayMat, width, height, debugInfo)
+        Log.d(TAG, "Primary corner detection failed, trying multi-threshold approach")
+        debugInfo["usingMultiThreshold"] = true
+        corners = detectCornersMultiThreshold(grayMat, width, height, debugInfo)
+        if (corners != null && corners.isValid()) {
+            debugInfo["cornerDetectionSucceededVia"] = "multiThreshold"
+            return corners
         }
         
         // Last resort: edge-based detection
-        if (corners == null || !corners.isValid()) {
-            Log.d(TAG, "Multi-threshold failed, trying edge-based detection")
-            debugInfo["usingEdgeDetection"] = true
-            corners = detectCornersEdgeBased(grayMat, width, height, debugInfo)
+        Log.d(TAG, "Multi-threshold failed, trying edge-based detection")
+        debugInfo["usingEdgeDetection"] = true
+        corners = detectCornersEdgeBased(grayMat, width, height, debugInfo)
+        if (corners != null && corners.isValid()) {
+            debugInfo["cornerDetectionSucceededVia"] = "edge"
+            return corners
         }
         
+        debugInfo["cornerDetectionSucceededVia"] = "none"
         return corners
     }
     
@@ -1030,7 +1431,7 @@ class OmrProcessor {
     private fun detectCornersMultiThreshold(grayMat: Mat, width: Double, height: Double,
                                              debugInfo: MutableMap<String, Any>): DetectedCorners? {
         // Try multiple fixed threshold values
-        val thresholds = listOf(80.0, 100.0, 120.0, 140.0, 160.0)
+        val thresholds = listOf(60.0, 70.0, 80.0, 100.0, 120.0, 140.0, 160.0)
         
         for (threshold in thresholds) {
             val binaryMat = Mat()
@@ -1144,43 +1545,39 @@ class OmrProcessor {
         val width = grayMat.cols().toDouble()
         val height = grayMat.rows().toDouble()
         
-        // Use simple Gaussian blur instead of expensive bilateral filter
+        // Gentle blur to suppress sensor noise before binarizing.
         val blurredMat = Mat()
         Imgproc.GaussianBlur(grayMat, blurredMat, Size(5.0, 5.0), 0.0)
         
-        // Apply Otsu threshold
+        // Adaptive threshold handles uneven desk lighting / shadow / glare far better
+        // than a single global Otsu cutoff (the most lighting-sensitive step before).
         val binaryMat = Mat()
-        Imgproc.threshold(blurredMat, binaryMat, 0.0, 255.0, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
+        val block = adaptiveBlockSize(width, height)
+        debugInfo["cornerAdaptiveBlock"] = block
+        Imgproc.adaptiveThreshold(
+            blurredMat, binaryMat,
+            255.0,
+            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+            Imgproc.THRESH_BINARY_INV,
+            block, 8.0
+        )
+        // Solidify the black marker squares (adaptive can leave hollow edges).
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+        Imgproc.morphologyEx(binaryMat, binaryMat, Imgproc.MORPH_CLOSE, kernel)
+        kernel.release()
         
-        // Find contours (RETR_EXTERNAL is faster than RETR_TREE)
-        val contours = mutableListOf<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(binaryMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        var markerCandidates = collectCornerCandidates(binaryMat, width, height, debugInfo)
         
-        val markerCandidates = mutableListOf<Point>()
-        
-        for (contour in contours) {
-            val area = Imgproc.contourArea(contour)
-            
-            // Filter by expected marker area
-            val expectedArea = (width * CORNER_MARKER_SIZE / OUTPUT_WIDTH) * (height * CORNER_MARKER_SIZE / OUTPUT_HEIGHT)
-            if (area < expectedArea * 0.3 || area > expectedArea * 4) continue
-            
-            // Check aspect ratio
-            val rect = Imgproc.boundingRect(contour)
-            val aspectRatio = rect.width.toDouble() / rect.height.toDouble()
-            if (aspectRatio < 0.7 || aspectRatio > 1.4) continue
-            
-            // Add center as candidate
-            markerCandidates.add(Point(
-                rect.x + rect.width / 2.0,
-                rect.y + rect.height / 2.0
-            ))
+        // If adaptive under-detects (e.g. very flat, uniform lighting), retry once
+        // with Otsu so we never regress versus the old behavior.
+        if (markerCandidates.size < 4) {
+            debugInfo["balancedOtsuRetry"] = true
+            Imgproc.threshold(blurredMat, binaryMat, 0.0, 255.0, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
+            markerCandidates = collectCornerCandidates(binaryMat, width, height, debugInfo)
         }
         
         blurredMat.release()
         binaryMat.release()
-        hierarchy.release()
         
         debugInfo["balancedCandidates"] = markerCandidates.size
         
@@ -1189,6 +1586,57 @@ class OmrProcessor {
         }
         
         return assignCornersFromCandidates(markerCandidates, width, height, debugInfo)
+    }
+    
+    /** Odd adaptive-threshold block size scaled to the working image. */
+    private fun adaptiveBlockSize(width: Double, height: Double): Int {
+        val approx = (minOf(width, height) / 25.0).toInt()
+        val odd = if (approx % 2 == 0) approx + 1 else approx
+        return odd.coerceIn(11, 51)
+    }
+    
+    /**
+     * Find corner-marker candidates in a binary image using loosened area/aspect
+     * tolerances. Records per-reason rejection counts in debugInfo so a single scan
+     * is diagnosable without adb logcat.
+     */
+    private fun collectCornerCandidates(binaryMat: Mat, width: Double, height: Double,
+                                        debugInfo: MutableMap<String, Any>): List<Point> {
+        val contours = mutableListOf<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(binaryMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        
+        val candidates = mutableListOf<Point>()
+        val expectedArea = (width * CORNER_MARKER_SIZE / OUTPUT_WIDTH) * (height * CORNER_MARKER_SIZE / OUTPUT_HEIGHT)
+        
+        var rejectAreaLow = 0
+        var rejectAreaHigh = 0
+        var rejectAspect = 0
+        
+        for (contour in contours) {
+            val area = Imgproc.contourArea(contour)
+            // Loosened area window: sheets that don't fill the frame make markers much
+            // smaller than the full-frame estimate; perspective skew makes them larger.
+            if (area < expectedArea * 0.12) { rejectAreaLow++; continue }
+            if (area > expectedArea * 8.0) { rejectAreaHigh++; continue }
+            
+            val rect = Imgproc.boundingRect(contour)
+            val aspectRatio = rect.width.toDouble() / rect.height.toDouble()
+            // Loosened aspect window: skew squashes squares into rectangles.
+            if (aspectRatio < 0.55 || aspectRatio > 1.8) { rejectAspect++; continue }
+            
+            candidates.add(Point(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0))
+        }
+        
+        hierarchy.release()
+        
+        debugInfo["contourCount"] = contours.size
+        debugInfo["rejectAreaLow"] = rejectAreaLow
+        debugInfo["rejectAreaHigh"] = rejectAreaHigh
+        debugInfo["rejectAspect"] = rejectAspect
+        debugInfo["expectedMarkerArea"] = expectedArea
+        
+        return candidates
     }
     
     /**
@@ -1327,9 +1775,21 @@ class OmrProcessor {
      * Find a corner marker within a small region
      */
     private fun findCornerMarkerInRegion(roi: Mat): Point? {
-        // Apply threshold
+        // Adaptive threshold (matches the main corner pass) so a shadowed or
+        // glare-hit corner ROI still binarizes the marker cleanly.
         val binary = Mat()
-        Imgproc.threshold(roi, binary, 0.0, 255.0, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
+        val block = adaptiveBlockSize(roi.cols().toDouble(), roi.rows().toDouble())
+        Imgproc.adaptiveThreshold(
+            roi, binary,
+            255.0,
+            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+            Imgproc.THRESH_BINARY_INV,
+            block, 8.0
+        )
+        // Remove speckle noise that adaptive threshold produces on blank paper.
+        val openKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, openKernel)
+        openKernel.release()
         
         // Find contours
         val contours = mutableListOf<MatOfPoint>()
@@ -1373,18 +1833,54 @@ class OmrProcessor {
      */
     private fun assignCornersFromCandidates(candidates: List<Point>, width: Double, height: Double,
                                              debugInfo: MutableMap<String, Any>): DetectedCorners? {
-        // Find the candidate closest to each corner
-        val topLeft = candidates.filter { it.x < width * 0.3 && it.y < height * 0.3 }
-            .minByOrNull { it.x + it.y }
-        val topRight = candidates.filter { it.x > width * 0.7 && it.y < height * 0.3 }
-            .minByOrNull { (width - it.x) + it.y }
-        val bottomLeft = candidates.filter { it.x < width * 0.3 && it.y > height * 0.7 }
-            .minByOrNull { it.x + (height - it.y) }
-        val bottomRight = candidates.filter { it.x > width * 0.7 && it.y > height * 0.7 }
-            .minByOrNull { (width - it.x) + (height - it.y) }
+        // Overlapping bands (0.38 / 0.62) are forgiving of off-centre framing
+        // and skewed phone angles.
+        val leftBand = width * 0.38
+        val rightBand = width * 0.62
+        val topBand = height * 0.38
+        val botBand = height * 0.62
+        
+        val tlQuad = candidates.filter { it.x < leftBand && it.y < topBand }
+        val trQuad = candidates.filter { it.x > rightBand && it.y < topBand }
+        val blQuad = candidates.filter { it.x < leftBand && it.y > botBand }
+        val brQuad = candidates.filter { it.x > rightBand && it.y > botBand }
+        
+        debugInfo["quadrantCountTL"] = tlQuad.size
+        debugInfo["quadrantCountTR"] = trQuad.size
+        debugInfo["quadrantCountBL"] = blQuad.size
+        debugInfo["quadrantCountBR"] = brQuad.size
+        
+        // Prefer the best candidate inside the expected band...
+        var topLeft = tlQuad.minByOrNull { it.x + it.y }
+        var topRight = trQuad.minByOrNull { (width - it.x) + it.y }
+        var bottomLeft = blQuad.minByOrNull { it.x + (height - it.y) }
+        var bottomRight = brQuad.minByOrNull { (width - it.x) + (height - it.y) }
+        
+        // ...but if a band is empty (skew / partial framing), fall back to the overall
+        // candidate nearest that physical corner instead of failing the whole detection.
+        val usedNearestFallback = mutableListOf<String>()
+        if (topLeft == null) { topLeft = candidates.minByOrNull { it.x + it.y }; usedNearestFallback.add("TL") }
+        if (topRight == null) { topRight = candidates.minByOrNull { (width - it.x) + it.y }; usedNearestFallback.add("TR") }
+        if (bottomLeft == null) { bottomLeft = candidates.minByOrNull { it.x + (height - it.y) }; usedNearestFallback.add("BL") }
+        if (bottomRight == null) { bottomRight = candidates.minByOrNull { (width - it.x) + (height - it.y) }; usedNearestFallback.add("BR") }
+        if (usedNearestFallback.isNotEmpty()) {
+            debugInfo["cornerNearestFallback"] = usedNearestFallback
+        }
         
         if (topLeft == null || topRight == null || bottomLeft == null || bottomRight == null) {
             debugInfo["cornerAssignmentFailed"] = true
+            debugInfo["missingQuadrants"] = listOf(
+                "TL" to (topLeft == null), "TR" to (topRight == null),
+                "BL" to (bottomLeft == null), "BR" to (bottomRight == null)
+            ).filter { it.second }.map { it.first }
+            return null
+        }
+        
+        // Guard against the nearest-fallback assigning the same point to two corners.
+        val chosen = listOf(topLeft, topRight, bottomLeft, bottomRight)
+        val distinctCount = chosen.distinctBy { "${it.x.toInt()},${it.y.toInt()}" }.size
+        if (distinctCount < 4) {
+            debugInfo["cornerAssignmentDuplicate"] = true
             return null
         }
         
@@ -1429,14 +1925,22 @@ class OmrProcessor {
         var foundMarks = 0
         var expectedMarks = 0
         
+        // Adaptive threshold (same approach as bubble detection) is robust to the
+        // uneven lighting that a single global Otsu cutoff mishandles at the edges.
         val binary = Mat()
-        Imgproc.threshold(warpedMat, binary, 0.0, 255.0, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU)
+        Imgproc.adaptiveThreshold(
+            warpedMat, binary,
+            255.0,
+            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+            Imgproc.THRESH_BINARY_INV,
+            15, 8.0
+        )
         
         // Check top edge timing marks
         var x = 60.0
         while (x < 535) {
             expectedMarks++
-            if (checkTimingMark(binary, x, TIMING_MARK_EDGE_OFFSET)) {
+            if (checkTimingMark(binary, warpedMat, x, TIMING_MARK_EDGE_OFFSET)) {
                 foundMarks++
             }
             x += TIMING_MARK_SPACING
@@ -1446,7 +1950,7 @@ class OmrProcessor {
         x = 60.0
         while (x < 535) {
             expectedMarks++
-            if (checkTimingMark(binary, x, OUTPUT_HEIGHT - TIMING_MARK_EDGE_OFFSET)) {
+            if (checkTimingMark(binary, warpedMat, x, OUTPUT_HEIGHT - TIMING_MARK_EDGE_OFFSET)) {
                 foundMarks++
             }
             x += TIMING_MARK_SPACING
@@ -1456,7 +1960,7 @@ class OmrProcessor {
         var y = 60.0
         while (y < 780) {
             expectedMarks++
-            if (checkTimingMark(binary, TIMING_MARK_EDGE_OFFSET, y)) {
+            if (checkTimingMark(binary, warpedMat, TIMING_MARK_EDGE_OFFSET, y)) {
                 foundMarks++
             }
             y += TIMING_MARK_SPACING
@@ -1466,7 +1970,7 @@ class OmrProcessor {
         y = 60.0
         while (y < 780) {
             expectedMarks++
-            if (checkTimingMark(binary, OUTPUT_WIDTH - TIMING_MARK_EDGE_OFFSET, y)) {
+            if (checkTimingMark(binary, warpedMat, OUTPUT_WIDTH - TIMING_MARK_EDGE_OFFSET, y)) {
                 foundMarks++
             }
             y += TIMING_MARK_SPACING
@@ -1483,8 +1987,8 @@ class OmrProcessor {
     /**
      * Check if a timing mark exists at the given position
      */
-    private fun checkTimingMark(binary: Mat, x: Double, y: Double): Boolean {
-        val radius = (TIMING_MARK_SIZE / 2 + 2).toInt()
+    private fun checkTimingMark(binary: Mat, gray: Mat, x: Double, y: Double): Boolean {
+        val radius = (TIMING_MARK_SIZE / 2 + 3).toInt()
         val cx = x.toInt().coerceIn(radius, binary.cols() - radius - 1)
         val cy = y.toInt().coerceIn(radius, binary.rows() - radius - 1)
         
@@ -1492,54 +1996,232 @@ class OmrProcessor {
         val whitePixels = Core.countNonZero(roi)
         val totalPixels = roi.rows() * roi.cols()
         roi.release()
-        
-        // Timing mark should have significant fill
-        return whitePixels.toDouble() / totalPixels > 0.15
+        val binaryFill = whitePixels.toDouble() / totalPixels
+
+        val grayRoi = Mat(gray, Rect(cx - radius, cy - radius, radius * 2, radius * 2))
+        val mean = Core.mean(grayRoi).`val`[0]
+        grayRoi.release()
+        val intensityFill = 1.0 - (mean / 255.0)
+
+        // Accept either binary ink density or dark gray intensity (soft / blurry marks).
+        return binaryFill > 0.10 || intensityFill > 0.42
     }
     
     /**
      * Detect and decode QR code from the header area
      */
+    /**
+     * Decode the sheet QR straight from the full-resolution capture.
+     *
+     * The graded warp is only [OUTPUT_WIDTH]x[OUTPUT_HEIGHT], so the printed QR
+     * lands on ~80px there — under 2 pixels per module. Here we reuse the corner
+     * homography but map ONLY the QR box to a magnified output, so the crop is
+     * sampled from original camera pixels instead of an already-shrunken image.
+     */
+    private fun decodeQrFromSourceFrame(
+        srcGray: Mat,
+        corners: DetectedCorners,
+        debugInfo: MutableMap<String, Any>,
+    ): String? {
+        val markerCenterOffset = CORNER_OFFSET + (CORNER_MARKER_SIZE / 2.0)
+        val boxWidth = QR_BOX_RIGHT - QR_BOX_LEFT
+        val boxHeight = QR_BOX_BOTTOM - QR_BOX_TOP
+
+        for (scale in QR_SOURCE_CROP_SCALES) {
+            val outWidth = (boxWidth * scale).toInt()
+            val outHeight = (boxHeight * scale).toInt()
+            if (outWidth < 80 || outHeight < 80 || outWidth > 1800 || outHeight > 1800) {
+                continue
+            }
+
+            var srcPoints: MatOfPoint2f? = null
+            var dstPoints: MatOfPoint2f? = null
+            var transform: Mat? = null
+            val cropped = Mat()
+            try {
+                srcPoints = MatOfPoint2f(
+                    corners.topLeft,
+                    corners.topRight,
+                    corners.bottomRight,
+                    corners.bottomLeft,
+                )
+                // Page point -> magnified QR-box pixel.
+                fun dst(x: Double, y: Double) = Point(
+                    x * scale - QR_BOX_LEFT * scale,
+                    y * scale - QR_BOX_TOP * scale,
+                )
+                dstPoints = MatOfPoint2f(
+                    dst(markerCenterOffset, markerCenterOffset),
+                    dst(OUTPUT_WIDTH - markerCenterOffset, markerCenterOffset),
+                    dst(OUTPUT_WIDTH - markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
+                    dst(markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
+                )
+
+                transform = Imgproc.getPerspectiveTransform(srcPoints, dstPoints)
+                Imgproc.warpPerspective(
+                    srcGray,
+                    cropped,
+                    transform,
+                    Size(outWidth.toDouble(), outHeight.toDouble()),
+                    Imgproc.INTER_CUBIC,
+                )
+
+                val decoded = decodeQrFromGrayMat(
+                    cropped,
+                    debugInfo,
+                    "src${scale.toInt()}x",
+                    upscaleVariants = false,
+                )
+                if (!decoded.isNullOrEmpty()) {
+                    debugInfo["qrDecodePath"] = "sourceCrop${scale.toInt()}x"
+                    return decoded
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Source-resolution QR crop failed: ${e.message}")
+            } finally {
+                cropped.release()
+                transform?.release()
+                srcPoints?.release()
+                dstPoints?.release()
+            }
+        }
+
+        // Last resort at source scale: let ML Kit hunt the whole frame.
+        return decodeQrWithMlKit(srcGray)?.also {
+            debugInfo["qrDecodePath"] = "sourceFullFrame"
+            debugInfo["qrEngine"] = "mlkit"
+        }
+    }
+
     private fun detectQRCode(warpedMat: Mat, debugInfo: MutableMap<String, Any>): String? {
         try {
-            // QR code is in the top-right area of the header
-            val qrRegion = Rect(
-                (OUTPUT_WIDTH * 0.7).toInt(),
-                MARGIN_TOP.toInt(),
-                (OUTPUT_WIDTH * 0.25).toInt(),
-                100
+            // Top-right header where the printed QR lives (≈80pt on 595-wide page).
+            val regions = listOf(
+                Rect(
+                    (OUTPUT_WIDTH * 0.62).toInt(),
+                    max(0, MARGIN_TOP.toInt() - 4),
+                    (OUTPUT_WIDTH * 0.36).toInt(),
+                    130,
+                ),
+                Rect(
+                    (OUTPUT_WIDTH * 0.55).toInt(),
+                    0,
+                    (OUTPUT_WIDTH * 0.45).toInt(),
+                    160,
+                ),
             )
-            
-            // Ensure region is within bounds
-            val safeRegion = Rect(
-                qrRegion.x.coerceIn(0, warpedMat.cols() - 1),
-                qrRegion.y.coerceIn(0, warpedMat.rows() - 1),
-                qrRegion.width.coerceAtMost(warpedMat.cols() - qrRegion.x),
-                qrRegion.height.coerceAtMost(warpedMat.rows() - qrRegion.y)
-            )
-            
-            val qrRoi = Mat(warpedMat, safeRegion)
-            val qrData = qrDetector.detectAndDecode(qrRoi)
-            qrRoi.release()
-            
-            if (qrData.isNotEmpty()) {
-                Log.d(TAG, "QR Code detected: $qrData")
-                return qrData
+
+            for ((index, qrRegion) in regions.withIndex()) {
+                val safeRegion = Rect(
+                    qrRegion.x.coerceIn(0, warpedMat.cols() - 1),
+                    qrRegion.y.coerceIn(0, warpedMat.rows() - 1),
+                    qrRegion.width.coerceAtMost(warpedMat.cols() - qrRegion.x),
+                    qrRegion.height.coerceAtMost(warpedMat.rows() - qrRegion.y),
+                )
+                if (safeRegion.width < 40 || safeRegion.height < 40) continue
+
+                val qrRoi = Mat(warpedMat, safeRegion)
+                val decoded = decodeQrFromGrayMat(qrRoi, debugInfo, "roi$index")
+                qrRoi.release()
+                if (!decoded.isNullOrEmpty()) {
+                    Log.d(TAG, "QR Code detected via roi$index")
+                    debugInfo["qrDecodePath"] = "roi$index"
+                    return decoded
+                }
             }
-            
-            // Try full image if region detection failed
-            val fullQrData = qrDetector.detectAndDecode(warpedMat)
-            if (fullQrData.isNotEmpty()) {
-                Log.d(TAG, "QR Code detected (full scan): $fullQrData")
-                return fullQrData
+
+            val fullDecoded = decodeQrFromGrayMat(warpedMat, debugInfo, "full")
+            if (!fullDecoded.isNullOrEmpty()) {
+                Log.d(TAG, "QR Code detected (full scan)")
+                debugInfo["qrDecodePath"] = "full"
+                return fullDecoded
             }
-            
         } catch (e: Exception) {
             Log.w(TAG, "QR detection error: ${e.message}")
             debugInfo["qrError"] = e.message ?: "Unknown"
         }
-        
+
         return null
+    }
+
+    /**
+     * Try ML Kit first (best on phone photos), then OpenCV with upscaled / CLAHE variants.
+     */
+    private fun decodeQrFromGrayMat(
+        gray: Mat,
+        debugInfo: MutableMap<String, Any>,
+        tag: String,
+        upscaleVariants: Boolean = true,
+    ): String? {
+        val mlKit = decodeQrWithMlKit(gray)
+        if (!mlKit.isNullOrEmpty()) {
+            debugInfo["qrEngine"] = "mlkit"
+            debugInfo["qrEngineTag"] = tag
+            return mlKit
+        }
+
+        val variants = buildList {
+            add(gray)
+            // Otsu binarization — printed QR is pure black/white, this removes
+            // paper shading that trips both decoders.
+            val binary = Mat()
+            Imgproc.threshold(gray, binary, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+            add(binary)
+            if (upscaleVariants) {
+                val up2 = Mat()
+                Imgproc.resize(gray, up2, Size(), 2.0, 2.0, Imgproc.INTER_CUBIC)
+                add(up2)
+                val up3 = Mat()
+                Imgproc.resize(gray, up3, Size(), 3.0, 3.0, Imgproc.INTER_CUBIC)
+                add(up3)
+            }
+        }
+
+        try {
+            for ((i, variant) in variants.withIndex()) {
+                if (i > 0) {
+                    val mlVariant = decodeQrWithMlKit(variant)
+                    if (!mlVariant.isNullOrEmpty()) {
+                        debugInfo["qrEngine"] = "mlkit"
+                        debugInfo["qrEngineTag"] = "$tag-v$i"
+                        return mlVariant
+                    }
+                }
+                val decoded = qrDetector.detectAndDecode(variant)
+                if (decoded.isNotEmpty()) {
+                    debugInfo["qrEngine"] = "opencv"
+                    debugInfo["qrEngineTag"] = "$tag-v$i"
+                    return decoded
+                }
+            }
+        } finally {
+            // Release clones only (index 0 is the caller's mat)
+            for (i in 1 until variants.size) {
+                variants[i].release()
+            }
+        }
+        return null
+    }
+
+    private fun decodeQrWithMlKit(gray: Mat): String? {
+        var bitmap: Bitmap? = null
+        return try {
+            bitmap = Bitmap.createBitmap(gray.cols(), gray.rows(), Bitmap.Config.ARGB_8888)
+            Utils.matToBitmap(gray, bitmap)
+            val image = InputImage.fromBitmap(bitmap, 0)
+            val options = BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build()
+            val scanner = BarcodeScanning.getClient(options)
+            val barcodes = Tasks.await(scanner.process(image), 2500, TimeUnit.MILLISECONDS)
+            scanner.close()
+            barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
+        } catch (e: Exception) {
+            Log.d(TAG, "ML Kit QR decode skipped: ${e.message}")
+            null
+        } finally {
+            bitmap?.recycle()
+        }
     }
     
     /**
@@ -1589,6 +2271,48 @@ class OmrProcessor {
     }
 
     /**
+     * Classify QR content as COC / foreign / none.
+     * Returns: "coc" | "coc_legacy" | "foreign" | "none" | "unknown"
+     */
+    private fun classifyQrIdentity(
+        qrData: String?,
+        debugInfo: MutableMap<String, Any>,
+    ): String {
+        if (qrData.isNullOrBlank()) {
+            return "none"
+        }
+        val trimmed = qrData.trim()
+        if (!trimmed.startsWith("{")) {
+            debugInfo["sheetQrKind"] = "non_json"
+            return "foreign"
+        }
+        return try {
+            val json = JSONObject(trimmed)
+            val appCompact = json.optString("a", "").trim()
+            val appVerbose = json.optString("app", "").trim()
+            val app = appCompact.ifEmpty { appVerbose }
+            when {
+                app.equals("coc-omr", ignoreCase = true) -> "coc"
+                app.isNotEmpty() -> {
+                    debugInfo["sheetQrForeignApp"] = app
+                    "foreign"
+                }
+                (json.has("id") || json.has("sheetId")) &&
+                    (json.has("sn") || json.has("subjectName")) &&
+                    (json.has("q") || json.has("questions")) -> "coc_legacy"
+                (json.has("l") || json.has("layout")) && json.optInt("v", 0) >= 2 -> "coc_legacy"
+                else -> {
+                    debugInfo["sheetQrKind"] = "json_unknown"
+                    "foreign"
+                }
+            }
+        } catch (_: Exception) {
+            debugInfo["sheetQrKind"] = "json_parse_error"
+            "unknown"
+        }
+    }
+
+    /**
      * Parse layout metadata from QR payload v2
      * Returns null if QR data is v1 (no layout) or parsing fails
      */
@@ -1605,17 +2329,28 @@ class OmrProcessor {
                 return null
             }
             
-            val layoutJson = json.optJSONObject("layout") ?: return null
+            val layoutJson = json.optJSONObject("l")
+                ?: json.optJSONObject("layout")
+                ?: return null
             
+            fun lStr(compact: String, verbose: String, def: String = "") =
+                layoutJson.optString(compact, layoutJson.optString(verbose, def))
+            fun lInt(compact: String, verbose: String, def: Int = 0) =
+                if (layoutJson.has(compact)) layoutJson.optInt(compact, def)
+                else layoutJson.optInt(verbose, def)
+            fun lDbl(compact: String, verbose: String, def: Double = 0.0) =
+                if (layoutJson.has(compact)) layoutJson.optDouble(compact, def)
+                else layoutJson.optDouble(verbose, def)
+
             return QrLayoutMetadata(
-                templateId = layoutJson.optString("template", ""),
-                columns = layoutJson.optInt("cols", 0),
-                rows = layoutJson.optInt("rows", 0),
-                gridTop = layoutJson.optDouble("gridTop", ANSWER_GRID_TOP),
-                gridBottom = layoutJson.optDouble("gridBottom", ANSWER_GRID_BOTTOM),
-                rowHeight = layoutJson.optDouble("rowHeight", 0.0),
-                columnWidth = layoutJson.optDouble("colWidth", 0.0),
-                bubbleSpacingX = layoutJson.optDouble("bubbleSpacingX", 0.0)
+                templateId = lStr("t", "template"),
+                columns = lInt("c", "cols"),
+                rows = lInt("r", "rows"),
+                gridTop = lDbl("gt", "gridTop", ANSWER_GRID_TOP),
+                gridBottom = lDbl("gb", "gridBottom", ANSWER_GRID_BOTTOM),
+                rowHeight = lDbl("rh", "rowHeight"),
+                columnWidth = lDbl("cw", "colWidth"),
+                bubbleSpacingX = lDbl("bx", "bubbleSpacingX")
             ).also {
                 Log.d(TAG, "Parsed QR layout v2: template=${it.templateId}, cols=${it.columns}, rows=${it.rows}, rowHeight=${it.rowHeight}")
             }
@@ -1711,8 +2446,18 @@ class OmrProcessor {
     private fun calibrateFillThreshold(warpedMat: Mat, debugInfo: MutableMap<String, Any>): GridCalibration {
         try {
             // Use fixed calibration mark positions from OmrPageConstants
-            val filledFill = sampleBubbleFill(warpedMat, CALIBRATION_FILLED_X, CALIBRATION_Y)
-            val emptyFill = sampleBubbleFill(warpedMat, CALIBRATION_EMPTY_X, CALIBRATION_Y)
+            val filledFill = sampleBubbleFill(
+                warpedMat,
+                CALIBRATION_FILLED_X,
+                CALIBRATION_Y,
+                CALIBRATION_BUBBLE_SIZE,
+            )
+            val emptyFill = sampleBubbleFill(
+                warpedMat,
+                CALIBRATION_EMPTY_X,
+                CALIBRATION_Y,
+                CALIBRATION_BUBBLE_SIZE,
+            )
             
             debugInfo["calibrationFilledSample"] = filledFill
             debugInfo["calibrationEmptySample"] = emptyFill
@@ -1720,9 +2465,12 @@ class OmrProcessor {
             debugInfo["calibrationEmptyX"] = CALIBRATION_EMPTY_X
             debugInfo["calibrationY"] = CALIBRATION_Y
             
-            // If we got good samples, calculate threshold
+            // If we got good samples, calculate threshold.
+            // Midpoint between solid black and empty paper sits too high for light pencil;
+            // place the cut ~40% up from empty and clamp to a pencil-safe band.
             if (filledFill > emptyFill + 0.10) {
-                val threshold = (filledFill + emptyFill) / 2
+                val gap = filledFill - emptyFill
+                val threshold = (emptyFill + gap * 0.40).coerceIn(0.28, 0.42)
                 Log.d(TAG, "Calibration successful: filled=$filledFill, empty=$emptyFill, threshold=$threshold")
                 return GridCalibration(
                     fillThreshold = threshold,
@@ -1746,8 +2494,13 @@ class OmrProcessor {
     /**
      * Sample the fill percentage of a bubble at a given position
      */
-    private fun sampleBubbleFill(grayMat: Mat, centerX: Double, centerY: Double): Double {
-        val radius = (BUBBLE_DIAMETER / 2 + 2).toInt()
+    private fun sampleBubbleFill(
+        grayMat: Mat,
+        centerX: Double,
+        centerY: Double,
+        diameter: Double = BUBBLE_DIAMETER,
+    ): Double {
+        val radius = (diameter / 2 + 2).toInt()
         val x = (centerX - radius).toInt().coerceIn(0, grayMat.cols() - radius * 2)
         val y = (centerY - radius).toInt().coerceIn(0, grayMat.rows() - radius * 2)
         
@@ -1763,15 +2516,25 @@ class OmrProcessor {
      * Detect OMR ID with validation
      */
     private fun detectOmrIdWithValidation(thresholdMat: Mat, grayMat: Mat, fillThreshold: Double,
-                                           debugInfo: MutableMap<String, Any>): Pair<String, Double>? {
+                                           debugInfo: MutableMap<String, Any>): OmrIdReadResult? {
         // Use fixed OMR ID positions from OmrPageConstants
         debugInfo["omrIdFirstColumnX"] = OMR_ID_FIRST_COLUMN_X
         debugInfo["omrIdFirstRowY"] = OMR_ID_FIRST_ROW_Y
         debugInfo["omrIdColumnSpacing"] = OMR_ID_COLUMN_SPACING
         debugInfo["omrIdRowSpacing"] = OMR_ID_ROW_SPACING
         
-        val digits = StringBuilder()
-        val confidences = mutableListOf<Double>()
+        // Pencil fills often land below the solid-black calibration ceiling (0.42).
+        // Use a slightly lower cut for OMR ID only — answer bubbles keep fillThreshold.
+        val minSeparation = 0.10
+        val nearZeroLevel = fillThreshold * 0.5
+        val omrIdCut = maxOf(nearZeroLevel, fillThreshold - 0.10)
+        debugInfo["omrIdFillCut"] = omrIdCut
+        
+        val bestDigits = IntArray(OMR_ID_COLUMNS) { -1 }
+        val confidences = DoubleArray(OMR_ID_COLUMNS) { 0.0 }
+        val columnStatuses = arrayOfNulls<String>(OMR_ID_COLUMNS)  // "ok" | "ambiguous" | "nearZero"
+        var nearZeroCount = 0
+        var ambiguousCount = 0
         
         for (col in 0 until OMR_ID_COLUMNS) {
             // Fixed column positions from OmrPageConstants
@@ -1784,7 +2547,12 @@ class OmrProcessor {
             for (digit in 0 until OMR_ID_ROWS) {
                 // Fixed row positions from OmrPageConstants
                 val bubbleY = OMR_ID_FIRST_ROW_Y + digit * OMR_ID_ROW_SPACING
-                val result = analyzeBubblePrecise(thresholdMat, grayMat, columnX, bubbleY)
+                // OMR ID rows are only ~12pt apart — use tiny refine (±1) so we do not
+                // pull fill from the neighboring digit bubble.
+                val result = analyzeBubbleWithRefine(
+                    thresholdMat, grayMat, columnX, bubbleY, fillThreshold,
+                    refineRadius = 1,
+                )
                 
                 if (result.fillPercentage > bestFill) {
                     secondBestFill = bestFill
@@ -1795,26 +2563,67 @@ class OmrProcessor {
                 }
             }
             
-            // Validate: best should be significantly higher than second best
-            if (bestDigit >= 0 && bestFill > fillThreshold) {
-                val separation = bestFill - secondBestFill
-                val confidence = minOf(separation / 0.2, 1.0)  // Good if >0.2 separation
-                
-                digits.append(bestDigit)
-                confidences.add(confidence)
-            } else {
-                debugInfo["omrIdColumn${col}Failed"] = mapOf(
-                    "bestFill" to bestFill,
-                    "threshold" to fillThreshold
-                )
-                return null
+            val separation = bestFill - secondBestFill
+            bestDigits[col] = bestDigit
+            confidences[col] = minOf(separation / 0.2, 1.0)  // Good if >0.2 separation
+            
+            val status = when {
+                bestFill < nearZeroLevel -> { nearZeroCount++; "nearZero" }
+                bestDigit >= 0 && bestFill > omrIdCut &&
+                    separation >= minSeparation -> "ok"
+                else -> { ambiguousCount++; "ambiguous" }
             }
+            columnStatuses[col] = status
+            
+            debugInfo["omrIdColumn${col}"] = mapOf(
+                "bestDigit" to bestDigit,
+                "bestFill" to bestFill,
+                "secondFill" to secondBestFill,
+                "status" to status
+            )
         }
         
-        val avgConfidence = confidences.average()
-        debugInfo["omrIdDigitConfidences"] = confidences
+        debugInfo["omrIdColumnStatuses"] = columnStatuses.map { it ?: "unknown" }
+        debugInfo["omrIdNearZeroColumns"] = nearZeroCount
+        debugInfo["omrIdAmbiguousColumns"] = ambiguousCount
+        debugInfo["omrIdDigitConfidences"] = confidences.toList()
         
-        return Pair(digits.toString().padStart(4, '0'), avgConfidence)
+        // Distinct case: nothing filled in any column -> "ID not filled in".
+        if (nearZeroCount == OMR_ID_COLUMNS) {
+            debugInfo["omrIdNotFilled"] = true
+            return null
+        }
+        
+        val problemColumns = nearZeroCount + ambiguousCount
+        
+        // All four columns clean -> full-confidence read.
+        if (problemColumns == 0) {
+            val id = bestDigits.joinToString("") { it.toString() }.padStart(4, '0')
+            return OmrIdReadResult(id, confidences.average(), needsReview = false, ambiguousColumn = -1)
+        }
+        
+        // Exactly one problem column (ambiguous or blank) and the other three clean:
+        // return a best-guess ID flagged for manual review instead of failing.
+        if (problemColumns == 1) {
+            val problemCol = (0 until OMR_ID_COLUMNS).first { columnStatuses[it] != "ok" }
+            // Keep a numeric best guess so roster lookup can still match the student;
+            // the review flag tells the teacher which digit to verify.
+            val id = bestDigits
+                .joinToString("") { if (it >= 0) it.toString() else "0" }
+                .padStart(4, '0')
+            debugInfo["omrIdNeedsReview"] = true
+            debugInfo["omrIdAmbiguousColumn"] = problemCol
+            return OmrIdReadResult(
+                id,
+                confidences.average() * 0.6,
+                needsReview = true,
+                ambiguousColumn = problemCol
+            )
+        }
+        
+        // Two or more unreadable columns -> genuinely unreadable.
+        debugInfo["omrIdUnreadable"] = true
+        return null
     }
     
     /**
@@ -1876,7 +2685,7 @@ class OmrProcessor {
             
             for ((optIdx, option) in options.withIndex()) {
                 val bubbleX = bubbleAreaLeft + (optIdx * bubbleSpacing)
-                val result = analyzeBubblePrecise(thresholdMat, grayMat, bubbleX, rowCenterY)
+                val result = analyzeBubblePrecise(thresholdMat, grayMat, bubbleX, rowCenterY, fillThreshold)
                 optionFills.add(result.fillPercentage)
                 
                 if (result.fillPercentage > bestFill) {
@@ -1936,6 +2745,8 @@ class OmrProcessor {
         
         var multipleSelections = 0
         var noSelections = 0
+        var bestFillSum = 0.0
+        var maxOptionFill = 0.0
         
         // Use fixed positions from layout metadata.
         // gridTop is the actual first-row grid origin on the printed sheet.
@@ -1982,8 +2793,11 @@ class OmrProcessor {
             
             for ((optIdx, option) in options.withIndex()) {
                 val bubbleX = bubbleAreaLeft + (optIdx * bubbleSpacingX)
-                val result = analyzeBubblePrecise(thresholdMat, grayMat, bubbleX, rowCenterY)
+                val result = analyzeBubbleWithRefine(thresholdMat, grayMat, bubbleX, rowCenterY, fillThreshold)
                 optionFills.add(result.fillPercentage)
+                if (result.fillPercentage > maxOptionFill) {
+                    maxOptionFill = result.fillPercentage
+                }
                 
                 if (result.fillPercentage > bestFill) {
                     secondBestFill = bestFill
@@ -1993,6 +2807,7 @@ class OmrProcessor {
                     secondBestFill = result.fillPercentage
                 }
             }
+            bestFillSum += bestFill
             
             // Check for multiple selections
             val filledCount = optionFills.count { it > fillThreshold }
@@ -2017,16 +2832,84 @@ class OmrProcessor {
         debugInfo["multipleSelectionsLayout"] = multipleSelections
         debugInfo["noSelectionsLayout"] = noSelections
         debugInfo["ambiguousQuestions"] = ambiguousQuestions.toList()
+        debugInfo["meanBestOptionFill"] = if (totalQuestions > 0) bestFillSum / totalQuestions else 0.0
+        debugInfo["maxOptionFill"] = maxOptionFill
         
         val avgConfidence = if (confidences.isNotEmpty()) confidences.average() else 0.0
         return Pair(answers, avgConfidence)
     }
     
     /**
-     * Precise bubble analysis with multiple sampling methods
+     * Bubble sample with a capped dark-centroid refine.
+     *
+     * Max-fill search across ±N px is unsafe: answer options are ~17pt apart and OMR ID
+     * digits ~12pt, so maximizing fill slides empty ROIs into neighboring ink and invents
+     * marks. Instead, pull the sample center toward the dark mass only when enough dark
+     * pixels exist inside the search window (true filled bubble), otherwise stay put.
      */
-    private fun analyzeBubblePrecise(thresholdMat: Mat, grayMat: Mat, 
-                                      centerX: Double, centerY: Double): BubbleResult {
+    private fun analyzeBubbleWithRefine(
+        thresholdMat: Mat,
+        grayMat: Mat,
+        centerX: Double,
+        centerY: Double,
+        fillThreshold: Double,
+        refineRadius: Int = BUBBLE_REFINE_RADIUS_PX,
+    ): BubbleResult {
+        val (rx, ry) = darkCentroidOffset(grayMat, centerX, centerY, refineRadius)
+        return analyzeBubblePrecise(
+            thresholdMat,
+            grayMat,
+            centerX + rx,
+            centerY + ry,
+            fillThreshold,
+        )
+    }
+
+    /**
+     * Returns (dx, dy) toward the intensity-weighted dark centroid, capped to [refineRadius].
+     * Returns (0,0) when the window is not dark enough (empty / paper).
+     */
+    private fun darkCentroidOffset(
+        grayMat: Mat,
+        centerX: Double,
+        centerY: Double,
+        refineRadius: Int,
+    ): Pair<Double, Double> {
+        if (refineRadius <= 0) return 0.0 to 0.0
+        val cx = centerX.toInt().coerceIn(refineRadius, grayMat.cols() - refineRadius - 1)
+        val cy = centerY.toInt().coerceIn(refineRadius, grayMat.rows() - refineRadius - 1)
+
+        var sumW = 0.0
+        var sumX = 0.0
+        var sumY = 0.0
+        // Pixels darker than ~paper mid-gray contribute; white paper contributes ~0.
+        for (dy in -refineRadius..refineRadius) {
+            for (dx in -refineRadius..refineRadius) {
+                val v = grayMat.get(cy + dy, cx + dx)[0]
+                val w = (200.0 - v).coerceAtLeast(0.0)
+                if (w <= 0.0) continue
+                sumW += w
+                sumX += dx * w
+                sumY += dy * w
+            }
+        }
+
+        // Empty bubbles / plain paper rarely accumulate enough dark weight.
+        val minWeight = refineRadius * refineRadius * 12.0
+        if (sumW < minWeight) return 0.0 to 0.0
+
+        val dx = (sumX / sumW).coerceIn(-refineRadius.toDouble(), refineRadius.toDouble())
+        val dy = (sumY / sumW).coerceIn(-refineRadius.toDouble(), refineRadius.toDouble())
+        return dx to dy
+    }
+
+    private fun analyzeBubblePrecise(
+        thresholdMat: Mat,
+        grayMat: Mat,
+        centerX: Double,
+        centerY: Double,
+        fillThreshold: Double = DEFAULT_FILL_THRESHOLD,
+    ): BubbleResult {
         val radius = (BUBBLE_DIAMETER / 2 + 1).toInt()
         
         // Ensure within bounds
@@ -2041,7 +2924,9 @@ class OmrProcessor {
         // Method 1: Threshold-based fill
         val threshRoi = Mat(thresholdMat, Rect(x, y, size, size))
         val mask = Mat.zeros(size, size, CvType.CV_8UC1)
-        Imgproc.circle(mask, Point(size / 2.0, size / 2.0), (size * 0.35).toInt(), Scalar(255.0), -1)
+        // Keep mask inside the printed ring so border ink does not inflate empty bubbles.
+        val maskRadius = maxOf(2, (size * 0.32).toInt())
+        Imgproc.circle(mask, Point(size / 2.0, size / 2.0), maskRadius, Scalar(255.0), -1)
         
         val maskedRoi = Mat()
         Core.bitwise_and(threshRoi, mask, maskedRoi)
@@ -2077,12 +2962,141 @@ class OmrProcessor {
         maskedGray.release()
         
         return BubbleResult(
-            filled = combinedFill > DEFAULT_FILL_THRESHOLD,
+            filled = combinedFill > fillThreshold,
             fillPercentage = combinedFill,
             confidence = confidence,
             centerX = centerX,
             centerY = centerY
         )
+    }
+
+    /**
+     * Draw predicted bubble ROIs + chosen answers on the warped page for visual QA.
+     * Stored as a compact JPEG base64 string in [debugInfo].
+     */
+    private fun attachDebugOverlay(
+        warpedMat: Mat,
+        layout: QrLayoutMetadata,
+        answers: Map<Int, String>,
+        fillThreshold: Double,
+        debugInfo: MutableMap<String, Any>,
+    ) {
+        var color: Mat? = null
+        try {
+            color = Mat()
+            Imgproc.cvtColor(warpedMat, color, Imgproc.COLOR_GRAY2BGR)
+            val green = Scalar(40.0, 180.0, 40.0)
+            val red = Scalar(40.0, 40.0, 220.0)
+            val cyan = Scalar(220.0, 180.0, 40.0)
+            val options = listOf("A", "B", "C", "D", "E")
+            val maxQ = minOf(layout.columns * layout.rows, 100)
+
+            for (questionNum in 1..maxQ) {
+                val col = (questionNum - 1) / layout.rows
+                val row = (questionNum - 1) % layout.rows
+                if (col >= layout.columns) break
+                val rowCenterY = layout.gridTop + (row * layout.rowHeight) + (layout.rowHeight / 2)
+                val bubbleAreaWidth = layout.bubbleSpacingX * (ANSWER_OPTIONS - 1)
+                val usableWidth = layout.columnWidth - (ANSWER_COLUMN_INSET * 2)
+                val rowContentWidth = QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP + bubbleAreaWidth
+                val rowContentLeft = (ANSWER_GRID_LEFT + (col * layout.columnWidth)) +
+                    ANSWER_COLUMN_INSET + ((usableWidth - rowContentWidth) / 2)
+                val bubbleAreaLeft = rowContentLeft + QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP
+                val chosen = answers[questionNum]
+                for ((optIdx, option) in options.withIndex()) {
+                    val bubbleX = bubbleAreaLeft + (optIdx * layout.bubbleSpacingX)
+                    val colorScalar = when {
+                        chosen == option -> green
+                        chosen != null -> cyan
+                        else -> red
+                    }
+                    Imgproc.circle(
+                        color,
+                        Point(bubbleX, rowCenterY),
+                        (BUBBLE_DIAMETER / 2).toInt(),
+                        colorScalar,
+                        1,
+                    )
+                }
+            }
+
+            // Timing mark expected sites (top edge sample)
+            var x = 60.0
+            while (x < 535) {
+                Imgproc.circle(
+                    color,
+                    Point(x, TIMING_MARK_EDGE_OFFSET),
+                    (TIMING_MARK_SIZE / 2).toInt(),
+                    Scalar(255.0, 128.0, 0.0),
+                    1,
+                )
+                x += TIMING_MARK_SPACING
+            }
+
+            // OMR ID digit ROIs — teachers need to see what was sampled when ID fails.
+            val amber = Scalar(0.0, 165.0, 255.0)
+            val grey = Scalar(140.0, 140.0, 140.0)
+            for (col in 0 until OMR_ID_COLUMNS) {
+                @Suppress("UNCHECKED_CAST")
+                val colInfo = debugInfo["omrIdColumn$col"] as? Map<String, Any>
+                val bestDigit = (colInfo?.get("bestDigit") as? Number)?.toInt() ?: -1
+                val status = colInfo?.get("status")?.toString() ?: "unknown"
+                val columnX = OMR_ID_FIRST_COLUMN_X + col * OMR_ID_COLUMN_SPACING
+                for (digit in 0 until OMR_ID_ROWS) {
+                    val bubbleY = OMR_ID_FIRST_ROW_Y + digit * OMR_ID_ROW_SPACING
+                    val ring = when {
+                        digit == bestDigit && status == "ok" -> green
+                        digit == bestDigit && status == "ambiguous" -> amber
+                        digit == bestDigit -> red
+                        else -> grey
+                    }
+                    Imgproc.circle(
+                        color,
+                        Point(columnX, bubbleY),
+                        4,
+                        ring,
+                        if (digit == bestDigit) 2 else 1,
+                    )
+                }
+            }
+
+            // Calibration reference bubbles
+            Imgproc.circle(
+                color,
+                Point(CALIBRATION_FILLED_X, CALIBRATION_Y),
+                (BUBBLE_DIAMETER / 2).toInt(),
+                green,
+                1,
+            )
+            Imgproc.circle(
+                color,
+                Point(CALIBRATION_EMPTY_X, CALIBRATION_Y),
+                (BUBBLE_DIAMETER / 2).toInt(),
+                cyan,
+                1,
+            )
+
+            val jpeg = matToJpegBase64(color, quality = 45) ?: return
+            debugInfo["debugOverlayJpegBase64"] = jpeg
+            debugInfo["debugOverlayNote"] =
+                "Green=chosen / ID ok, amber=ID uncertain, cyan=other options, " +
+                    "red=blank answer or weak ID, grey=other ID digits, orange=timing"
+            debugInfo["fillThresholdUsed"] = fillThreshold
+        } catch (e: Exception) {
+            Log.w(TAG, "Debug overlay failed: ${e.message}")
+        } finally {
+            color?.release()
+        }
+    }
+
+    private fun matToJpegBase64(bgrMat: Mat, quality: Int): String? {
+        val bitmap = Bitmap.createBitmap(bgrMat.cols(), bgrMat.rows(), Bitmap.Config.ARGB_8888)
+        Utils.matToBitmap(bgrMat, bitmap)
+        val stream = ByteArrayOutputStream()
+        val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        bitmap.recycle()
+        if (!ok) return null
+        return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
     }
     
     /**

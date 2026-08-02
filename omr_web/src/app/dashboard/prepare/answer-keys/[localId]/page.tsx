@@ -67,9 +67,7 @@ export default function AnswerKeyEditorPage() {
             setAllowMultiAnswer(hasMulti);
           }
         } else {
-          const defaults: AnswerKeyMap = {};
-          for (let i = 1; i <= 50; i++) defaults[String(i)] = "A";
-          setAnswerKey(defaults);
+          setAnswerKey({});
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load.");
@@ -89,7 +87,10 @@ export default function AnswerKeyEditorPage() {
     setAnswerKey((prev) => {
       const next: AnswerKeyMap = {};
       for (let i = 1; i <= count; i++) {
-        next[String(i)] = prev[String(i)] ?? "A";
+        const key = String(i);
+        if (prev[key] !== undefined) {
+          next[key] = prev[key];
+        }
       }
       return next;
     });
@@ -246,7 +247,11 @@ export default function AnswerKeyEditorPage() {
                 <div key={q} className="rounded-xl border border-slate-200 px-2 py-1.5">
                   <div className="mb-1 flex items-center justify-between">
                     <span className="text-xs font-extrabold text-slate-500">{q}</span>
-                    <span className="text-[10px] font-bold text-emerald-700">
+                    <span
+                      className={`text-[10px] font-bold ${
+                        answers.length > 0 ? "text-emerald-700" : "text-amber-700"
+                      }`}
+                    >
                       {formatCorrectAnswer(answerKey[key])}
                     </span>
                   </div>

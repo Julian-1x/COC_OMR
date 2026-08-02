@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:barcode/barcode.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
+import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -12,6 +14,113 @@ class AnswerSheetGenerator {
   static const PdfColor _panelBorder = PdfColors.grey400;
   static const double _panelBorderWidth = 0.55;
   static const PdfColor _mutedInk = PdfColors.grey700;
+
+  static String? _qrOwnerTeacherId(Subject subject) {
+    final fromSubject = subject.ownerTeacherId?.trim();
+    if (fromSubject != null && fromSubject.isNotEmpty) {
+      return fromSubject;
+    }
+    return ApiService.currentUserId?.trim();
+  }
+
+  static String? _qrOwnerTeacherEmail({String? override}) {
+    final fromOverride = override?.trim();
+    if (fromOverride != null && fromOverride.isNotEmpty) {
+      return fromOverride;
+    }
+    final fromApi = ApiService.currentEmail?.trim();
+    if (fromApi != null && fromApi.isNotEmpty) {
+      return fromApi;
+    }
+    return LocalAuthService.instance.cachedTeacherEmail?.trim();
+  }
+
+  static String? _qrOwnerTeacherName({String? override}) {
+    final fromOverride = override?.trim();
+    if (fromOverride != null && fromOverride.isNotEmpty) {
+      return fromOverride;
+    }
+    return LocalAuthService.instance.cachedTeacherName?.trim();
+  }
+
+  static bool _qrPayloadIsCurrent(
+    SubjectSheetQrPayload payload,
+    Subject subject, {
+    String? ownerTeacherEmail,
+  }) {
+    final currentOwner = _qrOwnerTeacherId(subject);
+    final payloadOwner = payload.ownerTeacherId?.trim();
+    if (currentOwner != null && currentOwner.isNotEmpty) {
+      if (payloadOwner == null || payloadOwner.isEmpty) {
+        return false;
+      }
+      if (payloadOwner != currentOwner) {
+        return false;
+      }
+    }
+
+    final expectedEmail = _qrOwnerTeacherEmail(override: ownerTeacherEmail);
+    if (expectedEmail != null && expectedEmail.isNotEmpty) {
+      final payloadEmail = payload.ownerTeacherEmail?.trim();
+      if (payloadEmail == null || payloadEmail.isEmpty) {
+        return false;
+      }
+      if (payloadEmail.toLowerCase() != expectedEmail.toLowerCase()) {
+        return false;
+      }
+    }
+
+    // Teacher name is intentionally not in the QR (keeps the symbol readable),
+    // so it is not part of the currency check.
+
+    final cloudId = subject.cloudId?.trim();
+    if (cloudId != null && cloudId.isNotEmpty) {
+      final payloadCloud = payload.subjectCloudId?.trim();
+      if (payloadCloud == null || payloadCloud.isEmpty) {
+        return false;
+      }
+      if (payloadCloud != cloudId) {
+        return false;
+      }
+    }
+
+    // Force reprint of dense pre-1.5.30 QRs that embedded full layout metadata.
+    if (payload.layout != null) {
+      return false;
+    }
+
+    return true;
+  }
+
+  static SubjectSheetQrPayload _newSheetQrPayload(
+    Subject subject, {
+    String? sectionName,
+    String? sheetId,
+    String? ownerTeacherEmail,
+    String? ownerTeacherName,
+  }) {
+    final resolvedSection = sectionName ??
+        (subject.sectionNames != null && subject.sectionNames!.isNotEmpty
+            ? subject.sectionNames!.first
+            : null);
+
+    return SubjectSheetQrPayload(
+      version: 2,
+      sheetId: sheetId ?? generateUniqueSheetId(),
+      subjectId: subject.id,
+      subjectName: subject.name,
+      totalQuestions: subject.totalQuestions,
+      passingScore: subject.passingScore,
+      sectionName: resolvedSection,
+      examDateIso: subject.examDate?.toIso8601String(),
+      ownerTeacherId: _qrOwnerTeacherId(subject),
+      ownerTeacherEmail: _qrOwnerTeacherEmail(override: ownerTeacherEmail),
+      ownerTeacherName: _qrOwnerTeacherName(override: ownerTeacherName),
+      subjectCloudId: subject.cloudId,
+      // Layout stays in the scanner session, not the QR — denser QR failed on phones.
+      layout: null,
+    );
+  }
 
   /// Generate single OMR sheet (original)
   static Future<void> generateAndPrint({
@@ -135,33 +244,14 @@ class AnswerSheetGenerator {
         resolvedSection == null ? null : subject.sectionQrData[resolvedSection];
     if (cached != null) {
       try {
-        return SubjectSheetQrPayload.fromJson(jsonDecode(cached));
+        final payload = SubjectSheetQrPayload.fromJson(jsonDecode(cached));
+        if (_qrPayloadIsCurrent(payload, subject)) {
+          return payload;
+        }
       } catch (_) {}
     }
 
-    // Get the template for this item count
-    final template = OmrTemplateSpec.forItemCount(subject.totalQuestions);
-
-    return SubjectSheetQrPayload(
-      version: 2, // v2 includes layout metadata
-      sheetId: generateUniqueSheetId(),
-      subjectId: subject.id,
-      subjectName: subject.name,
-      totalQuestions: subject.totalQuestions,
-      passingScore: subject.passingScore,
-      sectionName: resolvedSection,
-      examDateIso: subject.examDate?.toIso8601String(),
-      layout: QrLayoutMetadata(
-        templateId: template.templateId,
-        columns: template.columns,
-        rows: template.rows,
-        gridTop: OmrPageConstants.answerRowsTop,
-        gridBottom: OmrPageConstants.answerRowsBottom,
-        rowHeight: template.rowHeight,
-        columnWidth: template.columnWidth,
-        bubbleSpacingX: template.bubbleSpacingX,
-      ),
-    );
+    return _newSheetQrPayload(subject, sectionName: resolvedSection);
   }
 
   static String buildSheetQrCodeData(
@@ -169,39 +259,19 @@ class AnswerSheetGenerator {
     String? sheetId,
     String? sectionName,
   }) {
-    final resolvedSection = sectionName ??
-        (subject.sectionNames != null && subject.sectionNames!.isNotEmpty
-            ? subject.sectionNames!.first
-            : null);
-    final cached =
-        resolvedSection == null ? null : subject.sectionQrData[resolvedSection];
-    if (cached != null) {
-      return cached;
-    }
-
-    // Get the template for this item count
-    final template = OmrTemplateSpec.forItemCount(subject.totalQuestions);
-
-    final payload = SubjectSheetQrPayload(
-      version: 2, // v2 includes layout metadata
-      sheetId: sheetId ?? generateUniqueSheetId(),
-      subjectId: subject.id,
-      subjectName: subject.name,
-      totalQuestions: subject.totalQuestions,
-      passingScore: subject.passingScore,
-      sectionName: resolvedSection,
-      examDateIso: subject.examDate?.toIso8601String(),
-      layout: QrLayoutMetadata(
-        templateId: template.templateId,
-        columns: template.columns,
-        rows: template.rows,
-        gridTop: OmrPageConstants.answerRowsTop,
-        gridBottom: OmrPageConstants.answerRowsBottom,
-        rowHeight: template.rowHeight,
-        columnWidth: template.columnWidth,
-        bubbleSpacingX: template.bubbleSpacingX,
-      ),
+    final payload = _buildSheetQrPayload(
+      subject,
+      sectionName: sectionName,
     );
+    if (sheetId != null && sheetId != payload.sheetId) {
+      return jsonEncode(
+        _newSheetQrPayload(
+          subject,
+          sectionName: sectionName,
+          sheetId: sheetId,
+        ).toJson(),
+      );
+    }
     return jsonEncode(payload.toJson());
   }
 
@@ -213,31 +283,30 @@ class AnswerSheetGenerator {
     required String sectionName,
     DateTime? examDate,
     String? sheetId,
+    String? ownerTeacherId,
+    String? ownerTeacherEmail,
+    String? ownerTeacherName,
+    String? subjectCloudId,
   }) {
-    // Get the template for this item count
-    final template = OmrTemplateSpec.forItemCount(totalQuestions);
-
-    final payload = SubjectSheetQrPayload(
-      version: 2, // v2 includes layout metadata
-      sheetId: sheetId ?? generateUniqueSheetId(),
-      subjectId: subjectId,
-      subjectName: subjectName,
+    final subject = Subject(
+      id: subjectId,
+      name: subjectName,
+      answerKey: <int, dynamic>{},
       totalQuestions: totalQuestions,
       passingScore: passingScore,
-      sectionName: sectionName,
-      examDateIso: examDate?.toIso8601String(),
-      layout: QrLayoutMetadata(
-        templateId: template.templateId,
-        columns: template.columns,
-        rows: template.rows,
-        gridTop: OmrPageConstants.answerRowsTop,
-        gridBottom: OmrPageConstants.answerRowsBottom,
-        rowHeight: template.rowHeight,
-        columnWidth: template.columnWidth,
-        bubbleSpacingX: template.bubbleSpacingX,
-      ),
+      examDate: examDate,
+      ownerTeacherId: ownerTeacherId,
+      cloudId: subjectCloudId,
     );
-    return jsonEncode(payload.toJson());
+    return jsonEncode(
+      _newSheetQrPayload(
+        subject,
+        sectionName: sectionName,
+        sheetId: sheetId,
+        ownerTeacherEmail: ownerTeacherEmail,
+        ownerTeacherName: ownerTeacherName,
+      ).toJson(),
+    );
   }
 
   static pw.Widget _cornerMarkers(int totalQuestions) {
@@ -724,14 +793,18 @@ class AnswerSheetGenerator {
         ),
         pw.SizedBox(width: 12),
         pw.Container(
-          width: 72,
-          height: 72,
-          padding: const pw.EdgeInsets.all(4),
+          width: OmrPageConstants.qrCodeSize,
+          height: OmrPageConstants.qrCodeSize,
+          padding: const pw.EdgeInsets.all(3),
           decoration: pw.BoxDecoration(
             border: pw.Border.all(width: 0.6, color: _panelBorder),
           ),
           child: pw.BarcodeWidget(
-            barcode: Barcode.qrCode(),
+            // Lowest correction level = fewest modules = biggest, most
+            // camera-readable squares. Laser print quality does not need more.
+            barcode: Barcode.qrCode(
+              errorCorrectLevel: BarcodeQRCorrectionLevel.low,
+            ),
             data: jsonEncode(qrPayload.toJson()),
             drawText: false,
           ),

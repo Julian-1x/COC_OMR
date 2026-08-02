@@ -22,6 +22,8 @@ export default function OmrIdsPage() {
   const [error, setError] = useState<string | null>(null);
   const [pdfNote, setPdfNote] = useState<string | null>(null);
 
+  const sectionParam = searchParams.get("section") ?? "";
+
   useEffect(() => {
     async function load() {
       const api = createBrowserApiClient();
@@ -32,18 +34,17 @@ export default function OmrIdsPage() {
       const names = sectionRows.map((s) => s.name);
       setSections(names);
       setStudents(studentRows);
-      const param = searchParams.get("section") ?? "";
-      if (param && names.includes(param)) {
-        setSectionName(param);
+      if (sectionParam && names.includes(sectionParam)) {
+        setSectionName(sectionParam);
       } else {
         setSectionName((prev) => prev || names[0] || "");
-        if (param && !names.includes(param)) {
-          setError(`Section "${param}" was not found. Choose a section below.`);
+        if (sectionParam && !names.includes(sectionParam)) {
+          setError(`Section "${sectionParam}" was not found. Choose a section below.`);
         }
       }
     }
     void load();
-  }, [searchParams]);
+  }, [sectionParam]);
 
   async function downloadPdf() {
     if (!sectionName || !sections.includes(sectionName)) {
@@ -122,7 +123,7 @@ export default function OmrIdsPage() {
         {pdfNote ? <p className="mt-3 text-xs font-semibold text-amber-700">{pdfNote}</p> : null}
       </Card>
 
-      {sectionTotal > 8 ? (
+      {sectionTotal > 0 ? (
         <div className="mb-3 max-w-md">
           <Input
             value={studentQuery}
@@ -133,7 +134,7 @@ export default function OmrIdsPage() {
         </div>
       ) : null}
 
-      <Card title={`${sectionTotal} students in ${sectionName || "this class"}`}>
+      <Card title={`${filtered.length} of ${sectionTotal} students in ${sectionName || "this class"}`}>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
@@ -144,13 +145,23 @@ export default function OmrIdsPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s) => (
-                <tr key={s.id} className="border-b border-slate-100">
-                  <td className="px-2 py-2 font-mono font-bold text-emerald-800">{s.omr_id}</td>
-                  <td className="px-2 py-2 font-semibold">{s.name}</td>
-                  <td className="px-2 py-2">{s.school_id}</td>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="px-2 py-6 text-center text-sm text-slate-500">
+                    {sectionTotal === 0
+                      ? "No students in this section yet."
+                      : `No students match "${studentQuery.trim()}".`}
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                filtered.map((s) => (
+                  <tr key={s.id} className="border-b border-slate-100">
+                    <td className="px-2 py-2 font-mono font-bold text-emerald-800">{s.omr_id}</td>
+                    <td className="px-2 py-2 font-semibold">{s.name}</td>
+                    <td className="px-2 py-2">{s.school_id}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

@@ -116,7 +116,11 @@ function extractErrorMessage(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
   if (typeof record.message === "string" && record.message.trim()) {
-    return record.message;
+    const msg = record.message.trim();
+    if (msg.toLowerCase().includes("csrf")) {
+      return "Could not save — please sign out, sign in again, and retry. If this keeps happening, the school API may need an update.";
+    }
+    return msg;
   }
   const errors = record.errors;
   if (errors && typeof errors === "object") {

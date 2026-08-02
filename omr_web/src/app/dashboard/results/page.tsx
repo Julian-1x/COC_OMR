@@ -28,9 +28,10 @@ export default async function ResultsPage({
     <Suspense fallback={<p className="text-sm text-slate-500">Loading results…</p>}>
       <ResultsContent
         scans={scans}
-        students={students.filter((student) => allowedSectionNames.has(student.section_name))}
+        students={students}
         subjects={subjects}
         sections={sections}
+        allowedSectionNames={allowedSectionNames}
         showArchived={showArchived}
         schoolYear={schoolYear}
         yearOptions={schoolYearOptions()}

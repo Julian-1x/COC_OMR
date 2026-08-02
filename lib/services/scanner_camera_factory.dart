@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:omr_app/services/device_scan_tier.dart';
 import 'package:omr_app/services/flutter_scanner_camera.dart';
 import 'package:omr_app/services/native_scanner_camera.dart';
 import 'package:omr_app/services/scanner_camera.dart';
@@ -12,6 +13,7 @@ class ScannerCameraFactory {
   /// iOS: Flutter camera plugin until a native AVFoundation backend exists.
   static Future<ScannerCamera> create({
     List<CameraDescription> cameras = const [],
+    DeviceScanTier scanTier = DeviceScanTier.mid,
   }) async {
     if (!kIsWeb && Platform.isAndroid) {
       final native = NativeScannerCamera();
@@ -24,9 +26,12 @@ class ScannerCameraFactory {
       if (cameras.isEmpty) {
         throw StateError('No camera available on this device');
       }
-      final flutter = FlutterScannerCamera(cameras: cameras);
+      final flutter = FlutterScannerCamera(
+        cameras: cameras,
+        scanTier: scanTier,
+      );
       await flutter.initialize();
-      debugPrint('Scanner camera: Flutter plugin (iOS)');
+      debugPrint('Scanner camera: Flutter plugin (iOS) tier=${scanTier.name}');
       return flutter;
     }
 

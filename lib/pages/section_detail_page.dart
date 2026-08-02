@@ -236,86 +236,90 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
+      isScrollControlled: true,
       showDragHandle: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-          padding: AppBottomSheet.contentPadding,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AppBottomSheet.header(
-                title: 'Add Subject',
-                subtitle:
-                    'Assign an existing answer key or create a new subject for ${widget.sectionName}.',
-              ),
-              AppPrimaryButton(
-                label: 'Create New Subject',
-                icon: Icons.add_circle_outline_rounded,
-                onPressed: () {
-                  Navigator.pop(context);
-                  _createSubjectForSection();
-                },
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'Existing Answer Keys',
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: brandText,
+        child: AppBottomSheet.constrainScrollBody(
+          context: context,
+          child: SingleChildScrollView(
+            padding: AppBottomSheet.contentPadding,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AppBottomSheet.header(
+                  title: 'Add Subject',
+                  subtitle:
+                      'Assign an existing answer key or create a new subject for ${widget.sectionName}.',
                 ),
-              ),
-              const SizedBox(height: 12),
-              if (availableSubjects.isEmpty)
-                const AppCard(
-                  padding: EdgeInsets.all(18),
-                  child: Text(
-                    'All available subjects are already assigned to this section.',
-                    style: TextStyle(
-                      color: brandMuted,
-                      height: 1.4,
-                    ),
-                  ),
-                )
-              else
-                ...availableSubjects.map(
-                  (subject) => Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(
-                      color: brandSurface,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: brandBorder),
-                    ),
-                    child: ListTile(
-                      leading: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: brandGreen.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: const Icon(
-                          Icons.menu_book_rounded,
-                          color: brandGreen,
-                        ),
-                      ),
-                      title: Text(
-                        _subjectLabel(subject),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      subtitle: Text('${subject.totalQuestions} questions'),
-                      trailing: const Icon(Icons.add_rounded),
-                      onTap: () async {
-                        Navigator.pop(context);
-                        await _assignSubjectToSection(subject);
-                      },
-                    ),
+                AppPrimaryButton(
+                  label: 'Create New Subject',
+                  icon: Icons.add_circle_outline_rounded,
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _createSubjectForSection();
+                  },
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'Existing Answer Keys',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: brandText,
                   ),
                 ),
-            ],
+                const SizedBox(height: 12),
+                if (availableSubjects.isEmpty)
+                  const AppCard(
+                    padding: EdgeInsets.all(18),
+                    child: Text(
+                      'All available subjects are already assigned to this section.',
+                      style: TextStyle(
+                        color: brandMuted,
+                        height: 1.4,
+                      ),
+                    ),
+                  )
+                else
+                  ...availableSubjects.map(
+                    (subject) => Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: brandSurface,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: brandBorder),
+                      ),
+                      child: ListTile(
+                        leading: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: brandGreen.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(
+                            Icons.menu_book_rounded,
+                            color: brandGreen,
+                          ),
+                        ),
+                        title: Text(
+                          _subjectLabel(subject),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text('${subject.totalQuestions} questions'),
+                        trailing: const Icon(Icons.add_rounded),
+                        onTap: () async {
+                          Navigator.pop(context);
+                          await _assignSubjectToSection(subject);
+                        },
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1728,17 +1732,13 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
       return subjects.first;
     }
 
-    return showModalBottomSheet<Subject>(
+    return AppBottomSheet.showScrollable<Subject>(
       context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      showDragHandle: true,
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
@@ -1750,22 +1750,32 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              ...subjects.map(
-                (subject) => ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.menu_book_rounded, color: brandGreen),
-                  title: Text(
-                    _subjectLabel(subject),
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text('${subject.totalQuestions} questions'),
-                  onTap: () => Navigator.pop(context, subject),
+              Expanded(
+                child: ListView(
+                  children: subjects
+                      .map(
+                        (subject) => ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(
+                            Icons.menu_book_rounded,
+                            color: brandGreen,
+                          ),
+                          title: Text(
+                            _subjectLabel(subject),
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          subtitle:
+                              Text('${subject.totalQuestions} questions'),
+                          onTap: () => Navigator.pop(context, subject),
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
             ],
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 

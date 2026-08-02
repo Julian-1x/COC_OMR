@@ -83,6 +83,27 @@ object ScannerCameraPlugin {
                         session.capture(result)
                     }
 
+                    "isTorchSupported" -> {
+                        val viewId = call.argument<Int>("viewId")
+                        val session = viewId?.let { ScannerCameraRegistry.get(it) }
+                        if (session == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        result.success(session.isTorchSupported())
+                    }
+
+                    "setTorchEnabled" -> {
+                        val viewId = call.argument<Int>("viewId")
+                        val enabled = call.argument<Boolean>("enabled") ?: false
+                        val session = viewId?.let { ScannerCameraRegistry.get(it) }
+                        if (session == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        result.success(session.setTorchEnabled(enabled))
+                    }
+
                     "disposeView" -> {
                         val viewId = call.argument<Int>("viewId")
                         if (viewId != null) {

@@ -3,10 +3,13 @@
 namespace App\Http\Controllers\Api\Sync;
 
 use App\Http\Controllers\Controller;
+use App\Models\Deadline;
 use App\Models\Section;
+use App\Models\Subject;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
 
 class SectionSyncController extends Controller
 {
@@ -121,9 +124,100 @@ class SectionSyncController extends Controller
         ]);
         $section->save();
 
+        // Older phone builds stripped section_names on archive. Re-attach using
+        // surviving QR map keys and deadlines so restore brings answer keys back.
+        $repairedSubjects = $this->reattachSectionToSubjects(
+            $ownerId,
+            $section->name,
+        );
+
         return response()->json([
             'id' => $section->id,
             'section' => $section->fresh(),
+            'repaired_subjects' => $repairedSubjects,
         ]);
+    }
+
+    /**
+     * @return int Number of subjects updated
+     */
+    private function reattachSectionToSubjects(string $ownerId, string $sectionName): int
+    {
+        $target = $this->normalizeSectionName($sectionName);
+        if ($target === '') {
+            return 0;
+        }
+
+        $subjectIdsFromDeadlines = Deadline::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->whereRaw('LOWER(TRIM(section_name)) = ?', [$target])
+            ->get(['subject_id', 'subject_local_id']);
+
+        $localIds = [];
+        $uuids = [];
+        foreach ($subjectIdsFromDeadlines as $deadline) {
+            if (is_string($deadline->subject_local_id) && $deadline->subject_local_id !== '') {
+                $localIds[$deadline->subject_local_id] = true;
+            }
+            if (is_string($deadline->subject_id) && $deadline->subject_id !== '') {
+                $uuids[$deadline->subject_id] = true;
+            }
+        }
+
+        $updated = 0;
+        $subjects = Subject::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->get();
+
+        foreach ($subjects as $subject) {
+            $names = is_array($subject->section_names) ? $subject->section_names : [];
+            $alreadyLinked = false;
+            foreach ($names as $name) {
+                if ($this->normalizeSectionName((string) $name) === $target) {
+                    $alreadyLinked = true;
+                    break;
+                }
+            }
+            if ($alreadyLinked) {
+                continue;
+            }
+
+            $shouldAttach = false;
+
+            $qr = is_array($subject->section_qr_data) ? $subject->section_qr_data : [];
+            foreach (array_keys($qr) as $qrSection) {
+                if ($this->normalizeSectionName((string) $qrSection) === $target) {
+                    $shouldAttach = true;
+                    break;
+                }
+            }
+
+            if (! $shouldAttach) {
+                $localId = (string) ($subject->local_id ?? '');
+                $id = (string) $subject->id;
+                if (($localId !== '' && isset($localIds[$localId])) ||
+                    ($id !== '' && isset($uuids[$id]))) {
+                    $shouldAttach = true;
+                }
+            }
+
+            if (! $shouldAttach) {
+                continue;
+            }
+
+            $names[] = $sectionName;
+            $subject->section_names = array_values($names);
+            $subject->updated_at = now();
+            $subject->sync_status = 'synced';
+            $subject->save();
+            $updated++;
+        }
+
+        return $updated;
+    }
+
+    private function normalizeSectionName(string $name): string
+    {
+        return Str::lower(trim($name));
     }
 }

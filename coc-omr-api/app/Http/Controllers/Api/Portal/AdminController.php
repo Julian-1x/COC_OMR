@@ -289,6 +289,44 @@ class AdminController extends Controller
         ]);
     }
 
+    public function destroy(Request $request, string $teacherId): JsonResponse
+    {
+        $admin = $request->user();
+        $teacher = TeacherProfile::query()->with('user')->find($teacherId);
+
+        if ($teacher === null || $teacher->school_name !== CocSchool::NAME) {
+            return response()->json(['message' => 'Teacher not found.'], 404);
+        }
+
+        if ($teacher->id === $admin->id) {
+            return response()->json(['message' => 'You cannot delete your own account here.'], 422);
+        }
+
+        if (CocSchool::isSuperAdminRole((string) $teacher->role)) {
+            return response()->json(['message' => 'Cannot delete a super admin account.'], 422);
+        }
+
+        $fullName = $teacher->full_name;
+        $email = $teacher->user?->email;
+
+        $user = $teacher->user;
+        if ($user !== null) {
+            $user->tokens()->delete();
+            $user->delete();
+        } else {
+            $teacher->delete();
+        }
+
+        return response()->json([
+            'message' => 'Teacher account deleted.',
+            'teacher' => [
+                'id' => $teacherId,
+                'full_name' => $fullName,
+                'email' => $email,
+            ],
+        ]);
+    }
+
     public function revokeDeptAdmin(Request $request, string $teacherId): JsonResponse
     {
         $admin = $request->user();

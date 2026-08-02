@@ -11,6 +11,12 @@ import {
 
 export type { QuestionAnalysis } from "@/lib/omr/item-analysis";
 export {
+  buildStudentFeedbackRows,
+  exportStudentFeedbackPdf,
+  type MissedQuestion,
+  type StudentFeedbackRow,
+} from "@/lib/omr/student-feedback";
+export {
   buildItemAnalysisReport,
   computeItemAnalysis,
   exportItemAnalysisCsv,

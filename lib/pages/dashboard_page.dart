@@ -22,12 +22,15 @@ import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/local_auth_service.dart';
-import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/services/api_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:omr_app/services/supabase_sync_service.dart';
+import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/utils/answer_key_sections.dart';
+import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/theme/app_page_transitions.dart';
+import 'package:omr_app/utils/scanner_launch.dart';
 import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_empty_state.dart';
@@ -80,7 +83,7 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-class _DashboardPageState extends State<DashboardPage> {
+class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _sectionController = TextEditingController();
   final TextEditingController _classesSearchController = TextEditingController();
@@ -119,6 +122,7 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final initialData = widget.initialData;
     if (initialData != null) {
       _applyDashboardData(initialData);
@@ -131,12 +135,16 @@ class _DashboardPageState extends State<DashboardPage> {
     unawaited(_checkForAppUpdate());
     unawaited(_loadTeacherHubMeta());
     _initConnectivityListener();
+    unawaited(_validateCloudSessionIfOnline());
+    if (Platform.isAndroid) {
+      unawaited(ScannerEngine.warmUp());
+    }
   }
 
   Future<void> _loadTeacherHubMeta() async {
     final profile = await LocalAuthService.instance.loadProfile();
     final packageInfo = await PackageInfo.fromPlatform();
-    final email = SupabaseService.client?.auth.currentUser?.email;
+    final email = ApiService.currentEmail;
     if (!mounted) {
       return;
     }
@@ -156,7 +164,7 @@ class _DashboardPageState extends State<DashboardPage> {
       globalScanResults.where((scan) => scan.requiresReview).length;
 
   Future<void> _checkForAppUpdate() async {
-    if (!SupabaseService.isReady) {
+    if (!ApiService.isReady) {
       return;
     }
     final info = await AppUpdateService.check();
@@ -483,30 +491,15 @@ class _DashboardPageState extends State<DashboardPage> {
       return choices.first;
     }
 
-    return showModalBottomSheet<_SectionChoice>(
+    return AppBottomSheet.showScrollable<_SectionChoice>(
       context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+      showDragHandle: true,
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Center(
-                child: Container(
-                  width: 48,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: AppColors.brandBorder,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
               Text(
                 'Select Section for ${group.name}',
                 style: const TextStyle(
@@ -516,30 +509,37 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
               ),
               const SizedBox(height: 10),
-              ...choices.map(
-                (choice) => Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: AppColors.brandSurface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: AppColors.brandBorder),
-                  ),
-                  child: ListTile(
-                    title: Text(
-                      choice.sectionName,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle:
-                        Text('${choice.subject.totalQuestions} questions'),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () => Navigator.pop(context, choice),
-                  ),
+              Expanded(
+                child: ListView(
+                  children: choices
+                      .map(
+                        (choice) => Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          decoration: BoxDecoration(
+                            color: AppColors.brandSurface,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(color: AppColors.brandBorder),
+                          ),
+                          child: ListTile(
+                            title: Text(
+                              choice.sectionName,
+                              style: const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            subtitle: Text(
+                              '${choice.subject.totalQuestions} questions',
+                            ),
+                            trailing: const Icon(Icons.chevron_right_rounded),
+                            onTap: () => Navigator.pop(context, choice),
+                          ),
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
             ],
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -655,7 +655,7 @@ class _DashboardPageState extends State<DashboardPage> {
   List<_DashboardAction> get _dataToolActions => [
         _DashboardAction(
           label: 'Import Roster',
-          subtitle: 'Load students from Excel or CSV',
+          subtitle: 'Load the school Class List Report (.xlsx)',
           icon: Icons.upload_rounded,
           color: AppColors.brandGreen,
           onTap: _handleImport,
@@ -715,22 +715,180 @@ class _DashboardPageState extends State<DashboardPage> {
     int copies = 1;
     int step = 0;
 
-    showModalBottomSheet<void>(
+    await AppBottomSheet.showScrollable<void>(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) => SafeArea(
-        child: StatefulBuilder(
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
           builder: (context, setModalState) {
             final subjectGroups = _subjectGroups;
             final sectionChoices = selectedGroup == null
                 ? const <_SectionChoice>[]
                 : _sectionChoicesForGroup(selectedGroup!);
+
+            Widget buildChoiceTile({
+              required IconData icon,
+              required String title,
+              required String subtitle,
+              required VoidCallback onTap,
+            }) {
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.brandSurface,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: AppColors.brandBorder),
+                ),
+                child: ListTile(
+                  leading: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandGreen.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Icon(icon, color: AppColors.brandGreen),
+                  ),
+                  title: Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(subtitle),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: onTap,
+                ),
+              );
+            }
+
+            final Widget body;
+            if (step == 0) {
+              body = ListView(
+                children: subjectGroups
+                    .map(
+                      (group) => buildChoiceTile(
+                        icon: Icons.menu_book_rounded,
+                        title: group.name,
+                        subtitle:
+                            '${group.subjects.length} answer key${group.subjects.length == 1 ? '' : 's'}',
+                        onTap: () {
+                          setModalState(() {
+                            selectedGroup = group;
+                            selectedSubject = null;
+                            selectedSection = null;
+                            step = 1;
+                          });
+                        },
+                      ),
+                    )
+                    .toList(),
+              );
+            } else if (step == 1) {
+              if (sectionChoices.isEmpty) {
+                body = Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppColors.brandSurface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.brandBorder),
+                  ),
+                  child: const Text(
+                    'No sections assigned to this subject yet.',
+                    style: TextStyle(color: AppColors.brandMuted),
+                  ),
+                );
+              } else {
+                body = ListView(
+                  children: sectionChoices
+                      .map(
+                        (choice) => buildChoiceTile(
+                          icon: Icons.group_rounded,
+                          title: choice.sectionName,
+                          subtitle: '${choice.subject.totalQuestions} questions',
+                          onTap: () {
+                            setModalState(() {
+                              selectedSubject = choice.subject;
+                              selectedSection = choice.sectionName;
+                              step = 2;
+                            });
+                          },
+                        ),
+                      )
+                      .toList(),
+                );
+              }
+            } else {
+              body = ListView(
+                children: [
+                  Text(
+                    'Subject: ${selectedSubject == null ? '' : _subjectLabel(selectedSubject!)}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Section: $selectedSection',
+                    style: const TextStyle(color: AppColors.brandMuted),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Text(
+                        'Copies',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: copies > 1
+                            ? () => setModalState(() => copies -= 1)
+                            : null,
+                        icon: const Icon(Icons.remove_circle_outline),
+                      ),
+                      Text(
+                        '$copies',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: copies < 200
+                            ? () => setModalState(() => copies += 1)
+                            : null,
+                        icon: const Icon(Icons.add_circle_outline),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        try {
+                          await AnswerSheetGenerator.generateMultiple(
+                            subject: selectedSubject!,
+                            sectionName: selectedSection!,
+                            copies: copies,
+                          );
+                        } catch (error) {
+                          if (mounted) {
+                            _showSnackBar(
+                              'Unable to generate the answer sheets.',
+                              backgroundColor: Colors.red,
+                            );
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.print_rounded),
+                      label: Text('Print $copies sheet(s)'),
+                    ),
+                  ),
+                ],
+              );
+            }
+
             return Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
@@ -742,171 +900,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     'Choose subject, section, then how many sheets to print.',
                   ),
                   const SizedBox(height: 16),
-                  if (step == 0)
-                    ...subjectGroups.map(
-                      (group) => Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        decoration: BoxDecoration(
-                          color: AppColors.brandSurface,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: AppColors.brandBorder),
-                        ),
-                        child: ListTile(
-                          leading: Container(
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              color: AppColors.brandGreen.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: const Icon(
-                              Icons.menu_book_rounded,
-                              color: AppColors.brandGreen,
-                            ),
-                          ),
-                          title: Text(
-                            group.name,
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          subtitle: Text(
-                            '${group.subjects.length} answer key${group.subjects.length == 1 ? '' : 's'}',
-                          ),
-                          trailing: const Icon(Icons.chevron_right_rounded),
-                          onTap: () {
-                            setModalState(() {
-                              selectedGroup = group;
-                              selectedSubject = null;
-                              selectedSection = null;
-                              step = 1;
-                            });
-                          },
-                        ),
-                      ),
-                    )
-                  else if (step == 1)
-                    if (sectionChoices.isEmpty)
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: AppColors.brandSurface,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppColors.brandBorder),
-                        ),
-                        child: const Text(
-                          'No sections assigned to this subject yet.',
-                          style: TextStyle(color: AppColors.brandMuted),
-                        ),
-                      )
-                    else
-                      ...sectionChoices.map(
-                        (choice) => Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          decoration: BoxDecoration(
-                            color: AppColors.brandSurface,
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(color: AppColors.brandBorder),
-                          ),
-                          child: ListTile(
-                            leading: Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(
-                                color: AppColors.brandGreen.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              child: const Icon(
-                                Icons.group_rounded,
-                                color: AppColors.brandGreen,
-                              ),
-                            ),
-                            title: Text(
-                              choice.sectionName,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                            subtitle: Text(
-                              '${choice.subject.totalQuestions} questions',
-                            ),
-                            trailing: const Icon(Icons.chevron_right_rounded),
-                            onTap: () {
-                              setModalState(() {
-                                selectedSubject = choice.subject;
-                                selectedSection = choice.sectionName;
-                                step = 2;
-                              });
-                            },
-                          ),
-                        ),
-                      )
-                  else
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Subject: ${selectedSubject == null ? '' : _subjectLabel(selectedSubject!)}',
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Section: $selectedSection',
-                          style: const TextStyle(color: AppColors.brandMuted),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            const Text(
-                              'Copies',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                            const Spacer(),
-                            IconButton(
-                              onPressed: copies > 1
-                                  ? () => setModalState(() => copies -= 1)
-                                  : null,
-                              icon: const Icon(Icons.remove_circle_outline),
-                            ),
-                            Text(
-                              '$copies',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: copies < 200
-                                  ? () => setModalState(() => copies += 1)
-                                  : null,
-                              icon: const Icon(Icons.add_circle_outline),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: () async {
-                              Navigator.pop(context);
-                              try {
-                                await AnswerSheetGenerator.generateMultiple(
-                                  subject: selectedSubject!,
-                                  sectionName: selectedSection!,
-                                  copies: copies,
-                                );
-                              } catch (error) {
-                                if (mounted) {
-                                  _showSnackBar(
-                                    'Unable to generate the answer sheets.',
-                                    backgroundColor: Colors.red,
-                                  );
-                                }
-                              }
-                            },
-                            icon: const Icon(Icons.print_rounded),
-                            label: Text('Print $copies sheet(s)'),
-                          ),
-                        ),
-                      ],
-                    ),
+                  Expanded(child: body),
                   if (step > 0) ...[
                     const SizedBox(height: 8),
                     TextButton(
@@ -924,17 +918,59 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             );
           },
-        ),
-      ),
+        );
+      },
     );
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
     _sectionController.dispose();
     _classesSearchController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(() async {
+        await _validateCloudSessionIfOnline();
+        await _maybeAutoSyncIfNeeded();
+      }());
+    }
+  }
+
+  Future<void> _validateCloudSessionIfOnline() async {
+    if (!mounted ||
+        !_isOnline ||
+        !ApiService.isReady ||
+        !ApiService.hasActiveSession) {
+      return;
+    }
+
+    final valid = await CloudAuthService.instance.validateActiveSession(
+      signOutOnInvalid: true,
+    );
+    if (!valid && mounted) {
+      await _navigateToLoginAfterSessionEnded(
+        'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
+      );
+    }
+  }
+
+  Future<void> _navigateToLoginAfterSessionEnded(String message) async {
+    if (!mounted) {
+      return;
+    }
+
+    _showSnackBar(message, backgroundColor: Colors.red);
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
+    );
   }
 
   Future<void> _refreshSyncStatus() async {
@@ -949,6 +985,66 @@ class _DashboardPageState extends State<DashboardPage> {
     });
   }
 
+  Future<void> _afterLocalDataChanged() async {
+    await _refreshSyncStatus();
+    await _maybeAutoSyncIfNeeded();
+  }
+
+  Future<void> _maybeAutoSyncIfNeeded({
+    List<ConnectivityResult>? connectionType,
+    bool fromReconnect = false,
+  }) async {
+    if (!mounted ||
+        _isSyncing ||
+        !ApiService.isReady ||
+        !ApiService.hasActiveSession ||
+        !_autoSyncOnWifi) {
+      return;
+    }
+
+    await _refreshSyncStatus();
+    if (!mounted || _pendingSyncCount == 0) {
+      return;
+    }
+
+    final results =
+        connectionType ?? await Connectivity().checkConnectivity();
+    if (!_hasNetworkConnection(results)) {
+      return;
+    }
+
+    if (!_isWifiLikeConnection(results)) {
+      if (fromReconnect && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Online on mobile data. $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting — connect to Wi-Fi or tap Sync now.',
+            ),
+            behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: 'Sync now',
+              onPressed: _handleSyncNow,
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (fromReconnect && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Wi-Fi is back. Syncing $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'}…',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    await _handleSyncNow();
+  }
+
   void _initConnectivityListener() {
     unawaited(_startConnectivityListener());
   }
@@ -961,6 +1057,10 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     _wasOffline = !_hasNetworkConnection(initial);
     _isOnline = !_wasOffline;
+
+    if (_isOnline) {
+      unawaited(_maybeAutoSyncIfNeeded(connectionType: initial));
+    }
 
     _connectivitySub = connectivity.onConnectivityChanged.listen((results) {
       final isOnline = _hasNetworkConnection(results);
@@ -987,10 +1087,16 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _onConnectivityRestored(List<ConnectivityResult> results) async {
-    if (!mounted ||
-        _isSyncing ||
-        !SupabaseService.isReady ||
-        !SupabaseService.hasActiveSession) {
+    await _validateCloudSessionIfOnline();
+    if (!mounted) {
+      return;
+    }
+
+    if (_autoSyncOnWifi) {
+      await _maybeAutoSyncIfNeeded(
+        connectionType: results,
+        fromReconnect: true,
+      );
       return;
     }
 
@@ -999,44 +1105,6 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
-    if (_autoSyncOnWifi && _isWifiLikeConnection(results)) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Wi-Fi is back. Syncing $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'}…',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      await _handleSyncNow();
-      return;
-    }
-
-    if (_autoSyncOnWifi && !_isWifiLikeConnection(results)) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Online on mobile data. $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting — connect to Wi-Fi or tap Sync now.',
-          ),
-          behavior: SnackBarBehavior.floating,
-          action: SnackBarAction(
-            label: 'Sync now',
-            onPressed: _handleSyncNow,
-          ),
-        ),
-      );
-      return;
-    }
-
-    if (!mounted) {
-      return;
-    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -1087,6 +1155,199 @@ class _DashboardPageState extends State<DashboardPage> {
     }
 
     return LocalDataStore.instance.deleteSubjectCascade(subject);
+  }
+
+  Future<void> _showAddSectionToAnswerKey({
+    required Subject subject,
+    required VoidCallback onUpdated,
+  }) async {
+    final available = sectionsAvailableToAdd(subject);
+    final sectionController = TextEditingController();
+
+    Future<void> applySection(String rawSection) async {
+      final sectionName = normalizeSectionName(rawSection);
+      if (sectionName.isEmpty) {
+        return;
+      }
+
+      final conflict = findConflictingSubjectForSection(
+        subject: subject,
+        sectionName: sectionName,
+      );
+      if (conflict != null) {
+        if (!mounted) {
+          return;
+        }
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Section already assigned'),
+            content: Text(
+              '${subject.displayName} already has a separate answer key for '
+              '$sectionName. Open that key or remove the section from it first.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      final sectionExists = globalSections.any(
+        (section) => normalizeSectionName(section.name) == sectionName,
+      );
+      if (!sectionExists) {
+        await LocalDataStore.instance.upsertSection(Section(name: sectionName));
+      }
+
+      final updated = addSectionToSubject(subject, sectionName);
+      if (updated == null) {
+        return;
+      }
+
+      await LocalDataStore.instance.upsertSubject(updated);
+      if (!mounted) {
+        return;
+      }
+      onUpdated();
+      _showSnackBar(
+        '$sectionName added to ${subject.displayName}.',
+        backgroundColor: AppColors.brandGreen,
+      );
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 12,
+              bottom: 20 + MediaQuery.viewInsetsOf(sheetContext).bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 48,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandBorder,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Add section to ${subject.displayName}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.brandText,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Pick a class section to use this same answer key. '
+                  'You can add more later if plans change.',
+                  style: TextStyle(
+                    color: AppColors.brandMuted,
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (available.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'No existing sections are free to add. Create one below.',
+                      style: TextStyle(
+                        color: AppColors.brandMuted,
+                        fontSize: 13,
+                      ),
+                    ),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.35,
+                    ),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: available.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final sectionName = available[index];
+                        return ListTile(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: AppColors.brandBorder),
+                          ),
+                          title: Text(
+                            sectionName,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          trailing: const Icon(Icons.add_rounded),
+                          onTap: () async {
+                            Navigator.pop(sheetContext);
+                            await applySection(sectionName);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: sectionController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Or create new section',
+                    hintText: 'e.g. BSIT-01',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      final name = sectionController.text;
+                      if (name.trim().isEmpty) {
+                        return;
+                      }
+                      Navigator.pop(sheetContext);
+                      await applySection(name);
+                    },
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Add section'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    sectionController.dispose();
   }
 
   Future<void> _openAnswerKeys() async {
@@ -1161,6 +1422,20 @@ class _DashboardPageState extends State<DashboardPage> {
               }
             }
 
+            Future<void> addSectionToRow({
+              required Subject subject,
+            }) async {
+              await _showAddSectionToAnswerKey(
+                subject: subject,
+                onUpdated: () async {
+                  await _loadDashboardData();
+                  if (mounted) {
+                    setModalState(() {});
+                  }
+                },
+              );
+            }
+
             Future<void> deleteAnswerKeyRow({
               required Subject subject,
               String? sectionName,
@@ -1184,70 +1459,72 @@ class _DashboardPageState extends State<DashboardPage> {
               );
             }
 
-            return SingleChildScrollView(
-              padding: AppBottomSheet.contentPadding,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  AppBottomSheet.header(
-                    title: 'Answer Keys',
-                    subtitle:
-                        'Review answer keys and the sections each subject is assigned to.',
-                    trailing: FilledButton.icon(
-                      onPressed: () => openEditor(),
-                      icon: const Icon(Icons.add_rounded),
-                      label: const Text('New'),
-                    ),
-                  ),
-                  const Text(
-                    'Need different answers per section? Create one key per section — same subject name is OK.',
-                    style: TextStyle(
-                      color: AppColors.brandMuted,
-                      fontSize: 12,
-                      height: 1.35,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  if (subjectGroups.isEmpty)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: AppColors.brandSurface,
-                        borderRadius: BorderRadius.circular(22),
-                        border: Border.all(color: AppColors.brandBorder),
+            return AppBottomSheet.constrainScrollBody(
+              context: context,
+              child: SingleChildScrollView(
+                padding: AppBottomSheet.contentPadding,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AppBottomSheet.header(
+                      title: 'Answer Keys',
+                      subtitle:
+                          'Review answer keys and the sections each subject is assigned to.',
+                      trailing: FilledButton.icon(
+                        onPressed: () => openEditor(),
+                        icon: const Icon(Icons.add_rounded),
+                        label: const Text('New'),
                       ),
-                      child: const Column(
-                        children: [
-                          Icon(
-                            Icons.menu_book_rounded,
-                            size: 52,
-                            color: AppColors.brandGreen,
-                          ),
-                          SizedBox(height: 12),
-                          Text(
-                            'No subjects yet',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.brandText,
-                            ),
-                          ),
-                          SizedBox(height: 6),
-                          Text(
-                            'Create your first subject to save its answer key and assign sections.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: AppColors.brandMuted,
-                              height: 1.4,
-                            ),
-                          ),
-                        ],
+                    ),
+                    const Text(
+                      'Need different answers per section? Create one key per section — same subject name is OK.',
+                      style: TextStyle(
+                        color: AppColors.brandMuted,
+                        fontSize: 12,
+                        height: 1.35,
                       ),
-                    )
-                  else
-                    ...subjectGroups.map(
+                    ),
+                    const SizedBox(height: 14),
+                    if (subjectGroups.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: AppColors.brandSurface,
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(color: AppColors.brandBorder),
+                        ),
+                        child: const Column(
+                          children: [
+                            Icon(
+                              Icons.menu_book_rounded,
+                              size: 52,
+                              color: AppColors.brandGreen,
+                            ),
+                            SizedBox(height: 12),
+                            Text(
+                              'No subjects yet',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.brandText,
+                              ),
+                            ),
+                            SizedBox(height: 6),
+                            Text(
+                              'Create your first subject to save its answer key and assign sections.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: AppColors.brandMuted,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else
+                      ...subjectGroups.map(
                       (group) => Padding(
                         padding: const EdgeInsets.only(bottom: 12),
                         child: Material(
@@ -1390,6 +1667,8 @@ class _DashboardPageState extends State<DashboardPage> {
                                                 subject: row.subject,
                                                 sectionFocus: sectionName,
                                               );
+                                            } else if (value == 'add_section') {
+                                              addSectionToRow(subject: row.subject);
                                             } else if (value == 'analyze') {
                                               Navigator.push(
                                                 context,
@@ -1419,6 +1698,20 @@ class _DashboardPageState extends State<DashboardPage> {
                                                   ),
                                                   SizedBox(width: 10),
                                                   Text('Edit'),
+                                                ],
+                                              ),
+                                            ),
+                                            const PopupMenuItem<String>(
+                                              value: 'add_section',
+                                              child: Row(
+                                                children: [
+                                                  Icon(
+                                                    Icons.playlist_add_rounded,
+                                                    size: 18,
+                                                    color: AppColors.brandGreen,
+                                                  ),
+                                                  SizedBox(width: 10),
+                                                  Text('Add section...'),
                                                 ],
                                               ),
                                             ),
@@ -1473,6 +1766,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                 ],
               ),
+            ),
             );
           },
         ),
@@ -1527,6 +1821,7 @@ class _DashboardPageState extends State<DashboardPage> {
         replaceRoster: importResult.replaceRoster,
       );
       await _loadDashboardData();
+      await _afterLocalDataChanged();
       if (!mounted) {
         return;
       }
@@ -1818,8 +2113,8 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
     if (_pendingSyncCount > 0 &&
-        SupabaseService.isReady &&
-        SupabaseService.hasActiveSession) {
+        ApiService.isReady &&
+        ApiService.hasActiveSession) {
       final syncFirst = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -1902,7 +2197,7 @@ class _DashboardPageState extends State<DashboardPage> {
     if (_isSyncing) {
       return;
     }
-    if (!SupabaseService.hasActiveSession) {
+    if (!ApiService.hasActiveSession) {
       _showSnackBar(
         'Sign in online to sync your data to the cloud.',
         backgroundColor: AppColors.warningAccent,
@@ -1912,7 +2207,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
     setState(() => _isSyncing = true);
     try {
-      final fullSummary = await SupabaseSyncService.instance.syncAll();
+      final fullSummary = await CloudSyncService.instance.syncAll();
       if (!mounted) {
         return;
       }
@@ -1936,6 +2231,13 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
       setState(() => _isSyncing = false);
+      if (error is ApiException && error.sessionInvalidated) {
+        await CloudAuthService.instance.signOut();
+        await _navigateToLoginAfterSessionEnded(
+          'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
+        );
+        return;
+      }
       _showSnackBar(
         UserErrorMessages.friendlySyncError(error),
         backgroundColor: Colors.red,
@@ -1949,7 +2251,7 @@ class _DashboardPageState extends State<DashboardPage> {
       return;
     }
 
-    if (!SupabaseService.hasActiveSession) {
+    if (!ApiService.hasActiveSession) {
       _showSnackBar(
         'Sign in while online before archiving. Your scores must be in the cloud first.',
         backgroundColor: AppColors.warningAccent,
@@ -2040,7 +2342,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
     try {
       final summary =
-          await SupabaseSyncService.instance.archiveSectionEndOfTerm(picked.name);
+          await CloudSyncService.instance.archiveSectionEndOfTerm(picked.name);
       if (!mounted) {
         return;
       }
@@ -2281,8 +2583,13 @@ class _DashboardPageState extends State<DashboardPage> {
                           return;
                         }
 
-                        // Launch the scanner
                         if (!mounted) {
+                          return;
+                        }
+
+                        final engineReady =
+                            await prepareScannerEngineForExam(this.context);
+                        if (!engineReady || !mounted) {
                           return;
                         }
 
@@ -2584,6 +2891,7 @@ class _DashboardPageState extends State<DashboardPage> {
         targetName: targetName,
       );
       await _loadDashboardData();
+      await _afterLocalDataChanged();
       if (!mounted) {
         return;
       }
@@ -2631,6 +2939,7 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       await LocalDataStore.instance.deleteEmptySection(sectionName);
       await _loadDashboardData();
+      await _afterLocalDataChanged();
       if (!mounted) {
         return;
       }
@@ -2702,6 +3011,7 @@ class _DashboardPageState extends State<DashboardPage> {
       final summary =
           await LocalDataStore.instance.deleteSectionCascade(section.name);
       await _loadDashboardData();
+      await _afterLocalDataChanged();
       if (!mounted) {
         return;
       }
@@ -2760,7 +3070,7 @@ class _DashboardPageState extends State<DashboardPage> {
         school: _teacherSchool,
         email: _teacherEmail,
         isOnline: _isOnline,
-        hasCloudSession: SupabaseService.hasActiveSession,
+        hasCloudSession: ApiService.hasActiveSession,
         studentCount: stats.students,
         scannedCount: stats.scannedStudents,
         pendingCount: stats.pending,
@@ -3035,7 +3345,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   icon: Icons.cloud_upload_rounded,
                   color: AppColors.brandGreen,
                   title: '$_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting to sync',
-                  subtitle: !SupabaseService.hasActiveSession
+                  subtitle: !ApiService.hasActiveSession
                       ? 'Sign in while online to upload your work.'
                       : 'Upload pending scores to the cloud.',
                   actionLabel: _isSyncing ? 'Syncing…' : 'Sync',
@@ -3764,6 +4074,12 @@ class _DashboardPageState extends State<DashboardPage> {
         return;
       }
       if (!mounted) return;
+
+      final engineReady = await prepareScannerEngineForExam(context);
+      if (!engineReady || !mounted) {
+        return;
+      }
+
       await Navigator.push<void>(
         context,
         AppPageTransitions.fadeSlide(
@@ -4609,7 +4925,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
                 subtitle: const Text(
-                  'Upload pending scores automatically when Wi-Fi is available.',
+                  'Upload roster and score changes when you are on Wi-Fi and have pending items.',
                   style: TextStyle(color: AppColors.brandMuted, fontSize: 12, height: 1.3),
                 ),
                 activeThumbColor: AppColors.brandGreen,
@@ -4646,16 +4962,16 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
               ),
-              if (!SupabaseService.hasActiveSession &&
+              if (!ApiService.hasActiveSession &&
                   _pendingSyncCount > 0 &&
-                  SupabaseService.isReady) ...[
+                  ApiService.isReady) ...[
                 const SizedBox(height: 12),
                 const Text(
                   'You are signed out. Sign in while online to upload your pending changes.',
                   style: TextStyle(color: Colors.orange, fontSize: 13, height: 1.35),
                 ),
               ],
-              if (!SupabaseService.isReady) ...[
+              if (!ApiService.isReady) ...[
                 const SizedBox(height: 12),
                 const Text(
                   'Cloud sync is not set up on this build. Scanning and grading still work offline.',
@@ -4713,7 +5029,7 @@ class _DashboardPageState extends State<DashboardPage> {
               _buildSettingsSubheading('Cloud sync vs backup file'),
               const SizedBox(height: 8),
               _buildSettingsBullet(
-                'Cloud sync (above) updates online when you tap Sync now or when Wi‑Fi auto-sync runs.',
+                'Cloud sync (above) updates online when you tap Sync now or when Wi‑Fi auto-sync uploads pending changes.',
               ),
               _buildSettingsBullet(
                 'A backup file is something you save and open yourself—helpful with no internet, a new phone, or extra safety.',
@@ -4804,14 +5120,14 @@ class _DashboardPageState extends State<DashboardPage> {
           sectionId: 'account',
           icon: Icons.person_outline_rounded,
           title: 'Account',
-          summary: SupabaseService.hasActiveSession
+          summary: ApiService.hasActiveSession
               ? 'Signed in · Tap to sign out'
               : 'Sign out of this device',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                SupabaseService.hasActiveSession
+                ApiService.hasActiveSession
                     ? 'You are signed in. Sign out if you are done on this device or switching accounts.'
                     : 'You are using the app with your PIN on this device. Sign out to return to the login screen.',
                 style: const TextStyle(

@@ -214,7 +214,25 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     final account = await _auth.accountFromCurrentSession();
-    if (account != null && !account.isApproved) {
+    if (account == null) {
+      if (ApiService.hasActiveSession) {
+        await _auth.signOut();
+      }
+      if (mounted) {
+        setState(() {
+          _offlineProfile = null;
+          _stage = _LoginStage.onlineAuth;
+          _isLoading = false;
+          _isSubmitting = false;
+        });
+        _showMessage(
+          'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
+          isError: true,
+        );
+      }
+      return;
+    }
+    if (!account.isApproved) {
       await ApiService.clearSession();
       if (mounted) {
         setState(() {
@@ -233,7 +251,7 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     final profile = await _localAuth.loadProfile();
-    if (profile == null && account != null) {
+    if (profile == null) {
       final resolvedAccount = account;
       if (await _tryRestoreCloudPinProfile(resolvedAccount)) {
         if (mounted) {
@@ -286,6 +304,25 @@ class _LoginPageState extends State<LoginPage> {
     final offlineProfile = await _localAuth.loadProfile();
     final hasOfflinePin = await _localAuth.hasProfile();
     if (hasOfflinePin && offlineProfile != null) {
+      if (ApiService.hasActiveSession && ApiService.isReady) {
+        final account = await _auth.accountFromCurrentSession();
+        if (account == null) {
+          await _auth.signOut();
+          if (mounted) {
+            setState(() {
+              _offlineProfile = null;
+              _stage = _LoginStage.onlineAuth;
+              _isLoading = false;
+            });
+            _showMessage(
+              'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
+              isError: true,
+            );
+          }
+          return;
+        }
+      }
+
       if (mounted) {
         setState(() {
           _offlineProfile = offlineProfile;

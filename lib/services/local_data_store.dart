@@ -11,9 +11,8 @@ import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
 import 'package:omr_app/services/sqlite_init.dart';
-import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class LocalDataStore {
   LocalDataStore._();
@@ -566,6 +565,11 @@ class LocalDataStore {
     );
   }
 
+  /// Archive end-of-term: remove the section from the phone only.
+  ///
+  /// Answer keys keep [Subject.sectionNames] so a later cloud restore re-links
+  /// automatically. Students/scans/deadlines are cleared locally and come back
+  /// from the cloud snapshot after restore + Sync Now.
   Future<SectionArchiveSummary> archiveSectionLocally(String sectionName) async {
     final stored = _resolveStoredSectionName(sectionName);
     if (stored == null) {
@@ -584,24 +588,6 @@ class LocalDataStore {
       createSafetyBackup: false,
     );
 
-    final subjects = globalSubjects
-        .where((subject) {
-          final names = subject.sectionNames ?? const <String>[];
-          return names.any(
-            (name) =>
-                normalizeSectionName(name) == normalizeSectionName(stored),
-          );
-        })
-        .map(
-          (subject) => _subjectWithUpdatedSections(
-            subject,
-            (name) =>
-                normalizeSectionName(name) == normalizeSectionName(stored)
-                    ? ''
-                    : name,
-          ),
-        )
-        .toList();
     final deadlines = globalDeadlines
         .where(
           (deadline) =>
@@ -611,9 +597,6 @@ class LocalDataStore {
         .toList();
 
     if (kIsWeb) {
-      for (final subject in subjects) {
-        _upsertSubjectInMemory(subject);
-      }
       globalDeadlines.removeWhere(
         (deadline) =>
             normalizeSectionName(deadline.sectionName ?? '') ==
@@ -635,13 +618,6 @@ class LocalDataStore {
     await _enqueueDbWrite(() async {
       final database = await _openDatabase();
       await database.transaction((txn) async {
-        for (final subject in subjects) {
-          await txn.insert(
-            'subjects',
-            _subjectRow(subject),
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
-        }
         for (final deadline in deadlines) {
           await txn.delete(
             'deadlines',
@@ -657,9 +633,6 @@ class LocalDataStore {
       });
     });
 
-    for (final subject in subjects) {
-      _upsertSubjectInMemory(subject);
-    }
     globalDeadlines.removeWhere(
       (deadline) =>
           normalizeSectionName(deadline.sectionName ?? '') ==
@@ -962,6 +935,7 @@ class LocalDataStore {
         (result) => uniqueIds.contains(result.studentOmrId),
       );
       rebuildStudentIndex();
+      syncOmrCounterToRoster();
       return SectionDeletionSummary(
         removedStudents: uniqueIds.length,
         removedScans: removedScans.length,
@@ -1019,6 +993,7 @@ class LocalDataStore {
       (result) => uniqueIds.contains(result.studentOmrId),
     );
     rebuildStudentIndex();
+    syncOmrCounterToRoster();
 
     return SectionDeletionSummary(
       removedStudents: uniqueIds.length,
@@ -1892,9 +1867,36 @@ class LocalDataStore {
     );
   }
 
+  Future<int> countPendingDeletions() async {
+    if (kIsWeb) {
+      return 0;
+    }
+
+    final ownerTeacherId = _currentOwnerTeacherId;
+    if (ownerTeacherId == null || ownerTeacherId.isEmpty) {
+      return 0;
+    }
+
+    final database = await _openDatabase();
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS c FROM pending_deletions '
+      'WHERE owner_teacher_id IS NULL OR owner_teacher_id = ?',
+      <Object?>[ownerTeacherId],
+    );
+    final value = result.first['c'];
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
   Future<int> countPendingSync() async {
     final snapshot = await fetchPendingSync();
-    return snapshot.total;
+    final deletions = await countPendingDeletions();
+    return snapshot.total + deletions;
   }
 
   Future<CloudMergeSummary> applyCloudSnapshot(CloudPullSnapshot cloud) async {
@@ -2971,7 +2973,7 @@ class LocalDataStore {
   }
 
   String? get _currentOwnerTeacherId {
-    return SupabaseService.currentUserId;
+    return ApiService.currentUserId;
   }
 
   bool _rowBelongsToCurrentTeacher(String? ownerTeacherId) {
@@ -3240,13 +3242,17 @@ class LocalDataStore {
     );
   }
 
-  Future<int> processPendingDeletions(SupabaseClient client) async {
+  Future<int> processPendingDeletions() async {
     if (kIsWeb) {
       return 0;
     }
 
     final ownerTeacherId = _currentOwnerTeacherId;
     if (ownerTeacherId == null || ownerTeacherId.isEmpty) {
+      return 0;
+    }
+
+    if (!ApiService.hasActiveSession) {
       return 0;
     }
 
@@ -3268,7 +3274,7 @@ class LocalDataStore {
       }
 
       try {
-        await client.from(table).delete().eq('id', cloudId);
+        await ApiService.deleteJson('/sync/$table/$cloudId');
         await database.delete(
           'pending_deletions',
           where: 'id = ?',
@@ -3794,6 +3800,9 @@ class LocalDataStore {
       subjectCounter: snapshot.subjectCounter,
       sheetCounter: snapshot.sheetCounter,
     );
+    // Empty roster (new teacher / after full archive) must mint from 0001 even
+    // if a stale snapshot counter was left high from another session.
+    syncOmrCounterToRoster(snapshot.students);
 
     rebuildStudentIndex();
   }

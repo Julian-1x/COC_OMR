@@ -202,6 +202,13 @@ export async function revokeTeacherAccess(
   await api.post(`/admin/teachers/${teacherId}/revoke`);
 }
 
+export async function deleteTeacherAccount(
+  api: ApiClient,
+  teacherId: string,
+): Promise<void> {
+  await api.delete(`/admin/teachers/${teacherId}`);
+}
+
 export type DepartmentAdminRow = {
   id: string;
   full_name: string;

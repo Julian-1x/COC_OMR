@@ -1,7 +1,7 @@
+import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/cloud_auth_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Maps technical failures to short, teacher-friendly English.
 abstract final class UserErrorMessages {
@@ -12,11 +12,8 @@ abstract final class UserErrorMessages {
     if (error is CloudAuthException) {
       return error.message;
     }
-    if (error is AuthException) {
-      return _friendlyAuthMessage(error.message);
-    }
-    if (error is PostgrestException) {
-      return _friendlyDatabaseMessage(error.message);
+    if (error is ApiException) {
+      return _friendlyApiMessage(error.message);
     }
     if (error is DatabaseException) {
       return _friendlySqliteMessage(error.toString());
@@ -53,7 +50,7 @@ abstract final class UserErrorMessages {
       return 'Import failed. Check the file format and try again.';
     }
     if (detail.contains('Null check operator used on a null value')) {
-      return 'Could not read that roster file. Save it as .xlsx or .csv with Student ID, Name, and Section columns, then try again.';
+      return 'Could not read that Class List Report. Use the school .xlsx export (Student ID, Student Name, Section) or save as .csv, then try again.';
     }
     if (_looksLikeSqlite(detail) || _looksLikePolicy(detail)) {
       return friendlyError(detail);
@@ -86,30 +83,25 @@ abstract final class UserErrorMessages {
     return 'Could not save on this phone. Close other apps and try again.';
   }
 
-  static String _friendlyAuthMessage(String message) {
+  static String _friendlyApiMessage(String message) {
     final normalized = message.toLowerCase();
-    if (normalized.contains('invalid login credentials')) {
-      return 'The email or password is incorrect. Check the account details or reset the password in Supabase.';
+    if (normalized.contains('credentials') ||
+        normalized.contains('incorrect')) {
+      return 'The email or password is incorrect. Check the account details or reset your password.';
     }
-    if (normalized.contains('email not confirmed')) {
+    if (normalized.contains('email not confirmed') ||
+        normalized.contains('not verified')) {
       return 'This email has not been confirmed yet. Open the confirmation email, then sign in again.';
     }
-    if (normalized.contains('user already registered') ||
-        normalized.contains('already been registered')) {
+    if (normalized.contains('already been taken') ||
+        normalized.contains('already registered')) {
       return 'An account with this email already exists. Use Login instead.';
     }
     if (normalized.contains('password')) {
-      return 'The password does not meet requirements. Use at least 6 characters.';
+      return 'The password does not meet requirements. Use at least 8 characters.';
     }
     if (normalized.contains('rate limit') || normalized.contains('too many')) {
       return 'Too many attempts. Wait a minute, then try again.';
-    }
-    return message;
-  }
-
-  static String _friendlyDatabaseMessage(String message) {
-    if (_looksLikePolicy(message)) {
-      return 'Account setup incomplete. Contact your administrator.';
     }
     return message;
   }
@@ -122,7 +114,7 @@ abstract final class UserErrorMessages {
         normalized.contains('socketexception') ||
         normalized.contains('failed host lookup') ||
         normalized.contains('network')) {
-      return 'Could not reach the server. Check your internet connection and try again.';
+      return 'Could not reach the school server. Check your internet connection and try again.';
     }
     return message;
   }

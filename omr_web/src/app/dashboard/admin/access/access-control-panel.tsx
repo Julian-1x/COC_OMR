@@ -11,7 +11,7 @@ import {
   type AccessRequestTeacher,
   type SchoolTeacherSummary,
 } from "@/lib/api/admin";
-import { approveTeacherAction, revokeTeacherAction } from "./actions";
+import { approveTeacherAction, deleteTeacherAction, revokeTeacherAction } from "./actions";
 
 export function AccessControlPanel({
   pending,
@@ -46,6 +46,17 @@ export function AccessControlPanel({
       }
       router.refresh();
     });
+  }
+
+  function confirmDelete(teacher: { id: string; full_name: string; email: string | null }) {
+    const label = teacher.full_name || teacher.email || "this teacher";
+    const confirmed = window.confirm(
+      `Permanently delete ${label}?\n\nThis removes their account, cloud roster, answer keys, and scan results. They will be signed out on the phone immediately. This cannot be undone.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    run(teacher.id, deleteTeacherAction);
   }
 
   const scopeHint = viewerIsSuperAdmin
@@ -84,13 +95,25 @@ export function AccessControlPanel({
                     {teacher.department ? ` · ${teacher.department}` : ""}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  disabled={isPending && pendingId === teacher.id}
-                  onClick={() => run(teacher.id, approveTeacherAction)}
-                >
-                  {isPending && pendingId === teacher.id ? "Approving…" : "Approve"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    disabled={isPending && pendingId === teacher.id}
+                    onClick={() => run(teacher.id, approveTeacherAction)}
+                  >
+                    {isPending && pendingId === teacher.id ? "Approving…" : "Approve"}
+                  </Button>
+                  {viewerIsSuperAdmin ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={isPending && pendingId === teacher.id}
+                      onClick={() => confirmDelete(teacher)}
+                    >
+                      {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -101,6 +124,9 @@ export function AccessControlPanel({
         <h2 className="text-lg font-extrabold text-slate-800">Approved teachers</h2>
         <p className="mt-1 text-sm text-slate-600">
           Revoke to cut off app and web access immediately. Admin accounts are managed separately.
+          {viewerIsSuperAdmin
+            ? " Super admins can permanently delete an account — that also signs them out on the phone."
+            : null}
         </p>
         {approved.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No approved teachers yet.</p>
@@ -140,14 +166,26 @@ export function AccessControlPanel({
                             {teacher.status === "you" ? "You" : blockHint}
                           </span>
                         ) : (
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            disabled={isPending && pendingId === teacher.id}
-                            onClick={() => run(teacher.id, revokeTeacherAction)}
-                          >
-                            {isPending && pendingId === teacher.id ? "Revoking…" : "Revoke"}
-                          </Button>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={isPending && pendingId === teacher.id}
+                              onClick={() => run(teacher.id, revokeTeacherAction)}
+                            >
+                              {isPending && pendingId === teacher.id ? "Revoking…" : "Revoke"}
+                            </Button>
+                            {viewerIsSuperAdmin ? (
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                disabled={isPending && pendingId === teacher.id}
+                                onClick={() => confirmDelete(teacher)}
+                              >
+                                {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
+                              </Button>
+                            ) : null}
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -176,13 +214,25 @@ export function AccessControlPanel({
                     {teacher.department ? ` · ${teacher.department}` : ""}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  disabled={isPending && pendingId === teacher.id}
-                  onClick={() => run(teacher.id, approveTeacherAction)}
-                >
-                  {isPending && pendingId === teacher.id ? "Restoring…" : "Approve again"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    disabled={isPending && pendingId === teacher.id}
+                    onClick={() => run(teacher.id, approveTeacherAction)}
+                  >
+                    {isPending && pendingId === teacher.id ? "Restoring…" : "Approve again"}
+                  </Button>
+                  {viewerIsSuperAdmin ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={isPending && pendingId === teacher.id}
+                      onClick={() => confirmDelete(teacher)}
+                    >
+                      {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>

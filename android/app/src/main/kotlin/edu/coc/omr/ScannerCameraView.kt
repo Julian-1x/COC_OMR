@@ -19,21 +19,7 @@ class ScannerCameraView(
 
     init {
         ScannerCameraRegistry.put(viewId, session)
-
-        val width = (creationParams?.get("width") as? Number)?.toInt() ?: 0
-        val height = (creationParams?.get("height") as? Number)?.toInt() ?: 0
-        if (width > 0 && height > 0) {
-            session.bind(
-                viewWidth = width,
-                viewHeight = height,
-                onReady = { aspect ->
-                    Log.i(TAG, "View $viewId auto-bound aspect=$aspect")
-                },
-                onError = { message ->
-                    Log.e(TAG, "View $viewId auto-bind failed: $message")
-                },
-            )
-        }
+        // Binding is driven by Flutter via bindView — avoid double-bind races on cold start.
     }
 
     override fun getView(): View = previewView

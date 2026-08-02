@@ -68,9 +68,13 @@ class LocalAuthService {
 
   bool _isUnlocked = false;
   String? _activeCloudUserId;
+  String? _cachedTeacherName;
+  String? _cachedTeacherEmail;
 
   bool get isUnlocked => _isUnlocked;
   String? get activeCloudUserId => _activeCloudUserId;
+  String? get cachedTeacherName => _cachedTeacherName;
+  String? get cachedTeacherEmail => _cachedTeacherEmail;
 
   Future<bool> hasProfile() async {
     final prefs = await SharedPreferences.getInstance();
@@ -92,6 +96,9 @@ class LocalAuthService {
     if (name == null || createdAt == null) {
       return null;
     }
+
+    _cachedTeacherName = name;
+    _cachedTeacherEmail = email;
 
     return LocalTeacherProfile(
       name: name,
@@ -322,6 +329,8 @@ class LocalAuthService {
   }) async {
     await prefs.setString(_nameKey, name);
     await prefs.setString(_schoolKey, school);
+    _cachedTeacherName = name;
+    _cachedTeacherEmail = email;
     await _setOrRemove(prefs, _emailKey, email);
     await _setOrRemove(prefs, _cloudUserIdKey, cloudUserId);
     await prefs.setString(_pinSaltKey, pinSalt);

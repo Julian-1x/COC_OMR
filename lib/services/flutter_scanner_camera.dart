@@ -3,22 +3,64 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:omr_app/services/device_scan_tier.dart';
 import 'package:omr_app/services/scanner_camera.dart';
 
 /// Flutter `camera` plugin backend — fallback and iOS path.
 class FlutterScannerCamera implements ScannerCamera {
-  FlutterScannerCamera({required this.cameras});
+  FlutterScannerCamera({
+    required this.cameras,
+    this.scanTier = DeviceScanTier.mid,
+  });
 
   final List<CameraDescription> cameras;
+  final DeviceScanTier scanTier;
 
-  static const List<ResolutionPreset> resolutionFallbackChain = [
-    ResolutionPreset.veryHigh,
-    ResolutionPreset.high,
-    ResolutionPreset.medium,
-  ];
+  /// Start high enough for accuracy when the device can handle it; never jump
+  /// straight to max on constrained phones.
+  List<ResolutionPreset> get resolutionFallbackChain => switch (scanTier) {
+        DeviceScanTier.low => const [
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ],
+        DeviceScanTier.mid => const [
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ],
+        DeviceScanTier.high => const [
+          ResolutionPreset.veryHigh,
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ],
+        DeviceScanTier.veryHigh => const [
+          ResolutionPreset.ultraHigh,
+          ResolutionPreset.veryHigh,
+          ResolutionPreset.high,
+          ResolutionPreset.medium,
+          ResolutionPreset.low,
+        ],
+      };
 
   CameraController? _controller;
   Offset _lastFocusPoint = const Offset(0.5, 0.55);
+  bool _torchEnabled = false;
+
+  @override
+  bool get torchSupported {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized || kIsWeb) {
+      return false;
+    }
+    // The camera plugin does not expose supported flash modes on all versions;
+    // rear cameras on phones used for scanning virtually always support torch.
+    return cameras.isNotEmpty &&
+        cameras.first.lensDirection == CameraLensDirection.back;
+  }
+
+  @override
+  bool get torchEnabled => _torchEnabled;
 
   @override
   bool get isInitialized =>
@@ -134,6 +176,26 @@ class FlutterScannerCamera implements ScannerCamera {
     }
     final file = await controller.takePicture();
     return File(file.path).readAsBytes();
+  }
+
+  @override
+  Future<void> setTorchEnabled(bool enabled) async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    try {
+      await controller.setFlashMode(enabled ? FlashMode.torch : FlashMode.off);
+      _torchEnabled = enabled;
+    } catch (error) {
+      debugPrint('Flutter torch toggle failed: $error');
+    }
+  }
+
+  @override
+  Future<bool> toggleTorch() async {
+    await setTorchEnabled(!_torchEnabled);
+    return _torchEnabled;
   }
 
   @override

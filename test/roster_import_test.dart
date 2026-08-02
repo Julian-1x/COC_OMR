@@ -39,6 +39,36 @@ void main() {
       expect(map.nameIndex, 1);
       expect(map.sectionIndex, 2);
     });
+    test('maps official school export headers and ignores extra columns', () {
+      final header = [
+        'session name',
+        'campus',
+        'student id',
+        'student name',
+        'gender',
+        'college',
+        'course',
+        'subject',
+        'section',
+        'email',
+      ];
+      final map = RosterColumnMap.fromHeader(header);
+      expect(map.schoolIdIndex, 2);
+      expect(map.nameIndex, 3);
+      expect(map.sectionIndex, 8);
+    });
+
+    test('does not treat COURSE as SECTION', () {
+      final header = ['student id', 'student name', 'course', 'section'];
+      final map = RosterColumnMap.fromHeader(header);
+      expect(map.sectionIndex, 3);
+    });
+
+    test('does not treat SESSION NAME as student name', () {
+      final header = ['session name', 'student id', 'student name', 'section'];
+      final map = RosterColumnMap.fromHeader(header);
+      expect(map.nameIndex, 2);
+    });
   });
 
   group('RosterSpreadsheetDecoder', () {
@@ -52,6 +82,38 @@ void main() {
       );
       expect(rows.length, greaterThanOrEqualTo(2));
       expect(rows.first[0], 'Student ID');
+    });
+
+    test('decodes PHINMA Class_List_Report namespaced xlsx', () {
+      final file = File('test/fixtures/Class_List_Report-3.xlsx');
+      expect(file.existsSync(), isTrue);
+
+      final rows = RosterSpreadsheetDecoder.decode(
+        bytes: file.readAsBytesSync(),
+        extension: 'xlsx',
+        fileName: 'Class_List_Report-3.xlsx',
+      );
+
+      expect(rows.length, greaterThan(1));
+      final header = rows.first.map((c) => c.toString().toUpperCase()).toList();
+      expect(header, contains('STUDENT ID'));
+      expect(header, contains('STUDENT NAME'));
+      expect(header, contains('SECTION'));
+
+      final map = RosterColumnMap.fromHeader(
+        rows.first
+            .map((c) => RosterColumnMap.normalizeHeader(c.toString()))
+            .toList(),
+      );
+      expect(map.schoolIdIndex, 2);
+      expect(map.nameIndex, 3);
+      expect(map.sectionIndex, 8);
+
+      final summary = ImportService.importRows(
+        rows,
+        fileName: 'Class_List_Report-3.xlsx',
+      );
+      expect(summary.imported + summary.updated, greaterThan(0));
     });
 
     test('decodes real teacher xlsx when fixture is present', () {

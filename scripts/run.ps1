@@ -6,7 +6,7 @@ $secrets = Join-Path $root "secrets.json"
 if (-not (Test-Path $secrets)) {
     Write-Host "Missing secrets.json"
     Write-Host "  1. Copy secrets.json.example to secrets.json"
-    Write-Host "  2. Paste your Supabase URL and publishable key from supabase.com/dashboard"
+    Write-Host "  2. Set API_BASE_URL to your Laravel school server"
     exit 1
 }
 

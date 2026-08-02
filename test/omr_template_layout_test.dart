@@ -65,7 +65,7 @@ void main() {
       }
     });
 
-    test('QR payload includes explicit layout metadata for all templates', () {
+    test('QR payload stays lean and item count identifies the layout', () {
       for (final itemCount in supportedItemCounts) {
         final subject = Subject(
           name: 'Subject $itemCount',
@@ -79,12 +79,15 @@ void main() {
         );
 
         expect(payload.version, 2, reason: 'payload version for $itemCount');
-        expect(payload.hasExplicitLayout, isTrue,
-            reason: 'layout metadata for $itemCount');
+        // Layout lives in the scanner session, not the QR — embedding it made
+        // the printed symbol too dense for phone cameras to decode.
+        expect(payload.layout, isNull, reason: 'no layout blob for $itemCount');
+        expect(payload.totalQuestions, itemCount,
+            reason: 'item count for $itemCount');
         expect(
-          payload.layout?.templateId,
+          OmrTemplateSpec.forItemCount(payload.totalQuestions).templateId,
           OmrTemplateSpec.forItemCount(itemCount).templateId,
-          reason: 'template ID for $itemCount',
+          reason: 'template resolvable from item count for $itemCount',
         );
       }
     });

@@ -10,6 +10,7 @@ import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
+import 'package:omr_app/utils/answer_key_sections.dart';
 
 enum AnswerKeyEditorAction { updated, deleted }
 
@@ -132,6 +133,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     required int passingScore,
     required DateTime examDate,
     int? totalQuestions,
+    String? ownerTeacherId,
+    String? subjectCloudId,
   }) {
     final questions = totalQuestions ?? _questionCount;
     final sectionQrData = <String, String>{};
@@ -144,6 +147,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         passingScore: passingScore,
         examDate: examDate,
         sectionName: section,
+        ownerTeacherId: ownerTeacherId,
+        subjectCloudId: subjectCloudId,
       );
     }
     return sectionQrData;
@@ -172,26 +177,38 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         content: Text(
           others.isEmpty
               ? 'This answer key is assigned to multiple sections.'
-              : 'This key is shared with ${others.join(', ')}. '
-                  'To change only $focus, split it into a separate key.',
+              : 'This key is shared with ${others.join(', ')}.\n\n'
+                  'Choose Edit shared key to add or remove sections and update '
+                  'answers for every assigned class.\n\n'
+                  'Choose Split section only if $focus needs different answers.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext, 'shared'),
-            child: const Text('Edit shared key'),
+            onPressed: () => Navigator.pop(dialogContext, 'cancel'),
+            child: const Text('Cancel'),
           ),
-          FilledButton(
+          TextButton(
             onPressed: () => Navigator.pop(dialogContext, 'split'),
             child: const Text('Split section'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, 'shared'),
+            child: const Text('Edit shared key'),
           ),
         ],
       ),
     );
 
-    if (!mounted || choice == null) {
-      if (mounted) {
-        Navigator.pop(context);
-      }
+    if (!mounted) {
+      return;
+    }
+
+    if (choice == null || choice == 'cancel') {
+      setState(() {
+        _splitEditMode = false;
+        _sharedEditWarning = sections.length > 1;
+        _selectedSections = sections;
+      });
       return;
     }
 
@@ -508,6 +525,177 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     super.dispose();
   }
 
+  Future<void> _showAddSectionPicker() async {
+    final existingSubject = widget.subjectToEdit;
+    if (existingSubject == null || _splitEditMode) {
+      return;
+    }
+
+    final pseudoSubject = existingSubject.copyWith(
+      sectionNames: _selectedSections.toList(),
+    );
+    final available = sectionsAvailableToAdd(pseudoSubject);
+    final sectionController = TextEditingController();
+
+    Future<void> applySection(String rawSection) async {
+      final sectionName = normalizeSectionName(rawSection);
+      if (sectionName.isEmpty) {
+        return;
+      }
+
+      final conflict = findConflictingSubjectForSection(
+        subject: existingSubject,
+        sectionName: sectionName,
+      );
+      if (conflict != null) {
+        if (!mounted) {
+          return;
+        }
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Section already assigned'),
+            content: Text(
+              '${existingSubject.displayName} already has a separate answer key for '
+              '$sectionName. Open that key or remove the section from it first.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      final sectionExists = globalSections.any(
+        (section) => normalizeSectionName(section.name) == sectionName,
+      );
+      if (!sectionExists) {
+        await LocalDataStore.instance.upsertSection(Section(name: sectionName));
+      }
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _selectedSections = {..._selectedSections, sectionName};
+      });
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 12,
+              bottom: 20 + MediaQuery.viewInsetsOf(sheetContext).bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Add section',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: _brandText,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Assign another class to this answer key. Save when you are done editing.',
+                  style: TextStyle(
+                    color: _brandMuted,
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (available.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'No existing sections are free to add. Create one below.',
+                      style: TextStyle(color: _brandMuted, fontSize: 13),
+                    ),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.35,
+                    ),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: available.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final sectionName = available[index];
+                        return ListTile(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            side: const BorderSide(color: _brandBorder),
+                          ),
+                          title: Text(
+                            sectionName,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          trailing: const Icon(Icons.add_rounded),
+                          onTap: () async {
+                            Navigator.pop(sheetContext);
+                            await applySection(sectionName);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: sectionController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Or create new section',
+                    hintText: 'e.g. BSIT-01',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      final name = sectionController.text;
+                      if (name.trim().isEmpty) {
+                        return;
+                      }
+                      Navigator.pop(sheetContext);
+                      await applySection(name);
+                    },
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Add section'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    sectionController.dispose();
+  }
+
   void _createNewSectionInline() {
     _sectionController.clear();
 
@@ -806,6 +994,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           passingScore: existingSubject.passingScore,
           examDate: existingSubject.examDate ?? examDate,
           totalQuestions: existingSubject.totalQuestions,
+          ownerTeacherId: existingSubject.ownerTeacherId,
+          subjectCloudId: existingSubject.cloudId,
         ),
         updatedAt: DateTime.now(),
       );
@@ -823,6 +1013,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           sections: [focus],
           passingScore: passingScore,
           examDate: examDate,
+          ownerTeacherId: existingSubject.ownerTeacherId,
         ),
         examDate: examDate,
         passingScore: passingScore,
@@ -851,6 +1042,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       sections: selectedSections,
       passingScore: passingScore,
       examDate: examDate,
+      ownerTeacherId: targetSubject?.ownerTeacherId,
+      subjectCloudId: targetSubject?.cloudId,
     );
 
     final subject = Subject(
@@ -863,6 +1056,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       examDate: examDate,
       passingScore: passingScore,
       usePartialCredit: _usePartialCredit,
+      ownerTeacherId: targetSubject?.ownerTeacherId,
+      cloudId: targetSubject?.cloudId,
     );
 
     await LocalDataStore.instance.upsertSubject(subject);
@@ -2192,9 +2387,11 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           title: 'Sections',
           subtitle: _splitEditMode
               ? 'This split applies to ${_focusedSection ?? 'the selected section'} only.'
-              : duplicateSubjects.isNotEmpty
-                  ? 'Pick one section for this version. Sections already assigned are disabled.'
-                  : 'Assign the sections that should use this exact answer key.',
+              : _isEditing
+                  ? 'Tap sections to add or remove classes, or use Add section if one is missing.'
+                  : duplicateSubjects.isNotEmpty
+                      ? 'Pick one section for this version. Sections already assigned are disabled.'
+                      : 'Assign the sections that should use this exact answer key.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2247,10 +2444,22 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                 ),
               ],
               const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _createNewSectionInline,
-                icon: const Icon(Icons.add_rounded),
-                label: const Text('Create Section'),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (_isEditing && !_splitEditMode)
+                    OutlinedButton.icon(
+                      onPressed: _showAddSectionPicker,
+                      icon: const Icon(Icons.playlist_add_rounded),
+                      label: const Text('Add section...'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: _createNewSectionInline,
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('Create Section'),
+                  ),
+                ],
               ),
             ],
           ),

@@ -1,5 +1,7 @@
 # Supabase setup for COC OMR
 
+> **Deprecated (2026):** COC OMR now uses the **Laravel API** on school servers. See [laravel/SETUP.md](../laravel/SETUP.md) for deployment and [laravel/SMOKE_TEST.md](../laravel/SMOKE_TEST.md) for cutover testing. Keep the SQL files in this folder as schema reference only. Pause or delete the Supabase project after staging smoke tests pass.
+
 One-time setup. Teachers never open Supabase — only you (developer).
 
 ## 1. Create a project

@@ -73,7 +73,12 @@ export default function ImportRosterPage() {
           ← Prepare
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Import roster</h1>
-        <p className="mt-1 text-sm text-slate-500">CSV or Excel with Student ID, Name, and Section columns.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Use the school <strong>Class List Report</strong> Excel (.xlsx). We keep{" "}
+          <strong>Student ID</strong>, <strong>Student Name</strong>, and{" "}
+          <strong>Section</strong> only — Session, Campus, Gender, College, Course, Subject,
+          and Email are ignored.
+        </p>
       </div>
 
       <Card>
@@ -137,8 +142,12 @@ export default function ImportRosterPage() {
             variant="secondary"
             onClick={() =>
               downloadText(
-                "Student ID,Name,Section\n2024-001,Juan Dela Cruz,BSIT-1A\n2024-002,Maria Santos,BSIT-1A",
-                "roster_template.csv",
+                [
+                  "SESSION NAME,CAMPUS,STUDENT ID,STUDENT NAME,GENDER,COLLEGE,COURSE,SUBJECT,SECTION,EMAIL",
+                  "SY 26-27 SEM I,Carmen Campus,02-2024-12345,Juan Dela Cruz,Male,CIT,BSIT,ITE 101,BSIT-1A,juan@example.com",
+                  "SY 26-27 SEM I,Carmen Campus,02-2024-12346,Maria Santos,Female,CIT,BSIT,ITE 101,BSIT-1A,maria@example.com",
+                ].join("\n"),
+                "class_list_report_template.csv",
                 "text/csv",
               )
             }

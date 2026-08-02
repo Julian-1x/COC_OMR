@@ -26,16 +26,14 @@ function Read-Secrets {
     $map[$parts[0].Trim()] = $parts[1].Trim()
   }
   return [pscustomobject]@{
-    SUPABASE_URL = $map["SUPABASE_URL"]
-    SUPABASE_PUBLISHABLE_KEY = $map["SUPABASE_PUBLISHABLE_KEY"]
+    API_BASE_URL = $map["API_BASE_URL"]
   }
 }
 
 $secrets = Read-Secrets
-$url = $secrets.SUPABASE_URL
-$key = $secrets.SUPABASE_PUBLISHABLE_KEY
-if (-not $url -or -not $key) {
-  throw "SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY are required."
+$apiUrl = $secrets.API_BASE_URL
+if (-not $apiUrl) {
+  throw "API_BASE_URL is required in secrets.json or omr_web/.env.local"
 }
 
 Write-Host "Building omr_web..."
@@ -49,23 +47,35 @@ try {
 
   function Set-VercelEnv([string]$name, [string]$value) {
     Write-Host "Setting Vercel env: $name (production)"
-    $value | & $vercel @vercelArgs env add $name production --force 2>$null
-    if ($LASTEXITCODE -ne 0) {
-      $value | & $vercel @vercelArgs env add $name production
+    # npx may write warnings to stderr; do not treat that as a hard failure.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $value | & $vercel @vercelArgs env add $name production --force 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        $value | & $vercel @vercelArgs env add $name production
+      }
+    } finally {
+      $ErrorActionPreference = $prev
     }
   }
 
-  Set-VercelEnv "SUPABASE_URL" $url
-  Set-VercelEnv "SUPABASE_PUBLISHABLE_KEY" $key
-  Set-VercelEnv "NEXT_PUBLIC_SUPABASE_URL" $url
-  Set-VercelEnv "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" $key
+  # Env vars are usually already set on Vercel; skip if update fails.
+  try {
+    Set-VercelEnv "API_BASE_URL" $apiUrl
+    Set-VercelEnv "NEXT_PUBLIC_API_BASE_URL" $apiUrl
+  } catch {
+    Write-Warning "Could not update Vercel env vars (continuing deploy): $_"
+  }
 
   Write-Host "Deploying to Vercel (production)..."
+  $ErrorActionPreference = "Continue"
   & $vercel @vercelArgs deploy --prod --yes
   if ($LASTEXITCODE -ne 0) { throw "vercel deploy failed" }
+  $ErrorActionPreference = "Stop"
 
   Write-Host ""
-  Write-Host "Done. Add this redirect URL in Supabase -> Authentication -> URL Configuration:"
+  Write-Host "Done. Set FRONTEND_URL on the Laravel API to your Vercel URL so email verification redirects work:"
   Write-Host "  https://YOUR-VERCEL-URL/auth/callback"
 }
 finally {

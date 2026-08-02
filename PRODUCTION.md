@@ -29,21 +29,25 @@ This app stores data **locally** on the device (with optional cloud sign-in). Pl
 ## Data flow and sync
 
 - **Scanning and grading always work offline.** Data is saved to SQLite on the phone first.
-- **Cloud sync (Supabase, free tier)** is optional. It stores roster, answer keys, and scan results as JSON — not scan photos.
+- **Cloud sync (Laravel API on school servers)** is optional. It stores roster, answer keys, and scan results as JSON — not scan photos.
 - **Online login** is required once when registering or moving to a new phone. After that, unlock with your **offline PIN** even without internet.
 - **Sync later:** when Wi‑Fi is available, open Settings and tap **Sync Now**, or use the prompt when the app detects internet again.
 - **Switching phones:** sync the old phone once, then sign in on the new phone. The app downloads your cloud data automatically after login.
-- **Account required:** teachers must register or sign in online once. The release APK must include Supabase keys. Offline PIN unlock works after that; **Sync Now** uploads data to their account.
+- **Account required:** teachers must register or sign in online once. The release APK must include `API_BASE_URL`. Offline PIN unlock works after that; **Sync Now** uploads data to their account.
 
-### Supabase setup (one-time)
+### Laravel API setup (one-time)
 
-```bash
-flutter run \
-  --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
-  --dart-define=SUPABASE_PUBLISHABLE_KEY=your_publishable_key
+See [laravel/SELF_HOSTED.md](laravel/SELF_HOSTED.md) for **permanent production** on your school server.
+
+Quick reference for developers: [laravel/SETUP.md](laravel/SETUP.md).
+
+```json
+{
+  "API_BASE_URL": "https://api.your-school.edu.ph"
+}
 ```
 
-Run `supabase/schema.sql` in the Supabase SQL Editor before first teacher sign-up.
+in `secrets.json` (mobile) and `omr_web/.env.production` (web portal on your server).
 
 ## Release builds and crash reporting
 

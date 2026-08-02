@@ -1,13 +1,10 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
 import 'package:omr_app/services/local_data_store.dart';
-import 'package:omr_app/services/supabase_service.dart';
+import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class SyncSummary {
   const SyncSummary({
@@ -58,19 +55,18 @@ class SyncException implements Exception {
   String toString() => message;
 }
 
-class SupabaseSyncService {
-  SupabaseSyncService._();
+class CloudSyncService {
+  CloudSyncService._();
 
-  static final SupabaseSyncService instance = SupabaseSyncService._();
+  static final CloudSyncService instance = CloudSyncService._();
 
   Future<PullSummary> pullFromCloud() async {
-    final client = SupabaseService.client;
-    final ownerTeacherId = SupabaseService.currentUserId;
-    if (client == null || ownerTeacherId == null) {
+    final ownerTeacherId = ApiService.currentUserId;
+    if (!ApiService.hasActiveSession || ownerTeacherId == null) {
       throw const SyncException('Sign in before downloading cloud data.');
     }
 
-    final cloud = await _fetchCloudSnapshot(client, ownerTeacherId);
+    final cloud = await _fetchCloudSnapshot();
     final merged = await LocalDataStore.instance.applyCloudSnapshot(cloud);
     await SyncPreferencesService.setLastPullAt(DateTime.now());
 
@@ -85,13 +81,12 @@ class SupabaseSyncService {
   }
 
   Future<SyncSummary> syncPending() async {
-    final client = SupabaseService.client;
-    final ownerTeacherId = SupabaseService.currentUserId;
-    if (client == null || ownerTeacherId == null) {
+    final ownerTeacherId = ApiService.currentUserId;
+    if (!ApiService.hasActiveSession || ownerTeacherId == null) {
       throw const SyncException('Sign in before syncing.');
     }
 
-    await LocalDataStore.instance.processPendingDeletions(client);
+    await LocalDataStore.instance.processPendingDeletions();
     final pending = await LocalDataStore.instance.fetchPendingSync();
     if (pending.total == 0) {
       return const SyncSummary(
@@ -115,7 +110,7 @@ class SupabaseSyncService {
         continue;
       }
       try {
-        final cloudId = await _upsertSection(client, ownerTeacherId, section);
+        final cloudId = await _upsertSection(ownerTeacherId, section);
         await LocalDataStore.instance.markSectionSynced(
           name: section.name,
           cloudId: cloudId,
@@ -132,7 +127,7 @@ class SupabaseSyncService {
         continue;
       }
       try {
-        final cloudId = await _upsertStudent(client, ownerTeacherId, student);
+        final cloudId = await _upsertStudent(ownerTeacherId, student);
         await LocalDataStore.instance.markStudentSynced(
           omrId: student.omrId,
           cloudId: cloudId,
@@ -150,7 +145,7 @@ class SupabaseSyncService {
         continue;
       }
       try {
-        final cloudId = await _upsertSubject(client, ownerTeacherId, subject);
+        final cloudId = await _upsertSubject(ownerTeacherId, subject);
         subjectCloudIds[subject.id] = cloudId;
         await LocalDataStore.instance.markSubjectSynced(
           localId: subject.id,
@@ -173,7 +168,6 @@ class SupabaseSyncService {
             : subjectCloudIds[result.subjectId!] ??
                 _findSubjectCloudId(result.subjectId!);
         final cloudId = await _insertOrUpdateScanResult(
-          client,
           ownerTeacherId,
           result,
           cloudSubjectId,
@@ -201,7 +195,6 @@ class SupabaseSyncService {
             : subjectCloudIds[deadline.subjectId!] ??
                 _findSubjectCloudId(deadline.subjectId!);
         final cloudId = await _upsertDeadline(
-          client,
           ownerTeacherId,
           deadline,
           cloudSubjectId,
@@ -228,18 +221,13 @@ class SupabaseSyncService {
     );
   }
 
-  Future<CloudPullSnapshot> _fetchCloudSnapshot(
-    SupabaseClient client,
-    String ownerTeacherId,
-  ) async {
-    final sectionsResponse = await client
-        .from('sections')
-        .select()
-        .eq('owner_teacher_id', ownerTeacherId)
-        .isFilter('archived_at', null);
+  Future<CloudPullSnapshot> _fetchCloudSnapshot() async {
+    final response = await ApiService.getJson('/sync/snapshot');
 
-    final sections =
-        _mapRows(sectionsResponse, _sectionFromCloudRow);
+    final sections = _mapRows(
+      response['sections'],
+      _sectionFromCloudRow,
+    );
     final activeSectionNames = sections
         .map((section) => section.name)
         .where((name) => name.isNotEmpty)
@@ -249,49 +237,18 @@ class SupabaseSyncService {
       return CloudPullSnapshot(sections: sections);
     }
 
-    final studentsResponse = await client
-        .from('students')
-        .select()
-        .eq('owner_teacher_id', ownerTeacherId)
-        .inFilter('section_name', activeSectionNames);
+    final studentsResponse = response['students'];
     final students =
         _mapRows(studentsResponse, _studentFromCloudRow);
-    final activeOmrIds = students.map((student) => student.omrId).toList();
 
-    final subjectsResponse = await client
-        .from('subjects')
-        .select()
-        .eq('owner_teacher_id', ownerTeacherId);
-    final allSubjects = _mapRows(subjectsResponse, _subjectFromCloudRow);
-    final activeSectionSet = activeSectionNames
-        .map(normalizeSectionName)
-        .toSet();
-    final subjects = allSubjects.where((subject) {
-      final names = subject.sectionNames;
-      if (names == null || names.isEmpty) {
-        return true;
-      }
-      return names.any(
-        (name) => activeSectionSet.contains(normalizeSectionName(name)),
-      );
-    }).toList();
+    final subjectsResponse = response['subjects'];
+    final subjects = _mapRows(subjectsResponse, _subjectFromCloudRow);
 
-    List<ScanResult> scanResults = const <ScanResult>[];
-    if (activeOmrIds.isNotEmpty) {
-      final scanResultsResponse = await client
-          .from('scan_results')
-          .select()
-          .eq('owner_teacher_id', ownerTeacherId)
-          .inFilter('student_omr_id', activeOmrIds);
-      scanResults =
-          _mapRows(scanResultsResponse, _scanResultFromCloudRow);
-    }
+    final scanResultsResponse = response['scan_results'];
+    final scanResults =
+        _mapRows(scanResultsResponse, _scanResultFromCloudRow);
 
-    final deadlinesResponse = await client
-        .from('deadlines')
-        .select()
-        .eq('owner_teacher_id', ownerTeacherId)
-        .inFilter('section_name', activeSectionNames);
+    final deadlinesResponse = response['deadlines'];
     final deadlines =
         _mapRows(deadlinesResponse, _deadlineFromCloudRow);
 
@@ -426,27 +383,19 @@ class SupabaseSyncService {
   }
 
   Future<String> _upsertSection(
-    SupabaseClient client,
     String ownerTeacherId,
     Section section,
   ) async {
-    final row = <String, Object?>{
-      'owner_teacher_id': ownerTeacherId,
+    final row = <String, dynamic>{
       'name': section.name,
       'teacher': section.teacher,
       'student_count': section.studentCount,
       'school_year': section.schoolYear,
       'term_label': section.termLabel,
       'archived_at': section.archivedAt?.toIso8601String(),
-      'local_id': section.name,
-      'sync_status': SyncStatus.synced,
       'updated_at': section.updatedAt.toIso8601String(),
     };
-    final response = await client
-        .from('sections')
-        .upsert(row, onConflict: 'owner_teacher_id,name')
-        .select('id')
-        .single();
+    final response = await ApiService.postJson('/sync/sections', row);
     return response['id'].toString();
   }
 
@@ -455,30 +404,23 @@ class SupabaseSyncService {
     String? schoolYear,
     String? termLabel,
   }) async {
-    final client = SupabaseService.client;
-    final ownerTeacherId = SupabaseService.currentUserId;
-    if (client == null || ownerTeacherId == null) {
+    if (!ApiService.hasActiveSession) {
       throw const SyncException('Sign in while online to archive a section.');
     }
 
-    final archivedAt = DateTime.now().toIso8601String();
-    final response = await client
-        .from('sections')
-        .update(<String, Object?>{
-          'archived_at': archivedAt,
-          if (schoolYear != null) 'school_year': schoolYear,
-          if (termLabel != null) 'term_label': termLabel,
-          'updated_at': archivedAt,
-        })
-        .eq('owner_teacher_id', ownerTeacherId)
-        .eq('name', sectionName)
-        .select('id')
-        .maybeSingle();
-
-    if (response == null) {
-      throw SyncException(
-        'Section "$sectionName" was not found in the cloud. Sync first, then archive.',
-      );
+    try {
+      await ApiService.patchJson('/sync/sections/archive', <String, dynamic>{
+        'name': sectionName,
+        if (schoolYear != null) 'school_year': schoolYear,
+        if (termLabel != null) 'term_label': termLabel,
+      });
+    } on ApiException catch (error) {
+      if (error.statusCode == 404) {
+        throw SyncException(
+          'Section "$sectionName" was not found in the cloud. Sync first, then archive.',
+        );
+      }
+      rethrow;
     }
   }
 
@@ -506,12 +448,10 @@ class SupabaseSyncService {
   }
 
   Future<String> _upsertStudent(
-    SupabaseClient client,
     String ownerTeacherId,
     Student student,
   ) async {
-    final row = <String, Object?>{
-      'owner_teacher_id': ownerTeacherId,
+    final row = <String, dynamic>{
       'school_id': normalizeSchoolId(student.schoolId),
       'omr_id': student.omrId,
       'name': student.name,
@@ -520,25 +460,17 @@ class SupabaseSyncService {
       'answers': _jsonMapOrNull(student.answers),
       'scan_date': student.scanDate?.toIso8601String(),
       'confidence': student.confidence,
-      'local_id': student.omrId,
-      'sync_status': SyncStatus.synced,
       'updated_at': student.updatedAt.toIso8601String(),
     };
-    final response = await client
-        .from('students')
-        .upsert(row, onConflict: 'owner_teacher_id,school_id')
-        .select('id')
-        .single();
+    final response = await ApiService.postJson('/sync/students', row);
     return response['id'].toString();
   }
 
   Future<String> _upsertSubject(
-    SupabaseClient client,
     String ownerTeacherId,
     Subject subject,
   ) async {
-    final row = <String, Object?>{
-      'owner_teacher_id': ownerTeacherId,
+    final row = <String, dynamic>{
       'local_id': subject.id,
       'name': subject.name,
       'answer_key': _jsonMap(subject.answerKey),
@@ -548,27 +480,21 @@ class SupabaseSyncService {
       'exam_date': subject.examDate?.toIso8601String().split('T').first,
       'passing_score': subject.passingScore,
       'use_partial_credit': subject.usePartialCredit,
-      'sync_status': SyncStatus.synced,
       'updated_at': subject.updatedAt.toIso8601String(),
     };
-    final response = await client
-        .from('subjects')
-        .upsert(row, onConflict: 'owner_teacher_id,local_id')
-        .select('id')
-        .single();
+    final response = await ApiService.postJson('/sync/subjects', row);
     return response['id'].toString();
   }
 
   Future<String> _insertOrUpdateScanResult(
-    SupabaseClient client,
     String ownerTeacherId,
     ScanResult result,
     String? cloudSubjectId,
   ) async {
-    final row = <String, Object?>{
-      'owner_teacher_id': ownerTeacherId,
+    final row = <String, dynamic>{
+      if (result.cloudId != null && result.cloudId!.isNotEmpty)
+        'id': result.cloudId,
       'student_omr_id': result.studentOmrId,
-      'subject_id': cloudSubjectId,
       'subject_local_id': result.subjectId,
       'subject_name': result.subjectName,
       'sheet_id': result.sheetId,
@@ -578,66 +504,32 @@ class SupabaseSyncService {
       'total_questions': result.totalQuestions,
       'confidence': result.confidence,
       'scan_time': result.scanTime.toIso8601String(),
-      'scanned_image_path': null,
       'review_reasons': result.reviewReasons,
       'flagged_questions': result.flaggedQuestions,
       'manually_confirmed': result.manuallyConfirmed,
       'needs_review': result.needsReview,
-      'local_id': _scanLocalId(result),
-      'sync_status': SyncStatus.synced,
       'updated_at': result.updatedAt.toIso8601String(),
     };
-
-    if (result.cloudId != null && result.cloudId!.isNotEmpty) {
-      try {
-        final response = await client
-            .from('scan_results')
-            .update(row)
-            .eq('id', result.cloudId!)
-            .select('id')
-            .maybeSingle();
-        if (response != null) {
-          return response['id'].toString();
-        }
-      } catch (error) {
-        debugPrint('Scan result update failed, inserting instead: $error');
-      }
-    }
-
-    final response =
-        await client.from('scan_results').insert(row).select('id').single();
+    final response = await ApiService.postJson('/sync/scan-results', row);
     return response['id'].toString();
   }
 
   Future<String> _upsertDeadline(
-    SupabaseClient client,
     String ownerTeacherId,
     Deadline deadline,
     String? cloudSubjectId,
   ) async {
-    final row = <String, Object?>{
-      'owner_teacher_id': ownerTeacherId,
+    final row = <String, dynamic>{
       'local_id': deadline.id,
       'title': deadline.title,
       'section_name': deadline.sectionName,
-      'subject_id': cloudSubjectId,
       'subject_local_id': deadline.subjectId,
       'due_date': deadline.dueDate.toIso8601String(),
       'is_completed': deadline.isCompleted,
-      'sync_status': SyncStatus.synced,
       'updated_at': deadline.updatedAt.toIso8601String(),
     };
-    final response = await client
-        .from('deadlines')
-        .upsert(row, onConflict: 'owner_teacher_id,local_id')
-        .select('id')
-        .single();
+    final response = await ApiService.postJson('/sync/deadlines', row);
     return response['id'].toString();
-  }
-
-  String _scanLocalId(ScanResult result) {
-    final subject = result.subjectId ?? result.subjectName;
-    return '${result.studentOmrId}|$subject|${result.scanTime.toIso8601String()}';
   }
 
   DateTime? _parseDate(dynamic value) {
@@ -710,9 +602,9 @@ class SupabaseSyncService {
   }
 
   Object _jsonMap(Map<dynamic, dynamic> value) {
-    return jsonDecode(jsonEncode(value.map(
+    return value.map(
       (key, entry) => MapEntry(key.toString(), entry),
-    )));
+    );
   }
 
   Object? _jsonMapOrNull(Map<dynamic, dynamic>? value) {

@@ -1033,21 +1033,63 @@ int _globalOmrCounter = 1;
 int _globalSubjectCounter = 1;
 int _globalSheetCounter = 1;
 
-/// Build sequential OMR ID (0001, 0002, 0003...)
+int _parseOmrIdNumber(String omrId) {
+  return int.tryParse(omrId.trim()) ?? 0;
+}
+
+/// Next OMR number to mint from the live roster (not a stale counter alone).
+/// Empty roster / empty used set → 1. Otherwise max(existing) + 1.
+int nextOmrNumberFromRoster({
+  Iterable<Student>? students,
+  Set<String> reservedOmrIds = const <String>{},
+}) {
+  final used = <int>{};
+  for (final student in students ?? globalStudentDatabase) {
+    final n = _parseOmrIdNumber(student.omrId);
+    if (n > 0) {
+      used.add(n);
+    }
+  }
+  for (final reserved in reservedOmrIds) {
+    final n = _parseOmrIdNumber(reserved);
+    if (n > 0) {
+      used.add(n);
+    }
+  }
+  if (used.isEmpty) {
+    return 1;
+  }
+  return used.reduce((a, b) => a > b ? a : b) + 1;
+}
+
+/// Build sequential OMR ID (0001, 0002, 0003...).
+///
+/// New / empty teacher roster starts at 0001. Later imports continue after the
+/// highest ID already in use. Never assigns an ID that is already taken by a
+/// student or reserved in the current import batch.
 String buildStudentOmrId(
   String schoolId, {
   Set<String> reservedOmrIds = const <String>{},
+  Iterable<Student>? students,
 }) {
-  // Generate sequential IDs starting from current counter (max 9999 = 4 digits).
+  // Always derive from the live roster so a new teacher (or empty roster after
+  // archive) starts at 0001 even if the process counter was left high.
+  var candidate = nextOmrNumberFromRoster(
+    students: students,
+    reservedOmrIds: reservedOmrIds,
+  );
+
+  final roster = students ?? globalStudentDatabase;
   for (var attempt = 0; attempt < 9999; attempt++) {
-    if (_globalOmrCounter > 9999) {
+    if (candidate > 9999) {
       break;
     }
-    final omrId = _globalOmrCounter.toString().padLeft(4, '0');
-    _globalOmrCounter++;
+    final omrId = candidate.toString().padLeft(4, '0');
+    candidate++;
+    _globalOmrCounter = candidate;
 
-    // Skip if already reserved
-    if (!reservedOmrIds.contains(omrId)) {
+    final takenByStudent = roster.any((student) => student.omrId == omrId);
+    if (!takenByStudent && !reservedOmrIds.contains(omrId)) {
       return omrId;
     }
   }
@@ -1057,12 +1099,7 @@ String buildStudentOmrId(
 
 // Legacy sequential OMR IDs remain available for older flows and tests.
 String generateNextOmrId() {
-  if (_globalOmrCounter > 9999) {
-    throw StateError('No available OMR IDs remaining.');
-  }
-  final id = _globalOmrCounter.toString().padLeft(4, '0');
-  _globalOmrCounter++;
-  return id;
+  return buildStudentOmrId('');
 }
 
 String generateUniqueSubjectId() {
@@ -1093,9 +1130,15 @@ void restoreCounters({
   required int subjectCounter,
   required int sheetCounter,
 }) {
-  _globalOmrCounter = omrCounter;
-  _globalSubjectCounter = subjectCounter;
-  _globalSheetCounter = sheetCounter;
+  _globalOmrCounter = omrCounter < 1 ? 1 : omrCounter;
+  _globalSubjectCounter = subjectCounter < 1 ? 1 : subjectCounter;
+  _globalSheetCounter = sheetCounter < 1 ? 1 : sheetCounter;
+}
+
+/// Align the OMR counter with the live roster after load/archive/delete.
+/// Empty roster → 1 (next mint is 0001). Otherwise max(existing)+1.
+void syncOmrCounterToRoster([Iterable<Student>? students]) {
+  _globalOmrCounter = nextOmrNumberFromRoster(students: students);
 }
 
 class SubjectSheetQrPayload {
@@ -1109,7 +1152,15 @@ class SubjectSheetQrPayload {
     required this.sectionName,
     this.examDateIso,
     this.layout,
+    this.app = cocOmrAppId,
+    this.ownerTeacherId,
+    this.ownerTeacherEmail,
+    this.ownerTeacherName,
+    this.subjectCloudId,
   });
+
+  /// Fixed issuer tag so scanners can reject EvalBee / other OMR apps' sheets.
+  static const String cocOmrAppId = 'coc-omr';
 
   final int version;
   final String sheetId;
@@ -1123,23 +1174,57 @@ class SubjectSheetQrPayload {
   /// Layout metadata (v2+). Null for legacy v1 payloads.
   final QrLayoutMetadata? layout;
 
+  /// Issuer id. Null on older printed sheets that pre-date this field.
+  final String? app;
+
+  /// Cloud account that printed this sheet. Null on sheets printed before v1.5.25.
+  final String? ownerTeacherId;
+
+  /// Email of the teacher who printed this sheet (for clear wrong-teacher messages).
+  final String? ownerTeacherEmail;
+
+  /// Display name of the teacher who printed this sheet.
+  final String? ownerTeacherName;
+
+  /// Cloud subject id when synced. Stronger than local [subjectId] across devices.
+  final String? subjectCloudId;
+
   /// Check if this is a v2 payload with explicit layout
   bool get hasExplicitLayout => layout != null && version >= 2;
 
+  /// True when QR proves this is a COC sheet, or is a legacy COC payload without [app].
+  bool get isCocIssued {
+    if (app == cocOmrAppId) return true;
+    // Pre-tag sheets: still ours if they look like our QR schema.
+    if (app == null || app!.isEmpty) {
+      return sheetId.isNotEmpty && subjectName.isNotEmpty && totalQuestions > 0;
+    }
+    return false;
+  }
+
+  /// Compact keys keep QR small enough to decode reliably at print size.
+  /// Layout / passing score / exam date are omitted — the scanner session
+  /// already knows the grid, and those fields made QRs too dense for phones.
+  /// [fromJson] accepts both compact and legacy verbose keys.
   Map<String, dynamic> toJson() {
     return {
+      'a': cocOmrAppId,
       'v': version,
-      'sheetId': sheetId,
-      'subjectId': subjectId,
-      'subjectName': subjectName,
-      'questions': totalQuestions,
-      'passingScore': passingScore,
-      'section': sectionName,
-      'examDate': examDateIso,
-      if (layout != null) 'layout': layout!.toJson(),
+      'id': sheetId,
+      'si': subjectId,
+      'sn': subjectName,
+      'q': totalQuestions,
+      'sc': sectionName,
+      if (ownerTeacherId != null && ownerTeacherId!.isNotEmpty)
+        'ot': ownerTeacherId,
+      if (ownerTeacherEmail != null && ownerTeacherEmail!.isNotEmpty)
+        'oe': ownerTeacherEmail,
+      if (subjectCloudId != null && subjectCloudId!.isNotEmpty)
+        'ci': subjectCloudId,
     };
   }
 
+  /// Accepts both compact keys (v1.5.29+) and verbose legacy keys.
   factory SubjectSheetQrPayload.fromJson(Map<String, dynamic> json) {
     final sectionsValue = json['sections'];
     String? fallbackSection;
@@ -1147,27 +1232,54 @@ class SubjectSheetQrPayload {
       fallbackSection = sectionsValue.first?.toString();
     }
 
-    // Parse layout if present (v2+)
+    // Parse layout — compact 'l' or legacy 'layout'
     QrLayoutMetadata? layout;
-    final layoutJson = json['layout'];
+    final layoutJson = json['l'] ?? json['layout'];
     if (layoutJson is Map<String, dynamic>) {
       layout = QrLayoutMetadata.fromJson(layoutJson);
+    } else if (layoutJson is Map) {
+      layout = QrLayoutMetadata.fromJson(Map<String, dynamic>.from(layoutJson));
+    }
+
+    String? str(List<String> keys) {
+      for (final k in keys) {
+        final v = json[k]?.toString().trim();
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return null;
     }
 
     return SubjectSheetQrPayload(
-      version: _readInt(json['v'], fallback: 1),
-      sheetId: json['sheetId']?.toString() ?? '',
-      subjectId: json['subjectId']?.toString() ?? '',
-      subjectName: json['subjectName']?.toString() ?? '',
-      totalQuestions: _readInt(json['questions']),
-      passingScore: _readInt(json['passingScore']),
-      sectionName: json['section']?.toString() ?? fallbackSection,
-      examDateIso: json['examDate']?.toString(),
+      version: _readInt(json['v'], fallback: _readInt(json['version'], fallback: 1)),
+      sheetId: str(['id', 'sheetId']) ?? '',
+      subjectId: str(['si', 'subjectId']) ?? '',
+      subjectName: str(['sn', 'subjectName']) ?? '',
+      totalQuestions: _readInt(
+        json['q'] ?? json['questions'],
+        fallback: _readInt(json['totalQuestions']),
+      ),
+      passingScore: _readInt(json['ps'] ?? json['passingScore']),
+      sectionName: str(['sc', 'section', 'sectionName']) ?? fallbackSection,
+      examDateIso: str(['ed', 'examDate', 'examDateIso']),
       layout: layout,
+      app: str(['a', 'app']),
+      ownerTeacherId: str(['ot', 'ownerTeacherId']),
+      ownerTeacherEmail: str(['oe', 'ownerTeacherEmail']),
+      ownerTeacherName: str(['on', 'ownerTeacherName']),
+      subjectCloudId: str(['ci', 'subjectCloudId']),
     );
   }
 
   Subject? resolveSubject() {
+    final cloudIdRaw = subjectCloudId?.trim();
+    if (cloudIdRaw != null && cloudIdRaw.isNotEmpty) {
+      for (final subject in globalSubjects) {
+        if (subject.cloudId == cloudIdRaw) {
+          return subject;
+        }
+      }
+    }
+
     for (final subject in globalSubjects) {
       if (subject.id == subjectId) {
         return subject;
@@ -1248,6 +1360,7 @@ class QrLayoutMetadata {
   /// Horizontal spacing between bubble centers within a column
   final double bubbleSpacingX;
 
+  /// Verbose keys — kept for cached data and backward compat.
   Map<String, dynamic> toJson() => {
         'template': templateId,
         'cols': columns,
@@ -1261,14 +1374,14 @@ class QrLayoutMetadata {
 
   factory QrLayoutMetadata.fromJson(Map<String, dynamic> json) {
     return QrLayoutMetadata(
-      templateId: json['template']?.toString() ?? '',
-      columns: _readIntStatic(json['cols']),
-      rows: _readIntStatic(json['rows']),
-      gridTop: _readDoubleStatic(json['gridTop']),
-      gridBottom: _readDoubleStatic(json['gridBottom']),
-      rowHeight: _readDoubleStatic(json['rowHeight']),
-      columnWidth: _readDoubleStatic(json['colWidth']),
-      bubbleSpacingX: _readDoubleStatic(json['bubbleSpacingX']),
+      templateId: (json['t'] ?? json['template'])?.toString() ?? '',
+      columns: _readIntStatic(json['c'] ?? json['cols']),
+      rows: _readIntStatic(json['r'] ?? json['rows']),
+      gridTop: _readDoubleStatic(json['gt'] ?? json['gridTop']),
+      gridBottom: _readDoubleStatic(json['gb'] ?? json['gridBottom']),
+      rowHeight: _readDoubleStatic(json['rh'] ?? json['rowHeight']),
+      columnWidth: _readDoubleStatic(json['cw'] ?? json['colWidth']),
+      bubbleSpacingX: _readDoubleStatic(json['bx'] ?? json['bubbleSpacingX']),
     );
   }
 

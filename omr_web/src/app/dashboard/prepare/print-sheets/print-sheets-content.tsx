@@ -9,7 +9,7 @@ import { Input, Label, Select } from "@/components/ui/input";
 import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
 import type { DbSubject, DbStudent } from "@/lib/types/database";
-import { generateAnswerSheetPdf, generateBlankSheetsPdf } from "@/lib/pdf/answer-sheet";
+import { generateAnswerSheetsPdf } from "@/lib/pdf/answer-sheet";
 import { getQuestionAnswers } from "@/lib/omr/answer-key";
 import { downloadBlob } from "@/lib/utils";
 
@@ -65,8 +65,6 @@ export default function PrintSheetsPage() {
       Array.from({ length: subject.total_questions }, (_, i) => i + 1).every((q) => {
         return getQuestionAnswers(subject.answer_key, String(q)).length > 0;
       });
-    const missingOmrIds =
-      mode === "class" ? sectionStudents.filter((s) => !s.omr_id?.trim()).length : 0;
 
     return [
       {
@@ -88,17 +86,9 @@ export default function PrintSheetsPage() {
         ok: mode === "blank" || sectionStudents.length > 0,
         label:
           mode === "blank"
-            ? "Blank sheet mode (no roster required)"
-            : `Roster has ${sectionStudents.length} student${sectionStudents.length === 1 ? "" : "s"}`,
+            ? "Extra copies mode (set count below)"
+            : `Roster count: ${sectionStudents.length} blank sheet${sectionStudents.length === 1 ? "" : "s"} (no names on paper)`,
         fix: "/dashboard/prepare/import",
-      },
-      {
-        ok: missingOmrIds === 0,
-        label:
-          missingOmrIds > 0
-            ? `${missingOmrIds} student(s) missing OMR ID — assign IDs before printing`
-            : "Every student has an OMR ID",
-        fix: "/dashboard/prepare/omr-ids",
       },
       {
         ok: Boolean(subject?.exam_date),
@@ -127,10 +117,8 @@ export default function PrintSheetsPage() {
     setLoading(true);
     setError(null);
     try {
-      const bytes =
-        mode === "class"
-          ? await generateAnswerSheetPdf(subject, sectionName, sectionStudents)
-          : await generateBlankSheetsPdf(subject, sectionName, copies);
+      const sheetCount = mode === "class" ? sectionStudents.length : copies;
+      const bytes = await generateAnswerSheetsPdf(subject, sectionName, sheetCount);
       downloadBlob(
         new Blob([Uint8Array.from(bytes)], { type: "application/pdf" }),
         `${subject.name}_${sectionName}_${mode}.pdf`,
@@ -149,7 +137,10 @@ export default function PrintSheetsPage() {
           ← Prepare
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Print OMR sheets</h1>
-        <p className="mt-1 text-sm text-slate-500">Print at 100% scale (Actual size). Do not use Fit to page.</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Print at 100% scale (Actual size). Sheets are blank — students bubble their own OMR ID on exam day.
+          No names are printed on the paper.
+        </p>
       </div>
 
       <Card className="mb-4 max-w-xl border-slate-200">
@@ -216,7 +207,7 @@ export default function PrintSheetsPage() {
                   mode === "class" ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-600"
                 }`}
               >
-                One per student ({sectionStudents.length})
+                One per roster seat ({sectionStudents.length})
               </button>
               <button
                 type="button"
@@ -225,7 +216,7 @@ export default function PrintSheetsPage() {
                   mode === "blank" ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-600"
                 }`}
               >
-                Blank copies
+                Extra copies
               </button>
             </div>
           </div>

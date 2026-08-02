@@ -7,10 +7,14 @@ export const PAGE = {
   marginTop: 34,
   marginRight: 28,
   marginBottom: 28,
+  /** pageWidth - marginLeft - marginRight */
+  contentWidth: 539,
+  headerTop: 34,
   cornerMarkerSize: 20,
   cornerMarkerOffset: 8,
   timingMarkSize: 6,
   timingMarkSpacing: 80,
+  timingMarkEdgeOffset: 8,
   timingMarkStartX: 60,
   timingMarkEndX: 535,
   timingMarkStartY: 60,
@@ -28,12 +32,17 @@ export const PAGE = {
   omrIdRowSpacing: 12,
   omrIdFirstColumnX: 222.5,
   omrIdFirstRowY: 134,
+  omrIdBubbleBorder: 1.2,
   answerGridTop: 262,
   answerGridBottom: 800,
   answerGridLeft: 28,
   answerGridRight: 567,
+  answerGridWidth: 539,
+  answerGridHeight: 538,
   answerOptionIndicatorHeight: 14,
   answerGridFooterHeight: 30,
+  answerGridContentHeight: 494,
+  answerRowsBottom: 770,
   answerBubbleDiameter: 11.5,
   answerOptionsCount: 5,
   answerOptionLabels: ["A", "B", "C", "D", "E"],
@@ -112,30 +121,28 @@ export function bubblePosition(template: OmrTemplate, questionNumber: number, op
 
 export function buildQrPayload(subject: {
   local_id: string;
+  id?: string;
   name: string;
   total_questions: number;
   passing_score: number;
   exam_date: string | null;
+  owner_teacher_id?: string;
+  owner_teacher_email?: string | null;
+  owner_teacher_name?: string | null;
 }, sectionName: string, sheetId: string) {
-  const template = templateForCount(subject.total_questions);
+  // Lean compact payload — must match Flutter's SubjectSheetQrPayload.toJson().
+  // Layout and teacher name are deliberately excluded: a denser QR could not be
+  // decoded from phone photos of the printed sheet.
   return JSON.stringify({
-    version: 2,
-    sheetId,
-    subjectId: subject.local_id,
-    subjectName: subject.name,
-    totalQuestions: subject.total_questions,
-    passingScore: subject.passing_score,
-    sectionName,
-    examDateIso: subject.exam_date,
-    layout: {
-      template: template.templateId,
-      cols: template.columns,
-      rows: template.rows,
-      gridTop: answerRowsTop(),
-      gridBottom: answerRowsBottom(template),
-      rowHeight: template.rowHeight,
-      colWidth: template.columnWidth,
-      bubbleSpacingX: template.bubbleSpacingX,
-    },
+    a: "coc-omr",
+    v: 2,
+    id: sheetId,
+    si: subject.local_id,
+    sn: subject.name,
+    q: subject.total_questions,
+    sc: sectionName,
+    ...(subject.owner_teacher_id ? { ot: subject.owner_teacher_id } : {}),
+    ...(subject.owner_teacher_email ? { oe: subject.owner_teacher_email } : {}),
+    ...(subject.id ? { ci: subject.id } : {}),
   });
 }

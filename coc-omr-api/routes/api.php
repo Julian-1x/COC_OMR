@@ -91,6 +91,7 @@ Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(funct
             Route::get('/department-admins', [AdminController::class, 'departmentAdmins']);
             Route::post('/teachers/{teacherId}/make-dept-admin', [AdminController::class, 'makeDeptAdmin']);
             Route::post('/teachers/{teacherId}/revoke-dept-admin', [AdminController::class, 'revokeDeptAdmin']);
+            Route::delete('/teachers/{teacherId}', [AdminController::class, 'destroy']);
         });
     });
 });
