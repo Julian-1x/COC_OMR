@@ -7,6 +7,7 @@ import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/academic_term.dart';
+import 'package:omr_app/utils/person_name.dart';
 import 'package:omr_app/utils/roster_columns.dart';
 import 'package:omr_app/utils/roster_spreadsheet.dart';
 import 'package:omr_app/utils/student_identity.dart';
@@ -91,6 +92,28 @@ class ImportPreview {
   ImportPreview replaceRosterPreview() => ImportService._replaceRosterPreview(this);
 }
 
+class ManualStudentResult {
+  const ManualStudentResult({
+    required this.student,
+    required this.created,
+    required this.omrIdReused,
+  });
+
+  final Student student;
+  final bool created;
+  final bool omrIdReused;
+
+  String get feedbackMessage {
+    if (created) {
+      return '${student.name} added · OMR ${student.omrId} · ${student.section}';
+    }
+    if (omrIdReused) {
+      return '${student.name} updated · same OMR ${student.omrId} · ${student.section}';
+    }
+    return '${student.name} updated · OMR ${student.omrId} · ${student.section}';
+  }
+}
+
 Section _importSection(String name, {String? ownerTeacherId}) {
   return Section(
     name: name,
@@ -153,6 +176,63 @@ class ImportService {
         schoolId,
         reservedOmrIds: reservedOmrIds,
       );
+
+  /// Add one student by school ID / name / section. Same school ID keeps the
+  /// existing OMR ID; a new student gets the next available ID (0001–9999).
+  static Future<ManualStudentResult> addManualStudent({
+    required String schoolId,
+    required String name,
+    required String section,
+  }) async {
+    final trimmedId = schoolId.trim();
+    final trimmedName = PersonName.normalize(name);
+    final sectionName = normalizeSectionName(section);
+
+    if (trimmedId.isEmpty) {
+      throw const FormatException('Enter the student ID.');
+    }
+    if (trimmedName.isEmpty) {
+      throw const FormatException('Enter the student name.');
+    }
+    if (sectionName.isEmpty) {
+      throw const FormatException('Enter the section.');
+    }
+
+    await LocalDataStore.instance.reloadForCurrentTeacher();
+
+    final ownerTeacherId = ApiService.currentUserId?.trim();
+    final existing = findStudentBySchoolId(globalStudentDatabase, trimmedId);
+    final student = existing == null
+        ? Student(
+            schoolId: trimmedId,
+            name: trimmedName,
+            section: sectionName,
+            omrId: _buildOmrId(trimmedId, reservedOmrIds: {}),
+            ownerTeacherId: ownerTeacherId,
+            syncStatus: SyncStatus.pending,
+          )
+        : existing.copyWith(
+            schoolId: trimmedId,
+            name: trimmedName,
+            section: sectionName,
+            ownerTeacherId: ownerTeacherId ?? existing.ownerTeacherId,
+            syncStatus: SyncStatus.pending,
+            updatedAt: DateTime.now(),
+          );
+
+    await LocalDataStore.instance.saveImportedStudents(
+      students: [student],
+      sections: [
+        _importSection(sectionName, ownerTeacherId: ownerTeacherId),
+      ],
+    );
+
+    return ManualStudentResult(
+      student: student,
+      created: existing == null,
+      omrIdReused: existing != null,
+    );
+  }
 
   static Future<ImportSummary> importStudentData({
     ImportProgressCallback? onProgress,
@@ -415,9 +495,10 @@ class ImportService {
 
       final schoolId = _readCell(row[schoolIdIndex]);
       final name = nameIndex < row.length
-          ? _readCell(row[nameIndex])
-          : '${_readCell(row[firstNameIndex])} ${_readCell(row[lastNameIndex])}'
-              .trim();
+          ? PersonName.normalize(_readCell(row[nameIndex]))
+          : PersonName.normalize(
+              '${_readCell(row[firstNameIndex])} ${_readCell(row[lastNameIndex])}',
+            );
       final section = sectionIndex < row.length
           ? _normalizeSectionName(_readCell(row[sectionIndex]))
           : '';

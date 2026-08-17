@@ -16,6 +16,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
+  // Stale tokens after a DB reset must be able to reach login / signout / warming.
+  if (
+    pathname.startsWith("/auth/signout") ||
+    pathname.startsWith("/warming")
+  ) {
+    return NextResponse.next({ request });
+  }
+
   if (pathname === "/login" || pathname === "/") {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";

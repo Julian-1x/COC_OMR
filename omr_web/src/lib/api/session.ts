@@ -13,7 +13,27 @@ import {
   createServerApiClient,
   getServerApiToken,
 } from "@/lib/api/laravel-server";
+import { wakeSchoolApi } from "@/lib/api/wake-api";
+import { tryGetApiBaseUrl } from "@/lib/api/env";
 import type { DbTeacherProfile } from "@/lib/types/database";
+
+async function fetchMeWithRetry(api: ApiClient): Promise<{ user: ApiUser }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await api.get<{ user: ApiUser }>("/me");
+    } catch (error) {
+      lastError = error;
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        throw error;
+      }
+      if (attempt + 1 < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
+    }
+  }
+  throw lastError;
+}
 
 export async function requireTeacherSession(): Promise<{
   api: ApiClient;
@@ -25,19 +45,26 @@ export async function requireTeacherSession(): Promise<{
 
   const api = createServerApiClient(token);
   try {
-    const { user } = await api.get<{ user: ApiUser }>("/me");
+    const baseUrl = tryGetApiBaseUrl();
+    if (baseUrl) {
+      await wakeSchoolApi(baseUrl, { attempts: 2, delayMs: 1500 });
+    }
+    const { user } = await fetchMeWithRetry(api);
     if (!isAccessApproved(user.profile)) {
-      redirect("/login?pending=1");
+      redirect("/auth/signout?next=/login&pending=1");
     }
     return { api, user, profile: user.profile };
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
-      redirect("/login");
+      // Clear the cookie or middleware will bounce login ↔ dashboard forever
+      // (common after a DB reset like Neon cutover).
+      redirect("/auth/signout?next=/login");
     }
     if (error instanceof ApiError && error.status === 403) {
-      redirect("/login?pending=1");
+      redirect("/auth/signout?next=/login&pending=1");
     }
-    throw error;
+    // Keep the session cookie — Render free tier often 502s while waking.
+    redirect("/warming");
   }
 }
 

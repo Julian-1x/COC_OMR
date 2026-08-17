@@ -9,6 +9,8 @@ return [
         Sanctum::currentApplicationUrlWithPort(),
     ))),
     'guard' => ['web'],
+    // null = mobile/web API tokens do not auto-expire (logout / admin revoke only).
+    // Web portal auto sign-out uses the browser session cookie maxAge in omr_web.
     'expiration' => null,
     'token_prefix' => env('SANCTUM_TOKEN_PREFIX', ''),
     'middleware' => [

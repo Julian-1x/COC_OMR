@@ -5,7 +5,9 @@ import {
   apiTokenCookieOptions,
 } from "@/lib/api/laravel-client";
 import { tryGetApiBaseUrl } from "@/lib/api/env";
+import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
 import { COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
+import { normalizePersonName } from "@/lib/person-name";
 
 type AuthResponse = {
   token?: string;
@@ -27,33 +29,66 @@ function authErrorMessage(payload: AuthResponse | null, fallback: string): strin
   return first ?? fallback;
 }
 
-async function readJsonBody(response: Response): Promise<AuthResponse | null> {
-  const text = await response.text();
-  if (!text.trim()) {
-    return null;
-  }
-  try {
-    return JSON.parse(text) as AuthResponse;
-  } catch {
-    return null;
-  }
-}
-
 function upstreamErrorMessage(
   response: Response,
   payload: AuthResponse | null,
   fallback: string,
+  rawBody?: string,
 ): string {
   if (payload) {
     return authErrorMessage(payload, fallback);
   }
   if (response.status === 502 || response.status === 504) {
-    return "School server timed out. Wait a minute and try again.";
+    return "School server is waking up. Wait about a minute, then try again.";
   }
   if (response.status >= 500) {
     return "School server error. Try again in a minute.";
   }
+  const snippet = (rawBody ?? "").replace(/\s+/g, " ").trim().slice(0, 80).toLowerCase();
+  if (snippet.startsWith("an error") || snippet.includes("<html")) {
+    return "School server is not responding with a usable reply. Confirm the API is running, then try again.";
+  }
   return fallback;
+}
+
+  return fallback;
+}
+
+async function readUpstream(
+  response: Response,
+): Promise<{ payload: AuthResponse | null; rawBody: string }> {
+  const rawBody = await response.text();
+  if (!rawBody.trim()) {
+    return { payload: null, rawBody };
+  }
+  try {
+    return { payload: JSON.parse(rawBody) as AuthResponse, rawBody };
+  } catch {
+    return { payload: null, rawBody };
+  }
+}
+
+function friendlyCatchMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const lower = error.message.toLowerCase();
+    if (
+      error.name === "AbortError" ||
+      lower.includes("aborted") ||
+      lower.includes("timeout")
+    ) {
+      return "School server is waking up. Wait about a minute, then try again.";
+    }
+    if (
+      lower.includes("fetch failed") ||
+      lower.includes("econnrefused") ||
+      lower.includes("enotfound") ||
+      lower.includes("network")
+    ) {
+      return "Could not reach the school API. Check API_BASE_URL and that the campus server is online.";
+    }
+    return error.message;
+  }
+  return "Could not reach the API. Check your internet.";
 }
 
 export async function POST(request: Request) {
@@ -83,12 +118,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email and password are required." }, { status: 400 });
     }
 
+    await wakeSchoolApi(baseUrl, { attempts: 2, delayMs: 1500 });
+
+    const jsonHeaders = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+
     if (mode === "register") {
-      const name = body.name?.trim() ?? "";
+      const name = normalizePersonName(body.name?.trim() ?? "");
       const department = body.department?.trim().toUpperCase() ?? "";
       if (!name) {
         return NextResponse.json(
-          { error: "Full name is required for registration." },
+          { error: "Enter your full name (first name, then last name)." },
           { status: 400 },
         );
       }
@@ -99,12 +141,9 @@ export async function POST(request: Request) {
         );
       }
 
-      const response = await fetch(`${baseUrl}/api/register`, {
+      const response = await fetchAuthUpstream(`${baseUrl}/api/register`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
+        headers: jsonHeaders,
         body: JSON.stringify({
           email,
           password,
@@ -115,10 +154,17 @@ export async function POST(request: Request) {
         }),
       });
 
-      const payload = await readJsonBody(response);
+      const { payload, rawBody } = await readUpstream(response);
       if (!response.ok) {
         return NextResponse.json(
-          { error: upstreamErrorMessage(response, payload, "Registration failed.") },
+          {
+            error: upstreamErrorMessage(
+              response,
+              payload,
+              "Registration failed.",
+              rawBody,
+            ),
+          },
           { status: response.status },
         );
       }
@@ -142,12 +188,9 @@ export async function POST(request: Request) {
       });
     }
 
-    const response = await fetch(`${baseUrl}/api/login`, {
+    const response = await fetchAuthUpstream(`${baseUrl}/api/login`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: jsonHeaders,
       body: JSON.stringify({
         email,
         password,
@@ -155,9 +198,14 @@ export async function POST(request: Request) {
       }),
     });
 
-    const payload = await readJsonBody(response);
+    const { payload, rawBody } = await readUpstream(response);
     if (!response.ok || !payload?.token) {
-      const message = upstreamErrorMessage(response, payload, "Sign in failed.");
+      const message = upstreamErrorMessage(
+        response,
+        payload,
+        "Sign in failed.",
+        rawBody,
+      );
       const lower = message.toLowerCase();
       const unverified =
         lower.includes("not confirmed") || lower.includes("not verified");
@@ -205,8 +253,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Could not reach the API. Check your internet.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: friendlyCatchMessage(error) }, { status: 500 });
   }
 }

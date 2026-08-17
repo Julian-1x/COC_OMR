@@ -96,5 +96,16 @@ void main() {
         '0008',
       );
     });
+
+    test('manual add after import continues from max OMR ID', () {
+      globalStudentDatabase = [
+        student(schoolId: 'A', omrId: '0001'),
+        student(schoolId: 'B', omrId: '0048'),
+      ];
+      rebuildStudentIndex();
+      syncOmrCounterToRoster();
+
+      expect(buildStudentOmrId('LATE-ENROLL', reservedOmrIds: {}), '0049');
+    });
   });
 }

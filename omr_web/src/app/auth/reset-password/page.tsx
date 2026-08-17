@@ -7,6 +7,11 @@ import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured } from "@/lib/api/env";
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_REQUIREMENT_HINT,
+  passwordValidationError,
+} from "@/lib/auth/password-rules";
 import { workspaceName } from "@/lib/theme";
 
 function ResetPasswordForm() {
@@ -43,8 +48,9 @@ function ResetPasswordForm() {
       setError("Passwords do not match.");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
+    const passwordError = passwordValidationError(password);
+    if (passwordError) {
+      setError(passwordError);
       return;
     }
 
@@ -118,10 +124,11 @@ function ResetPasswordForm() {
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              minLength={8}
+              minLength={PASSWORD_MIN_LENGTH}
               required
               disabled={linkInvalid}
             />
+            <p className="mt-1 text-xs text-slate-500">{PASSWORD_REQUIREMENT_HINT}</p>
           </div>
 
           <div className="mb-4">
@@ -132,7 +139,7 @@ function ResetPasswordForm() {
               autoComplete="new-password"
               value={passwordConfirmation}
               onChange={(e) => setPasswordConfirmation(e.target.value)}
-              minLength={8}
+              minLength={PASSWORD_MIN_LENGTH}
               required
               disabled={linkInvalid}
             />

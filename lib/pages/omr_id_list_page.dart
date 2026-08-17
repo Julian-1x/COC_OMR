@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/widgets/add_student_dialog.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/widgets/app_card.dart';
 
@@ -86,6 +87,21 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
         content: Text(message),
         backgroundColor: backgroundColor,
       ),
+    );
+  }
+
+  Future<void> _addStudentManually() async {
+    final result = await showAddStudentDialog(
+      context,
+      initialSection: _sectionFilter,
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {});
+    _showSnackBar(
+      result.feedbackMessage,
+      backgroundColor: brandGreen,
     );
   }
 
@@ -644,8 +660,15 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addStudentManually,
+        backgroundColor: brandGreen,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.person_add_alt_1_rounded),
+        label: const Text('Add student'),
+      ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 88),
         children: [
           AppCard(
             child: Column(
@@ -661,7 +684,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'View imported students and export a section list for exam day.',
+                  'View imported students, add a late enrollee, or export a section list for exam day.',
                   style: TextStyle(
                     color: brandMuted.withValues(alpha: 0.95),
                     height: 1.4,
@@ -734,7 +757,7 @@ class _OmrIdListPageState extends State<OmrIdListPage> {
                   const SizedBox(height: 8),
                   Text(
                     globalStudentDatabase.isEmpty
-                        ? 'Import students first to generate and view OMR IDs.'
+                        ? 'Import a roster or tap + to add a student. OMR IDs are assigned automatically.'
                         : 'Try a different search term.',
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: brandMuted),

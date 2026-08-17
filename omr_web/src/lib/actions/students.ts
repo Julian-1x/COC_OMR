@@ -10,6 +10,7 @@ import {
   upsertStudent,
 } from "@/lib/api/data";
 import { nextOmrId, normalizeSchoolId } from "@/lib/import/roster";
+import { normalizePersonName } from "@/lib/person-name";
 
 export async function saveStudent(input: {
   school_id: string;
@@ -32,7 +33,7 @@ export async function saveStudent(input: {
   await upsertStudent(api, user.id, {
     school_id: schoolId,
     omr_id: omrId,
-    name: input.name.trim(),
+    name: normalizePersonName(input.name),
     section_name: input.section_name.trim(),
   });
 

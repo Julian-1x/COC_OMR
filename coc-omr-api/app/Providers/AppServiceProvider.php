@@ -15,6 +15,7 @@ use App\Policies\SubjectPolicy;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\Rules\Password;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -32,6 +33,14 @@ class AppServiceProvider extends ServiceProvider
         if (str_starts_with($appUrl, 'https://')) {
             URL::forceScheme('https');
         }
+
+        // Registration + password reset: 8+ chars with a letter, number, and symbol.
+        Password::defaults(static function () {
+            return Password::min(8)
+                ->letters()
+                ->numbers()
+                ->symbols();
+        });
 
         Gate::policy(Section::class, SectionPolicy::class);
         Gate::policy(Student::class, StudentPolicy::class);

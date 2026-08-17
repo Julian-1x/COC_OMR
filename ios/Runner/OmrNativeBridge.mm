@@ -21,7 +21,11 @@ constexpr double kTimingEdge = 8.0;
 constexpr double kMarginTop = 34.0;
 constexpr double kBubbleD = 11.5;
 constexpr double kBubbleBorder = 1.2;
-constexpr double kDefaultFillThresh = 0.33;
+constexpr double kDefaultFillThresh = 0.28;
+constexpr double kMultiMarkClearSep = 0.12;
+constexpr double kMinAnswerAreaCoverage = 0.18;
+constexpr double kLightMarkAreaCoverage = 0.28;
+constexpr double kMinWinnerSeparation = 0.08;
 constexpr int kOmrCols = 4;
 constexpr int kOmrRows = 10;
 constexpr double kOmrIdTop = 114.0;
@@ -180,6 +184,7 @@ double sampleBubbleFillGray(const cv::Mat &g, double cx, double cy) {
 
 struct BubbleAn {
   double fill = 0;
+  double area = 0;
 };
 
 BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double cy) {
@@ -200,8 +205,9 @@ BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double
   cv::Scalar meanI = cv::mean(groi, mask);
   double intFill = 1.0 - (meanI[0] / 255.0);
   BubbleAn a;
-  // Weight grayscale intensity more heavily so faint pencil shading is still recognized.
-  a.fill = (thFill * 0.35) + (intFill * 0.65);
+  // Area weighted a bit higher so thin pen scratches need real coverage.
+  a.fill = (thFill * 0.45) + (intFill * 0.55);
+  a.area = thFill;
   return a;
 }
 
@@ -527,6 +533,9 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   NSMutableArray *qconf = [NSMutableArray array];
   int multi = 0, none = 0;
   NSMutableArray *ambig = [NSMutableArray array];
+  NSMutableArray *lightMarks = [NSMutableArray array];
+  NSMutableArray *scratchRejected = [NSMutableArray array];
+  NSMutableArray *weakWinnerRejected = [NSMutableArray array];
   const char *opts = "ABCDE";
   for (int qn = 1; qn <= totalQuestions; qn++) {
     int col = (qn - 1) / layout->rows;
@@ -539,30 +548,50 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     double colLeft = kAnsGridL + col * layout->columnWidth;
     double rowContentL = colLeft + kAnsInset + (usableW - rowContentW) / 2.0;
     double bubbleLeft = rowContentL + kQNumW + kAnsGap;
-    double bestF = 0, secondF = 0;
+    double bestF = 0, secondF = 0, bestArea = 0;
     int bestIdx = -1;
     int filledCnt = 0;
-    NSMutableArray *fills = [NSMutableArray array];
     for (int oi = 0; oi < kAnswerOpts; oi++) {
       double bx = bubbleLeft + oi * layout->bubbleSpacingX;
       BubbleAn a = analyzeBubble(th, warped, bx, rowY);
-      [fills addObject:@(a.fill)];
-      if (a.fill > fillTh) filledCnt++;
-      if (a.fill > bestF) { secondF = bestF; bestF = a.fill; bestIdx = oi; }
-      else if (a.fill > secondF) secondF = a.fill;
+      bool marked = a.fill > fillTh && a.area >= kMinAnswerAreaCoverage;
+      if (marked) filledCnt++;
+      if (a.fill > bestF) {
+        secondF = bestF;
+        bestF = a.fill;
+        bestIdx = oi;
+        bestArea = a.area;
+      } else if (a.fill > secondF) {
+        secondF = a.fill;
+      }
     }
-    if (filledCnt > 1) { multi++; [ambig addObject:@(qn)]; continue; }
+    double sep = bestF - secondF;
+    if (filledCnt > 1) {
+      multi++;
+      [ambig addObject:@(qn)];
+      continue;
+    }
     if (filledCnt == 0) none++;
-    if (bestIdx >= 0 && bestF > fillTh) {
+    bool clearWinner = sep >= kMinWinnerSeparation && secondF < fillTh;
+    if (bestIdx >= 0 && bestF > fillTh && bestArea >= kMinAnswerAreaCoverage && clearWinner) {
       NSString *letter = [NSString stringWithFormat:@"%c", opts[bestIdx]];
       answers[[NSString stringWithFormat:@"%d", qn]] = letter;
-      double sep = bestF - secondF;
       [qconf addObject:@(std::min(sep / 0.15, 1.0))];
+      if (bestArea < kLightMarkAreaCoverage) {
+        [lightMarks addObject:@(qn)];
+      }
+    } else if (bestIdx >= 0 && bestF > fillTh && bestArea < kMinAnswerAreaCoverage) {
+      [scratchRejected addObject:@(qn)];
+    } else if (bestIdx >= 0 && bestF > fillTh && bestArea >= kMinAnswerAreaCoverage && !clearWinner) {
+      [weakWinnerRejected addObject:@(qn)];
     }
   }
   debug[@"multipleSelectionsLayout"] = @(multi);
   debug[@"noSelectionsLayout"] = @(none);
   debug[@"ambiguousQuestions"] = ambig;
+  debug[@"lightMarkQuestions"] = lightMarks;
+  debug[@"scratchRejectedQuestions"] = scratchRejected;
+  debug[@"weakWinnerRejectedQuestions"] = weakWinnerRejected;
   double avgQ = 0;
   for (NSNumber *n in qconf) avgQ += n.doubleValue;
   if (qconf.count) avgQ /= qconf.count;

@@ -219,7 +219,10 @@ class NativeScannerCamera implements ScannerCamera {
           'enabled': enabled,
         },
       );
-      _torchEnabled = applied == true;
+      // Native returns whether the call succeeded — not the torch state.
+      if (applied == true) {
+        _torchEnabled = enabled;
+      }
     } catch (error) {
       debugPrint('Native torch toggle failed: $error');
     }

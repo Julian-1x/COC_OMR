@@ -12,12 +12,20 @@ export default async function AdminAccessPage() {
   const schoolName = profile.school_name?.trim() ?? "";
   const viewerIsSuperAdmin = isSuperAdmin(profile, user);
 
-  const [pending, teachers] = schoolName
-    ? await Promise.all([
+  let pending: Awaited<ReturnType<typeof fetchAccessRequests>> = [];
+  let teachers: Awaited<ReturnType<typeof fetchSchoolTeacherSummaries>> = [];
+  let cloudSlow = false;
+
+  if (schoolName) {
+    try {
+      [pending, teachers] = await Promise.all([
         fetchAccessRequests(api),
         fetchSchoolTeacherSummaries(api, schoolName, user.id),
-      ])
-    : [[], []];
+      ]);
+    } catch {
+      cloudSlow = true;
+    }
+  }
 
   const approved = teachers.filter(
     (teacher) =>
@@ -41,6 +49,21 @@ export default async function AdminAccessPage() {
             : `Approve or revoke instructors in ${profile.department ?? "your department"}.`}
         </p>
       </div>
+
+      {cloudSlow ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          School server is slow or waking up. Open{" "}
+          <a
+            className="font-semibold underline"
+            href="https://coc-omr-api.onrender.com/up"
+            target="_blank"
+            rel="noreferrer"
+          >
+            API status
+          </a>
+          , wait for Application up, then tap Try again / refresh this page.
+        </div>
+      ) : null}
 
       {!schoolName ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

@@ -7,6 +7,13 @@ import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured } from "@/lib/api/env";
+import { readJsonResponse } from "@/lib/api/read-json-response";
+import { wakeSchoolApi } from "@/lib/api/wake-api";
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_REQUIREMENT_HINT,
+  passwordValidationError,
+} from "@/lib/auth/password-rules";
 import { COC_DEPARTMENTS, COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
 
@@ -24,11 +31,34 @@ function LoginForm() {
   const [resendLoading, setResendLoading] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [slowServerHint, setSlowServerHint] = useState(false);
   const autoSignInInFlight = useRef(false);
   const loadingRef = useRef(false);
 
   useEffect(() => {
     loadingRef.current = loading;
+  }, [loading]);
+
+  useEffect(() => {
+    if (!isApiConfigured()) {
+      return;
+    }
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+    if (!apiBase) {
+      return;
+    }
+    void wakeSchoolApi(apiBase, { attempts: 2, delayMs: 1500 });
+  }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      setSlowServerHint(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSlowServerHint(true);
+    }, 4000);
+    return () => window.clearTimeout(timer);
   }, [loading]);
 
   const signInWithPassword = useCallback(
@@ -43,13 +73,13 @@ function LoginForm() {
         }),
       });
 
-      const payload = (await response.json()) as {
+      const payload = await readJsonResponse<{
         error?: string;
         ok?: boolean;
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
         message?: string;
-      };
+      }>(response);
       if (!response.ok || payload.error) {
         if (payload.accessPending || payload.error?.toLowerCase().includes("admin approval")) {
           const err = new Error(payload.error ?? "Waiting for school admin approval.");
@@ -81,7 +111,9 @@ function LoginForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: normalizedEmail }),
       });
-      const payload = (await response.json()) as { error?: string; message?: string };
+      const payload = await readJsonResponse<{ error?: string; message?: string }>(
+        response,
+      );
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? "Could not resend confirmation email.");
       }
@@ -249,6 +281,13 @@ function LoginForm() {
         throw new Error("Select your COC department.");
       }
 
+      if (mode === "register") {
+        const passwordError = passwordValidationError(password);
+        if (passwordError) {
+          throw new Error(passwordError);
+        }
+      }
+
       const response = await fetch("/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -262,13 +301,13 @@ function LoginForm() {
         }),
       });
 
-      const payload = (await response.json()) as {
+      const payload = await readJsonResponse<{
         error?: string;
         ok?: boolean;
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
         message?: string;
-      };
+      }>(response);
       if (!response.ok || payload.error) {
         throw new Error(payload.error ?? "Sign in failed.");
       }
@@ -299,32 +338,46 @@ function LoginForm() {
       router.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
+      const lower = message.toLowerCase();
       if (
-        message.toLowerCase().includes("already been taken") ||
-        message.toLowerCase().includes("already exists")
+        lower.includes("admin approval") ||
+        lower.includes("waiting for school admin")
       ) {
         setAwaitingConfirmation(false);
+        setAwaitingApproval(true);
         setMode("login");
-        setError("An account with this email already exists. Sign in with your password instead.");
+        setError(null);
+        setNotice(null);
+      } else if (lower.includes("revoked by your school admin")) {
+        setAwaitingConfirmation(false);
+        setAwaitingApproval(false);
+        setError(message);
       } else if (
-        message.toLowerCase().includes("not confirmed") ||
-        message.toLowerCase().includes("not verified")
+        lower.includes("not confirmed") ||
+        lower.includes("not verified")
       ) {
         setAwaitingConfirmation(true);
         setError(
           "This email is not confirmed yet. Leave this page open, tap the link in your email (phone or computer), then wait a few seconds.",
         );
       } else if (
-        message.toLowerCase().includes("admin approval") ||
-        message.toLowerCase().includes("waiting for school admin") ||
-        message.toLowerCase().includes("revoked by your school admin")
+        lower.includes("already been taken") ||
+        lower.includes("already registered") ||
+        lower.includes("already exists")
       ) {
         setAwaitingConfirmation(false);
-        setAwaitingApproval(true);
-        setError(message);
-      } else if (message.toLowerCase().includes("failed to fetch")) {
+        setMode("login");
         setError(
-          "Could not reach the server. Make sure npm run dev is running, then try again.",
+          "An account with this email already exists and is approved. Use Login with your password.",
+        );
+      } else if (
+        lower.includes("failed to fetch") ||
+        lower.includes("not valid json") ||
+        lower.includes("unexpected token") ||
+        lower.includes("school server is not responding")
+      ) {
+        setError(
+          "Could not reach the school server. Confirm the API is running, then try again.",
         );
       } else {
         setError(message);
@@ -376,6 +429,10 @@ function LoginForm() {
               <div className="mb-3">
                 <Label htmlFor="name">Full name</Label>
                 <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
+                <p className="mt-1 text-xs text-slate-500">
+                  First name then last name (e.g. Maria Santos). We fix ALL CAPS and Last, First
+                  automatically.
+                </p>
               </div>
               <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-semibold text-slate-800">School</p>
@@ -434,9 +491,12 @@ function LoginForm() {
               autoComplete={mode === "register" ? "new-password" : "current-password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              minLength={6}
+              minLength={mode === "register" ? PASSWORD_MIN_LENGTH : undefined}
               required
             />
+            {mode === "register" ? (
+              <p className="mt-1 text-xs text-slate-500">{PASSWORD_REQUIREMENT_HINT}</p>
+            ) : null}
           </div>
 
           {awaitingConfirmation ? (
@@ -461,6 +521,13 @@ function LoginForm() {
             </div>
           ) : null}
 
+          {slowServerHint ? (
+            <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+              Connecting to the school server — free cloud hosting can take up to a minute the first
+              time. Stay on this page.
+            </p>
+          ) : null}
+
           {notice ? (
             <p className="mb-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
               {notice}
@@ -472,7 +539,13 @@ function LoginForm() {
           ) : null}
 
           <Button type="submit" className="w-full" disabled={loading || resendLoading}>
-            {loading ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"}
+            {loading
+              ? slowServerHint
+                ? "Connecting to server…"
+                : "Please wait…"
+              : mode === "register"
+                ? "Create account"
+                : "Sign in"}
           </Button>
 
           {awaitingConfirmation ? (

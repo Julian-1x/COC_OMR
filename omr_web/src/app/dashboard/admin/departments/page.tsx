@@ -10,12 +10,24 @@ export default async function DepartmentAdminsPage() {
   const { user, profile, api } = await requireSuperAdminSession();
   const schoolName = profile.school_name?.trim() ?? "";
 
-  const [{ admins, departments }, teachers] = schoolName
-    ? await Promise.all([
+  let admins: Awaited<ReturnType<typeof fetchDepartmentAdmins>>["admins"] = [];
+  let departments: string[] = [];
+  let teachers: Awaited<ReturnType<typeof fetchSchoolTeacherSummaries>> = [];
+  let cloudSlow = false;
+
+  if (schoolName) {
+    try {
+      const [deptPayload, teacherList] = await Promise.all([
         fetchDepartmentAdmins(api),
         fetchSchoolTeacherSummaries(api, schoolName, user.id),
-      ])
-    : [{ admins: [], departments: [] as string[] }, []];
+      ]);
+      admins = deptPayload.admins;
+      departments = deptPayload.departments;
+      teachers = teacherList;
+    } catch {
+      cloudSlow = true;
+    }
+  }
 
   return (
     <>
@@ -31,6 +43,21 @@ export default async function DepartmentAdminsPage() {
           page.
         </p>
       </div>
+
+      {cloudSlow ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          School server is slow or waking up. Refresh after{" "}
+          <a
+            className="font-semibold underline"
+            href="https://coc-omr-api.onrender.com/up"
+            target="_blank"
+            rel="noreferrer"
+          >
+            API status
+          </a>{" "}
+          shows Application up.
+        </div>
+      ) : null}
 
       {!schoolName ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

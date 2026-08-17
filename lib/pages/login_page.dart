@@ -19,6 +19,7 @@ import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/widgets/app_pin_input.dart';
 import 'package:omr_app/widgets/app_primary_button.dart';
+import 'package:omr_app/utils/password_rules.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/auth_shell.dart';
 
@@ -213,8 +214,14 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final account = await _auth.accountFromCurrentSession();
+    final check = await _auth.checkCurrentSession();
+    final account =
+        check.isUnreachable ? _auth.cachedSessionAccount() : check.account;
     if (account == null) {
+      if (check.isUnreachable) {
+        await _fallBackToOfflineUnlock();
+        return;
+      }
       if (ApiService.hasActiveSession) {
         await _auth.signOut();
       }
@@ -304,25 +311,8 @@ class _LoginPageState extends State<LoginPage> {
     final offlineProfile = await _localAuth.loadProfile();
     final hasOfflinePin = await _localAuth.hasProfile();
     if (hasOfflinePin && offlineProfile != null) {
-      if (ApiService.hasActiveSession && ApiService.isReady) {
-        final account = await _auth.accountFromCurrentSession();
-        if (account == null) {
-          await _auth.signOut();
-          if (mounted) {
-            setState(() {
-              _offlineProfile = null;
-              _stage = _LoginStage.onlineAuth;
-              _isLoading = false;
-            });
-            _showMessage(
-              'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
-              isError: true,
-            );
-          }
-          return;
-        }
-      }
-
+      // Show the PIN screen immediately. A slow /me call on Wi‑Fi must not
+      // delay unlock — validate the cloud session in the background.
       if (mounted) {
         setState(() {
           _offlineProfile = offlineProfile;
@@ -330,6 +320,7 @@ class _LoginPageState extends State<LoginPage> {
           _isLoading = false;
         });
       }
+      unawaited(_validateSessionInBackground());
       return;
     }
 
@@ -379,7 +370,7 @@ class _LoginPageState extends State<LoginPage> {
     final isRegister = _mode == _AuthMode.register;
 
     if (isRegister && name.isEmpty) {
-      _showMessage('Enter the teacher name.', isError: true);
+      _showMessage('Enter your full name (first name, then last name).', isError: true);
       return;
     }
     if (isRegister &&
@@ -392,8 +383,14 @@ class _LoginPageState extends State<LoginPage> {
       _showMessage('Enter a valid email address.', isError: true);
       return;
     }
-    if (password.length < 6) {
-      _showMessage('Password must be at least 6 characters.', isError: true);
+    if (isRegister) {
+      final passwordError = PasswordRules.validationError(password);
+      if (passwordError != null) {
+        _showMessage(passwordError, isError: true);
+        return;
+      }
+    } else if (password.trim().isEmpty) {
+      _showMessage('Enter your password.', isError: true);
       return;
     }
 
@@ -588,11 +585,49 @@ class _LoginPageState extends State<LoginPage> {
 
     await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
     await LocalDataStore.instance.reloadForCurrentTeacher();
-    await _syncPinToCloudIfNeeded();
+    // Never block exam-day unlock on a cloud PIN backup round-trip.
+    unawaited(_syncPinToCloudIfNeeded());
     if (!mounted) {
       return;
     }
     await _enterDashboard();
+  }
+
+  Future<void> _validateSessionInBackground() async {
+    if (!ApiService.hasActiveSession || !ApiService.isReady) {
+      return;
+    }
+
+    final check = await _auth.checkCurrentSession();
+    if (!mounted || !check.isInvalid) {
+      return;
+    }
+
+    // Cloud token is dead (expired DB / old session). Keep the offline PIN
+    // screen so teachers can still open the app on exam day.
+    await ApiService.clearSession();
+    final profile = await _localAuth.loadProfile();
+    if (!mounted) {
+      return;
+    }
+    if (profile != null) {
+      setState(() {
+        _offlineProfile = profile;
+        _stage = _LoginStage.offlineUnlock;
+        _isLoading = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _offlineProfile = null;
+      _stage = _LoginStage.onlineAuth;
+      _isLoading = false;
+    });
+    _showMessage(
+      'Cloud sign-in is unavailable right now. Use your offline PIN if this phone was set up before, or try again when the school server is back.',
+      isError: true,
+    );
   }
 
   Future<void> _routeAfterOnlineAuth(
@@ -653,6 +688,33 @@ class _LoginPageState extends State<LoginPage> {
       _unlockPinController.clear();
       _isSubmitting = false;
     });
+  }
+
+  /// Used when the cloud cannot be reached: never accuse the account of being
+  /// revoked, just let the teacher unlock with their PIN.
+  Future<void> _fallBackToOfflineUnlock() async {
+    final profile = await _localAuth.loadProfile();
+    if (!mounted) {
+      return;
+    }
+    if (profile != null) {
+      await _goToOfflineUnlock(restoredFromCloud: false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+      return;
+    }
+
+    setState(() {
+      _offlineProfile = null;
+      _stage = _LoginStage.onlineAuth;
+      _isLoading = false;
+      _isSubmitting = false;
+    });
+    _showMessage(
+      'No internet right now. Connect to Wi-Fi or data once to finish setting up this phone.',
+      isError: true,
+    );
   }
 
   Future<void> _syncPinToCloudIfNeeded() async {
@@ -1011,8 +1073,8 @@ class _LoginPageState extends State<LoginPage> {
           if (isRegister) ...[
             _textField(
               controller: _nameController,
-              label: 'Teacher Name',
-              hint: 'e.g. Maria Santos',
+              label: 'Full name',
+              hint: 'First name then last name (e.g. Maria Santos)',
               icon: Icons.person_outline_rounded,
             ),
             const SizedBox(height: AppSpacing.md),
@@ -1409,7 +1471,9 @@ class _LoginPageState extends State<LoginPage> {
           onSubmitted: (_) => _isSubmitting ? null : _submit(),
           autofillHints: const [AutofillHints.password],
           decoration: _inputDecoration(
-            hint: 'At least 6 characters',
+            hint: _mode == _AuthMode.register
+                ? PasswordRules.requirementHint
+                : 'Your account password',
             icon: Icons.password_rounded,
           ).copyWith(
             suffixIcon: IconButton(

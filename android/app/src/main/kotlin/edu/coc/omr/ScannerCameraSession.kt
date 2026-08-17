@@ -24,6 +24,7 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class ScannerCameraSession(
     private val context: Context,
@@ -359,7 +360,8 @@ class ScannerCameraSession(
         }
         val control = camera?.cameraControl ?: return false
         return try {
-            control.enableTorch(enabled)
+            // Await CameraX so we only report success after the torch really switches.
+            control.enableTorch(enabled).get(2, TimeUnit.SECONDS)
             torchEnabled = enabled
             true
         } catch (error: Exception) {

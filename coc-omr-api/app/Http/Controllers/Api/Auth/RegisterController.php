@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
 use App\Models\User;
 use App\Support\CocSchool;
+use App\Support\PersonName;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -27,9 +28,31 @@ class RegisterController extends Controller
 
         $email = strtolower($validated['email']);
         $department = CocSchool::normalizeDepartment($validated['department']);
-        $existing = User::query()->where('email', $email)->first();
+        $fullName = PersonName::normalize($validated['full_name']);
+        if ($fullName === '') {
+            throw ValidationException::withMessages([
+                'full_name' => ['Enter your full name (first name, then last name).'],
+            ]);
+        }
+        $validated['full_name'] = $fullName;
+        $existing = User::query()->where('email', $email)->with('teacherProfile')->first();
 
         if ($existing?->hasVerifiedEmail()) {
+            $status = $existing->teacherProfile?->access_status ?? CocSchool::ACCESS_PENDING;
+            $isActive = $existing->teacherProfile?->is_active ?? false;
+
+            if ($status === CocSchool::ACCESS_REVOKED || ($existing->teacherProfile && ! $isActive && $status !== CocSchool::ACCESS_PENDING)) {
+                throw ValidationException::withMessages([
+                    'email' => ['This account was revoked by your school admin. Contact your COC admin if you need access again.'],
+                ]);
+            }
+
+            if ($status !== CocSchool::ACCESS_APPROVED || ! $isActive) {
+                throw ValidationException::withMessages([
+                    'email' => ['Your account is waiting for school admin approval. Ask your COC admin to approve you, then use Login.'],
+                ]);
+            }
+
             throw ValidationException::withMessages([
                 'email' => ['An account with this email already exists. Use Login instead.'],
             ]);

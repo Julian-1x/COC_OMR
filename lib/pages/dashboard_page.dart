@@ -46,6 +46,7 @@ import 'package:omr_app/utils/academic_term.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/loading_indicators.dart';
 import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
+import 'package:omr_app/widgets/add_student_dialog.dart';
 
 class DashboardPageData {
   final List<Student> students;
@@ -91,7 +92,8 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   int _classesStatusFilter = 0;
   String? _classesProgramFilter;
   final Set<String> _expandedSettingsSections = <String>{};
-  final Set<String> _expandedPrepareSections = <String>{};
+  // Roster tools open by default so Add Student is not buried under a tap.
+  final Set<String> _expandedPrepareSections = <String>{'roster_results'};
 
   int _selectedIndex = 0;
   bool _isImporting = false;
@@ -132,13 +134,27 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     }
     unawaited(_refreshSyncStatus());
     unawaited(_loadAutoSyncPreference());
-    unawaited(_checkForAppUpdate());
     unawaited(_loadTeacherHubMeta());
     _initConnectivityListener();
-    unawaited(_validateCloudSessionIfOnline());
+    // Defer Wi‑Fi work until after the first frame so Home paints quickly.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_runDeferredStartupNetworkWork());
+    });
     if (Platform.isAndroid) {
       unawaited(ScannerEngine.warmUp());
     }
+  }
+
+  Future<void> _runDeferredStartupNetworkWork() async {
+    if (!mounted) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted) {
+      return;
+    }
+    unawaited(_checkForAppUpdate());
+    unawaited(_validateCloudSessionIfOnline());
   }
 
   Future<void> _loadTeacherHubMeta() async {
@@ -661,6 +677,13 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           onTap: _handleImport,
         ),
         _DashboardAction(
+          label: 'Add Student',
+          subtitle: 'ID, name, section — OMR ID assigned automatically',
+          icon: Icons.person_add_alt_1_rounded,
+          color: AppColors.brandGreenDark,
+          onTap: _handleAddStudentManually,
+        ),
+        _DashboardAction(
           label: 'Export Results',
           subtitle: '${globalScanResults.length} scans',
           icon: Icons.download_rounded,
@@ -950,14 +973,35 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       return;
     }
 
-    final valid = await CloudAuthService.instance.validateActiveSession(
+    final check = await CloudAuthService.instance.checkCurrentSession(
       signOutOnInvalid: true,
     );
-    if (!valid && mounted) {
-      await _navigateToLoginAfterSessionEnded(
-        'Your account was removed or access was revoked. Sign in again or contact your COC admin.',
-      );
+    if (check.isUnreachable || !mounted) {
+      return;
     }
+
+    final account = check.account;
+    if (check.isValid && (account?.isApproved ?? false)) {
+      return;
+    }
+    if (check.isValid) {
+      await CloudAuthService.instance.signOut();
+    }
+    if (!mounted) {
+      return;
+    }
+
+    final pending = account != null &&
+        account.isActive &&
+        account.accessStatus.toLowerCase() == 'pending';
+    final revoked = account != null &&
+        (account.accessStatus.toLowerCase() == 'revoked' || !account.isActive);
+    final message = pending
+        ? 'Your account is waiting for school admin approval. Ask your COC admin to approve you, then sign in.'
+        : revoked
+            ? 'Your account was removed or access was revoked. Sign in again or contact your COC admin.'
+            : 'Cloud session expired. Unlock with your offline PIN — sync when the school server is back.';
+    await _navigateToLoginAfterSessionEnded(message);
   }
 
   Future<void> _navigateToLoginAfterSessionEnded(String message) async {
@@ -1059,7 +1103,12 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     _isOnline = !_wasOffline;
 
     if (_isOnline) {
-      unawaited(_maybeAutoSyncIfNeeded(connectionType: initial));
+      // Let the dashboard paint first; auto-sync can wait a beat.
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) {
+          unawaited(_maybeAutoSyncIfNeeded(connectionType: initial));
+        }
+      });
     }
 
     _connectivitySub = connectivity.onConnectivityChanged.listen((results) {
@@ -1841,6 +1890,22 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         setState(() => _isImporting = false);
       }
     }
+  }
+
+  Future<void> _handleAddStudentManually() async {
+    final result = await showAddStudentDialog(context);
+    if (result == null || !mounted) {
+      return;
+    }
+    await _loadDashboardData();
+    await _afterLocalDataChanged();
+    if (!mounted) {
+      return;
+    }
+    _showSnackBar(
+      result.feedbackMessage,
+      backgroundColor: AppColors.brandGreen,
+    );
   }
 
   Future<({bool confirmed, bool replaceRoster})?> _confirmImportPreview(
@@ -3625,7 +3690,17 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   compact: compact,
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _HomePrepButton(
+                  icon: Icons.person_add_alt_1_rounded,
+                  label: 'Add',
+                  color: AppColors.brandGreen,
+                  onTap: _handleAddStudentManually,
+                  compact: compact,
+                ),
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: _HomePrepButton(
                   icon: Icons.edit_note_rounded,
@@ -3635,7 +3710,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   compact: compact,
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               Expanded(
                 child: _HomePrepButton(
                   icon: Icons.print_rounded,

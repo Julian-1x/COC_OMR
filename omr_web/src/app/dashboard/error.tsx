@@ -28,7 +28,7 @@ export default function DashboardError({
           type="button"
           variant="secondary"
           onClick={() => {
-            window.location.href = "/login";
+            window.location.href = "/auth/signout?next=/login";
           }}
         >
           Sign in

@@ -132,6 +132,18 @@ function extractErrorMessage(payload: unknown): string | null {
   return null;
 }
 
+/** Web-only session lifetime. Mobile app tokens are not time-limited. */
+const WEB_SESSION_MAX_AGE_SECONDS = (() => {
+  const raw = process.env.WEB_SESSION_MAX_AGE_SECONDS?.trim();
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 60 * 60 * 24 * 7;
+})();
+
 export function apiTokenCookieOptions(): {
   path: string;
   sameSite: "lax";
@@ -142,7 +154,7 @@ export function apiTokenCookieOptions(): {
     path: "/",
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: WEB_SESSION_MAX_AGE_SECONDS,
   };
 }
 

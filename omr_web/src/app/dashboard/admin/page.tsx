@@ -31,23 +31,28 @@ export default async function AdminDashboardPage() {
   const schoolLabel = schoolName || "your school";
   const viewerIsSuperAdmin = isSuperAdmin(profile, user);
 
-  const [stats, teachers] = schoolName
-    ? await Promise.all([
+  let stats = {
+    teacherCount: 0,
+    scanCount: 0,
+    teachersWithNoScans: 0,
+    sectionCount: 0,
+    studentCount: 0,
+    subjectCount: 0,
+    pendingReview: 0,
+  };
+  let teachers: Awaited<ReturnType<typeof fetchSchoolTeacherSummaries>> = [];
+  let cloudSlow = false;
+
+  if (schoolName) {
+    try {
+      [stats, teachers] = await Promise.all([
         fetchSchoolAdminStats(api, schoolName, user.id),
         fetchSchoolTeacherSummaries(api, schoolName, user.id),
-      ])
-    : [
-        {
-          teacherCount: 0,
-          scanCount: 0,
-          teachersWithNoScans: 0,
-          sectionCount: 0,
-          studentCount: 0,
-          subjectCount: 0,
-          pendingReview: 0,
-        },
-        [],
-      ];
+      ]);
+    } catch {
+      cloudSlow = true;
+    }
+  }
 
   return (
     <>
@@ -63,6 +68,21 @@ export default async function AdminDashboardPage() {
           are using COC OMR. View only — teachers manage their own classes on their phones.
         </p>
       </div>
+
+      {cloudSlow ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          School server is slow or waking up. Open{" "}
+          <a
+            className="font-semibold underline"
+            href="https://coc-omr-api.onrender.com/up"
+            target="_blank"
+            rel="noreferrer"
+          >
+            API status
+          </a>
+          , wait for Application up, then refresh.
+        </div>
+      ) : null}
 
       {!schoolName ? (
         <Card className="mb-4 border-amber-200 bg-amber-50">

@@ -741,7 +741,8 @@ class AnswerSheetGenerator {
     );
   }
 
-  /// Single sheet header (original)
+  /// Blank-sheet header: name write-in + section info (OMR ID stays empty below).
+  /// Text stays inside [OmrPageConstants.headerHeight] — do not grow this box.
   static pw.Widget _headerSection(
       Subject subject, SubjectSheetQrPayload qrPayload) {
     final sectionLabel =
@@ -755,11 +756,13 @@ class AnswerSheetGenerator {
       subject: subject,
       qrPayload: qrPayload,
       subtitleLine1: _fitHeaderText(
-        'SUBJECT CODE: ${subject.id}   VERSION: 2   ITEMS: ${subject.totalQuestions}',
+        'SECTION: $sectionLabel$examDate   ITEMS: ${subject.totalQuestions}',
         maxChars: 42,
       ),
-      subtitleLine2:
-          _fitHeaderText('SECTION: $sectionLabel$examDate', maxChars: 42),
+      // Fixed label + underline; not truncated so the write-in stays usable.
+      subtitleLine2: 'NAME: _______________________________',
+      instructionLine:
+          'Write your name. Shade your OMR ID. One bubble per question. Dark pencil (HB/2B).',
     );
   }
 
@@ -768,6 +771,8 @@ class AnswerSheetGenerator {
     required SubjectSheetQrPayload qrPayload,
     required String subtitleLine1,
     required String subtitleLine2,
+    String instructionLine =
+        'Fill one bubble per question. Use a dark pencil (HB or 2B).',
   }) {
     return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -785,7 +790,7 @@ class AnswerSheetGenerator {
               pw.Text(subtitleLine2, style: const pw.TextStyle(fontSize: 8.2)),
               pw.SizedBox(height: 2),
               pw.Text(
-                'Fill one bubble per question. Use a dark pencil (HB or 2B).',
+                instructionLine,
                 style: const pw.TextStyle(fontSize: 7.2, color: _mutedInk),
               ),
             ],

@@ -2544,20 +2544,58 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     if (multipleMarks > 0) {
       reasons.add(
         multipleMarks == 1
-            ? '1 question may have more than one mark — tap to fix.'
-            : '$multipleMarks questions may have more than one mark — tap flagged cells to fix.',
+            ? '1 question has more than one mark — left blank; tap to choose the answer.'
+            : '$multipleMarks questions have more than one mark — left blank; tap flagged cells to choose.',
       );
     }
 
     if (ambiguousQuestions.isNotEmpty) {
       reasons.add(
         ambiguousQuestions.length == 1
-            ? 'Ambiguous mark on Q${ambiguousQuestions.first} — confirm the answer.'
-            : 'Ambiguous marks on ${ambiguousQuestions.length} questions'
-                ' (e.g. Q${ambiguousQuestions.take(5).join(', Q')}'
+            ? 'Q${ambiguousQuestions.first} needs your choice (crossed-out or double mark).'
+            : '${ambiguousQuestions.length} questions need your choice '
+                '(e.g. Q${ambiguousQuestions.take(5).join(', Q')}'
                 '${ambiguousQuestions.length > 5 ? '…' : ''}).',
       );
       flaggedQuestions.addAll(ambiguousQuestions);
+    }
+
+    final lightMarkQuestions = _readDebugIntList(debugInfo, 'lightMarkQuestions')
+        .where((question) => question >= 1 && question <= subject.totalQuestions)
+        .toList()
+      ..sort();
+    if (lightMarkQuestions.isNotEmpty) {
+      reasons.add(
+        lightMarkQuestions.length == 1
+            ? 'Q${lightMarkQuestions.first} looks lightly marked — confirm it is intentional.'
+            : '${lightMarkQuestions.length} answers look lightly marked '
+                '(e.g. Q${lightMarkQuestions.take(5).join(', Q')}'
+                '${lightMarkQuestions.length > 5 ? '…' : ''}) — confirm they are intentional.',
+      );
+      flaggedQuestions.addAll(lightMarkQuestions);
+    }
+
+    final scratchRejected = _readDebugIntList(debugInfo, 'scratchRejectedQuestions')
+        .where((question) => question >= 1 && question <= subject.totalQuestions)
+        .length;
+    if (scratchRejected > 0) {
+      reasons.add(
+        scratchRejected == 1
+            ? '1 faint scratch was ignored (not counted as an answer).'
+            : '$scratchRejected faint scratches were ignored (not counted as answers).',
+      );
+    }
+
+    final weakWinnerRejected =
+        _readDebugIntList(debugInfo, 'weakWinnerRejectedQuestions')
+            .where((question) => question >= 1 && question <= subject.totalQuestions)
+            .length;
+    if (weakWinnerRejected > 0) {
+      reasons.add(
+        weakWinnerRejected == 1
+            ? '1 uncertain mark was left blank (safer than guessing).'
+            : '$weakWinnerRejected uncertain marks were left blank (safer than guessing).',
+      );
     }
 
     final missingQuestions = <int>[
@@ -2566,13 +2604,26 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             !ambiguousSet.contains(question))
           question,
     ];
+    final timingScore = (debugInfo['timingMarkScore'] as num?)?.toDouble();
     if (missingQuestions.isNotEmpty) {
-      // Blanks are normal — summarize only; do not flag every empty cell.
-      reasons.add(
-        missingQuestions.length == 1
-            ? '1 question left blank.'
-            : '${missingQuestions.length} questions left blank.',
-      );
+      final blankCount = missingQuestions.length;
+      final blankHeavy =
+          blankCount >= 8 || blankCount >= (subject.totalQuestions * 0.25).round();
+      final timingWeak = timingScore != null && timingScore < 0.75;
+      final crumpleSuspect = debugInfo['crumpleSuspect'] == true;
+      final gridLockApplied = debugInfo['gridLockApplied'] == true;
+      if (blankHeavy && (timingWeak || crumpleSuspect || gridLockApplied)) {
+        reasons.add(
+          '$blankCount blanks with weak sheet alignment — page may be crumpled. '
+          'Flatten under a book and rescan, or fill blanks in review.',
+        );
+      } else {
+        reasons.add(
+          blankCount == 1
+              ? '1 question left blank.'
+              : '$blankCount questions left blank.',
+        );
+      }
     }
 
     final layoutFromSession = debugInfo['layoutFromSession'] == true;
@@ -2592,7 +2643,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       );
     }
 
-    final timingScore = (debugInfo['timingMarkScore'] as num?)?.toDouble();
     if (timingScore != null && timingScore < 0.75) {
       reasons.add(
         'Alignment marks only partly detected (${(timingScore * 100).round()}%) — verify sheet positioning.',

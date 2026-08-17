@@ -6,6 +6,7 @@ import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/widgets/add_student_dialog.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_primary_button.dart';
@@ -172,6 +173,22 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
         );
       }
     }
+  }
+
+  Future<void> _addStudentManually() async {
+    final result = await showAddStudentDialog(
+      context,
+      initialSection: widget.sectionName,
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    _mutated = true;
+    setState(() {});
+    _showSnackBar(
+      result.feedbackMessage,
+      backgroundColor: brandGreen,
+    );
   }
 
   Future<void> _assignSubjectToSection(Subject subject) async {
@@ -879,6 +896,11 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
           elevation: 0,
           surfaceTintColor: Colors.white,
           actions: [
+            IconButton(
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              tooltip: 'Add student',
+              onPressed: _addStudentManually,
+            ),
             IconButton(
               icon: const Icon(Icons.sort_rounded),
               tooltip: 'Sort',

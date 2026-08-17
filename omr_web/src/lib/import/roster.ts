@@ -1,5 +1,6 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { normalizePersonName } from "@/lib/person-name";
 import type { DbStudent, DbSubject } from "@/lib/types/database";
 
 export type ImportRow = {
@@ -183,9 +184,11 @@ export function previewImportRows(rawRows: unknown[][]): ImportPreview {
     const section = readCell(row[sectionIdx]);
     let name = "";
     if (nameIdx === -2) {
-      name = `${readCell(row[cols.firstName])} ${readCell(row[cols.lastName])}`.trim();
+      name = normalizePersonName(
+        `${readCell(row[cols.firstName])} ${readCell(row[cols.lastName])}`.trim(),
+      );
     } else {
-      name = readCell(row[nameIdx]);
+      name = normalizePersonName(readCell(row[nameIdx]));
     }
 
     if (!schoolId || !name) {

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>COC OMR — Master Testing Registry</title>
+  <style>
+    @page { size: A4; margin: 18mm 16mm; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", Calibri, Arial, sans-serif;
+      font-size: 10.5pt;
+      line-height: 1.35;
+      color: #1a1a1a;
+      margin: 0;
+      padding: 0;
+    }
+    .page { page-break-after: always; padding: 0; }
+    .page:last-child { page-break-after: auto; }
+    h1 { font-size: 16pt; margin: 0 0 6pt; color: #14532d; }
+    h2 { font-size: 12.5pt; margin: 14pt 0 6pt; color: #166534; border-bottom: 1px solid #bbf7d0; padding-bottom: 3pt; }
+    h3 { font-size: 11pt; margin: 10pt 0 4pt; color: #334155; }
+    p { margin: 4pt 0 8pt; }
+    .subtitle { font-size: 10pt; color: #475569; margin-bottom: 10pt; }
+    table { width: 100%; border-collapse: collapse; margin: 8pt 0 12pt; font-size: 9pt; }
+    th, td { border: 1px solid #cbd5e1; padding: 5pt 6pt; vertical-align: top; text-align: left; }
+    th { background: #ecfdf5; font-weight: 700; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .meta { font-size: 9pt; color: #64748b; margin-top: 12pt; }
+    .sign-block { margin-top: 24pt; }
+    .sign-line { border-bottom: 1px solid #000; height: 28pt; margin: 18pt 0 4pt; }
+    ul { margin: 4pt 0 8pt 18pt; padding: 0; }
+    li { margin-bottom: 3pt; }
+    .note { font-size: 9pt; background: #fffbeb; border: 1px solid #fde68a; padding: 8pt; border-radius: 4pt; }
+  </style>
+</head>
+<body>
+
+<!-- PAGE 1 — unchanged intro -->
+<div class="page">
+  <h1>LEVEL 1: Master Unit Testing Registry</h1>
+  <h2>Series 100: User Authentication, Security &amp; Session Management</h2>
+  <p class="subtitle">Focuses on crypto hashes, formatting rules, token lifetimes, and gatekeeping rules.</p>
+  <p>This registry defines isolated unit tests for authentication and security components. Pages 2–10 document the <strong>PHINMA Cagayan de Oro College (COC) OMR</strong> system: Flutter mobile app, Laravel API, and Next.js web portal.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Unit ID</th>
+        <th>Target Function / Code</th>
+        <th>Method</th>
+        <th>Testing Scenario Profile</th>
+        <th>Expected Isolation Output</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>UT101</td>
+        <td>validateEmailFormat(email)</td>
+        <td>Input contains structural typos (e.g., test@com, @@domain.com).</td>
+        <td>Invalid email structure</td>
+        <td>Return false (Rejected)</td>
+      </tr>
+      <tr>
+        <td>UT102</td>
+        <td>validatePasswordStrength(pwd)</td>
+        <td>Input is less than 8 characters or misses a special character.</td>
+        <td>Weak password</td>
+        <td>Return false (Weak password)</td>
+      </tr>
+      <tr>
+        <td>UT103</td>
+        <td>hashUserPassword(plainText)</td>
+        <td>Raw string passed into cryptographic library (BCrypt).</td>
+        <td>Registration hash</td>
+        <td>Return unique 60+ char secure salt hash</td>
+      </tr>
+      <tr>
+        <td>UT104</td>
+        <td>verifyPasswordMatch(plain, hash)</td>
+        <td>Login password attempt against database hash.</td>
+        <td>Credential verify</td>
+        <td>Return true if match; false if modified</td>
+      </tr>
+      <tr>
+        <td>UT105</td>
+        <td>generateSessionToken(userId)</td>
+        <td>User authenticates successfully; token needs generation.</td>
+        <td>Session issue</td>
+        <td>Return structured JWT or secure random state string</td>
+      </tr>
+      <tr>
+        <td>UT106</td>
+        <td>isTokenExpired(timestamp)</td>
+        <td>Token expiry timestamp older than current server time.</td>
+        <td>Expiry check</td>
+        <td>Return true (Trigger auto-logout routine)</td>
+      </tr>
+      <tr>
+        <td>UT107</td>
+        <td>sanitizeHtmlInput(userInput)</td>
+        <td>Input contains unsafe script tags.</td>
+        <td>XSS attempt</td>
+        <td>Return stripped or encoded clean string</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="meta">COC OMR implementation details for UT101–UT107 appear on Page 2.</p>
+</div>
+
+<!-- PAGE 2 -->
+<div class="page">
+  <h1>COC OMR — Unit Testing (Series 100)</h1>
+  <p class="subtitle">Stack: Laravel API (coc-omr-api) · Flutter app (omr_app) · Next.js web (omr_web)</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Unit ID</th>
+        <th>Target Function / Code</th>
+        <th>Testing Scenario Profile</th>
+        <th>Expected Output (COC OMR)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>UT101</td>
+        <td>Laravel <code>email</code> rule; Flutter <code>_isValidEmail()</code></td>
+        <td>test@com, @@domain.com, blank email</td>
+        <td>Rejected; message: “Enter a valid email address.”</td>
+      </tr>
+      <tr>
+        <td>UT102</td>
+        <td><code>PasswordRules</code> (Dart/TS) + Laravel <code>Password::defaults()</code></td>
+        <td>abc123, abcdefgh, Password1 (no symbol)</td>
+        <td>Rejected on register/reset; min 8 + letter + number + symbol</td>
+      </tr>
+      <tr>
+        <td>UT103</td>
+        <td>Laravel <code>Hash::make()</code> (bcrypt)</td>
+        <td>New teacher password at registration</td>
+        <td>60+ char bcrypt hash stored; plain text never saved</td>
+      </tr>
+      <tr>
+        <td>UT104</td>
+        <td>Laravel <code>Auth::attempt()</code></td>
+        <td>Correct vs wrong password at login</td>
+        <td>true if match; false + “credentials do not match”</td>
+      </tr>
+      <tr>
+        <td>UT105</td>
+        <td>Sanctum <code>createToken()</code> — Bearer token (not JWT)</td>
+        <td>Successful login (web: device_name web; app: mobile)</td>
+        <td>Sanctum personal access token returned</td>
+      </tr>
+      <tr>
+        <td>UT106</td>
+        <td>Web: <code>WEB_SESSION_MAX_AGE_SECONDS</code> (7 days cookie). App: no timed expiry</td>
+        <td>Web session after 7 days; app token after 7 days</td>
+        <td>Web: re-login required. App: token valid until sign-out/revoke</td>
+      </tr>
+      <tr>
+        <td>UT107</td>
+        <td><code>PersonName.normalize()</code> (PHP/Dart/TS) — replaces generic XSS test</td>
+        <td>MARIA DE LA CRUZ; Santos, Maria; extra spaces</td>
+        <td>Maria de la Cruz; Maria Santos; clean First Last format</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note"><strong>Automated tests:</strong> test/password_rules_test.dart · test/person_name_test.dart · omr_web/test/person-name.test.ts · coc-omr-api/tests/Unit/PersonNameTest.php</p>
+</div>
+
+<!-- PAGE 3 -->
+<div class="page">
+  <h1>LEVEL 2: Integration Testing Registry</h1>
+  <h2>Series 100: Frontend ↔ Backend API (COC OMR)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Subsystems</th>
+        <th>Scenario</th>
+        <th>Expected Behavior</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>IT-101</td>
+        <td>Register UI ↔ RegisterController</td>
+        <td>Teacher submits name, @phinmaed.com email, COC department, password</td>
+        <td>POST /api/register; name normalized; pending admin approval; verification email</td>
+      </tr>
+      <tr>
+        <td>IT-102</td>
+        <td>Login UI ↔ Session storage ↔ LoginController</td>
+        <td>Approved teacher signs in</td>
+        <td>Token returned; web cookie coc_api_token; app SharedPreferences + offline PIN setup</td>
+      </tr>
+      <tr>
+        <td>IT-103</td>
+        <td>Results/Classes search ↔ Client filter</td>
+        <td>Partial name or OMR ID typed in search</td>
+        <td>Local grid filter without full reload (no debounced live API)</td>
+      </tr>
+      <tr>
+        <td>IT-104</td>
+        <td>Roster import ↔ ImportService/roster.ts ↔ StudentSyncController</td>
+        <td>CSV/Excel Class_List_Report uploaded</td>
+        <td>Parsed client-side; JSON sync to API (not multipart image upload)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PAGE 4 -->
+<div class="page">
+  <h1>LEVEL 3: System Testing — Series 100</h1>
+  <h2>Authentication, Security &amp; Account Management</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Procedure</th><th>Test Data</th><th>Expected Response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ST-101</td><td>Register with email already in database</td><td>Existing @phinmaed.com</td><td>Pending: “Waiting for admin approval.” Approved duplicate: “Use Login.”</td></tr>
+      <tr><td>ST-102</td><td>Login with wrong password</td><td>Valid email, wrong pass</td><td>“Email or password is incorrect.”</td></tr>
+      <tr><td>ST-103</td><td>Type in password field</td><td>Any input</td><td>Masked as ••••••</td></tr>
+      <tr><td>ST-104</td><td>Register with blank required fields</td><td>Empty name/dept/password</td><td>Inline validation errors; submit blocked</td></tr>
+      <tr><td>ST-105</td><td>Teacher navigates to /dashboard/admin</td><td>Non-admin account</td><td>Redirected; access denied to admin desk</td></tr>
+      <tr><td>ST-106</td><td>Logout then browser Back</td><td>Active web session</td><td>Cookie cleared; dashboard requires re-login</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PAGE 5 -->
+<div class="page">
+  <h1>LEVEL 3: System Testing — Series 200</h1>
+  <h2>Roster, Answer Keys &amp; Student CRUD</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Procedure</th><th>Test Data</th><th>Expected Response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ST-201</td><td>Import roster CSV/Excel; confirm</td><td>Class_List_Report sample</td><td>Success counts; sections/students in Classes view</td></tr>
+      <tr><td>ST-202</td><td>Answer key: invalid numeric field</td><td>Passing score: abc</td><td>Validation error; save blocked</td></tr>
+      <tr><td>ST-203</td><td>Edit student name; Sync Now</td><td>Updated name</td><td>First Last format; visible on web after sync</td></tr>
+      <tr><td>ST-204</td><td>Remove student from roster</td><td>Existing row</td><td>Student removed after confirm/save</td></tr>
+      <tr><td>ST-205</td><td>Results with many scans; filter</td><td>50+ records</td><td>List loads; client-side filter (no server pagination UI)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PAGE 6 -->
+<div class="page">
+  <h1>LEVEL 3: System Testing — Series 300 &amp; 400</h1>
+  <h2>Search, Filtering, Exports &amp; Grading</h2>
+  <h3>Series 300 — Search &amp; Filtering</h3>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Procedure</th><th>Test Data</th><th>Expected Response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ST-301</td><td>Search Results/Classes by name or OMR ID</td><td>Known student</td><td>Only matching rows shown</td></tr>
+      <tr><td>ST-302</td><td>Search nonsense keyword</td><td>xyz987abc</td><td>Empty table; “No matching records”</td></tr>
+      <tr><td>ST-303</td><td>Filter by section and subject</td><td>Dropdown filters</td><td>Filtered scans and item analysis</td></tr>
+    </tbody>
+  </table>
+  <h3>Series 400 — Reporting &amp; Computations</h3>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Procedure</th><th>Test Data</th><th>Expected Response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ST-401</td><td>Scan practice sheets vs manual grading</td><td>10-sheet validation set</td><td>≥95% match; partial credit correct</td></tr>
+      <tr><td>ST-402</td><td>Export OMR PDF or results PDF</td><td>Print / Export click</td><td>Valid PDF at 100% scale</td></tr>
+      <tr><td>ST-403</td><td>Export results CSV</td><td>Export CSV</td><td>Opens correctly in Excel</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PAGE 7 -->
+<div class="page">
+  <h1>LEVEL 3: System Testing — Series 500</h1>
+  <h2>Sync, Configuration &amp; UI Feedback</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Procedure</th><th>Test Data</th><th>Expected Response</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ST-501</td><td>Login while cloud API is waking (Render)</td><td>Slow first request</td><td>“Connecting to school server…”; retries; no false account error</td></tr>
+      <tr><td>ST-502</td><td>Open Settings; view account/sync</td><td>Logged-in teacher</td><td>Name, COC school, department; Sync Now works online</td></tr>
+      <tr><td>ST-503</td><td>Scan offline; reconnect; Sync Now</td><td>Airplane mode exam</td><td>Local scans preserved; cloud updated after sync</td></tr>
+    </tbody>
+  </table>
+  <h3>Template vs COC OMR (panel notes)</h3>
+  <table>
+    <thead>
+      <tr><th>Generic template item</th><th>COC OMR actual</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>JWT tokens</td><td>Sanctum Bearer tokens</td></tr>
+      <tr><td>Live debounced API search</td><td>Client-side filter</td></tr>
+      <tr><td>Multipart image upload</td><td>CSV/Excel roster import</td></tr>
+      <tr><td>Table pagination</td><td>Limited — search/filter used</td></tr>
+      <tr><td>Mobile timed auto-logout</td><td>Web cookie 7 days only</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- PAGE 8-9 UAT -->
+<div class="page">
+  <h1>LEVEL 4: User Acceptance Testing (UAT)</h1>
+  <h2>PART 1: Participant Profile Matrix — COC OMR</h2>
+  <table>
+    <thead>
+      <tr><th>Participant ID</th><th>Role</th><th>Organization</th><th>Date</th><th>Signature</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>UAT-EX-01</td><td>IT / Capstone Adviser (Expert)</td><td>PHINMA COC — IT/CS</td><td>___/___/2026</td><td></td></tr>
+      <tr><td>UAT-EX-02</td><td>COC OMR School Admin</td><td>PHINMA COC — Admin desk</td><td>___/___/2026</td><td></td></tr>
+      <tr><td>UAT-EX-03</td><td>Department Head / Lead Teacher</td><td>COC — COE/SCCJ/CMA/CIT/CEA/CAHS</td><td>___/___/2026</td><td></td></tr>
+      <tr><td>UAT-EU-01</td><td>Classroom Teacher (End-User)</td><td>COC — assigned department</td><td>___/___/2026</td><td></td></tr>
+      <tr><td>UAT-EU-02</td><td>Classroom Teacher (End-User)</td><td>COC — different department</td><td>___/___/2026</td><td></td></tr>
+      <tr><td>UAT-EU-03</td><td>Teacher — phone scan + web prep</td><td>COC</td><td>___/___/2026</td><td></td></tr>
+    </tbody>
+  </table>
+  <p>Minimum: 3 domain experts + 10–15 teachers completing prep → print → scan → sync.</p>
+</div>
+
+<div class="page">
+  <h2>PART 2: ISO/IEC 25010-Aligned Survey (COC OMR)</h2>
+  <p>Likert: 5 Strongly Agree · 4 Agree · 3 Neutral · 2 Disagree · 1 Strongly Disagree</p>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Criterion</th><th>5</th><th>4</th><th>3</th><th>2</th><th>1</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1.1</td><td>Functional Completeness: register, admin approval, roster, keys, print, scan, sync, export</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>1.2</td><td>Functional Correctness: scan scores match answer keys</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>1.3</td><td>Functional Appropriateness: offline exam day + web prep workflow</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>2.1</td><td>Login vs Register vs PIN understood without developer</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>2.2</td><td>New teacher learns roster import + print after short demo</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>2.3</td><td>Scanner, Review, Sync easy on typical Android phone</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>2.4</td><td>Web UI professional (COC green/amber branding)</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>2.5</td><td>Text and controls readable on phone and laptop</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>3.1</td><td>Scanning responsive during class session</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>3.2</td><td>Stable on mid-range phones; offline usable</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>4.1</td><td>Non-admins cannot access Admin → Access control</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>4.2</td><td>Teachers see only their own cloud data</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>4.3</td><td>Admin approve/revoke tied to logged-in admin</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>5.1</td><td>Low-confidence scans flagged for Review</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>5.2</td><td>Offline PIN works; sync recovers after Wi‑Fi</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>6.1</td><td>Web on Chrome/Edge; app on target Android</td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>6.2</td><td>Deployable to school server without workflow change</td><td></td><td></td><td></td><td></td><td></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- LAST PAGE — unchanged sign-off -->
+<div class="page">
+  <h1>PART 3: Formal Client Acceptance &amp; Sign-Off</h1>
+  <p>This signature sheet is the definitive evidence required by capstone panels. It proves the capstone project solved a real institutional need and has been officially handed over.</p>
+  <p><strong>Acceptance Statement:</strong></p>
+  <p><em>“By signing below, I acknowledge that I have actively participated in or reviewed the User Acceptance Testing (UAT) phase for the developed system. I confirm that the functional deliverables, user interfaces, security protocols, and operational workflows meet our agreed specifications and are accepted for live deployment.”</em></p>
+  <div class="sign-block">
+    <p><strong>Approved By:</strong></p>
+    <p>Client Printed Name &amp; Designation</p>
+    <div class="sign-line"></div>
+    <p>Signature over Printed Name</p>
+    <p>Date Signed: _____ / _____ / 2026</p>
+  </div>
+  <p class="meta">PHINMA Cagayan de Oro College — COC OMR Testing Registry · Generated for capstone documentation</p>
+</div>
+
+</body>
+</html>

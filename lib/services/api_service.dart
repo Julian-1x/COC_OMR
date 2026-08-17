@@ -10,11 +10,16 @@ class ApiException implements Exception {
     this.message, {
     this.statusCode,
     this.sessionInvalidated = false,
+    this.isNetworkError = false,
   });
 
   final String message;
   final int? statusCode;
   final bool sessionInvalidated;
+
+  /// True when the server was never reached (offline, DNS, timeout).
+  /// Callers must not treat this as an account problem.
+  final bool isNetworkError;
 
   @override
   String toString() => message;
@@ -132,6 +137,25 @@ class ApiService {
     await _request('DELETE', path, auth: auth);
   }
 
+  static const Duration _requestTimeout = Duration(seconds: 15);
+  static const Duration _authRequestTimeout = Duration(seconds: 45);
+
+  static bool _isAuthBootstrapPath(String path) =>
+      path == '/login' || path == '/register';
+
+  static bool _isRetryableStatus(int status) =>
+      status == 502 || status == 503 || status == 504;
+
+  /// Wakes free-tier cloud hosts (Render) before login/register.
+  static Future<void> _wakeSchoolApi() async {
+    try {
+      final uri = Uri.parse('$_normalizedBaseUrl/up');
+      await http.get(uri).timeout(const Duration(seconds: 25));
+    } catch (_) {
+      // Best effort — first probe often starts the wake cycle.
+    }
+  }
+
   static Future<Map<String, dynamic>> _request(
     String method,
     String path, {
@@ -140,79 +164,114 @@ class ApiService {
   }) async {
     _ensureConfigured();
 
-    final uri = Uri.parse('$_normalizedBaseUrl/api$path');
-    final headers = <String, String>{
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    };
-    if (_normalizedBaseUrl.contains('loca.lt')) {
-      headers['Bypass-Tunnel-Reminder'] = 'true';
+    final isAuthBootstrap = !auth && _isAuthBootstrapPath(path);
+    if (isAuthBootstrap) {
+      await _wakeSchoolApi();
     }
 
-    if (auth) {
-      final token = _token;
-      if (token == null || token.isEmpty) {
-        throw const ApiException('Sign in before using cloud features.');
-      }
-      headers['Authorization'] = 'Bearer $token';
-    }
+    final timeout =
+        isAuthBootstrap ? _authRequestTimeout : _requestTimeout;
+    final maxAttempts = isAuthBootstrap ? 3 : 1;
+    ApiException? lastError;
 
-    late http.Response response;
-    try {
-      switch (method) {
-        case 'GET':
-          response = await http.get(uri, headers: headers);
-        case 'POST':
-          response = await http.post(
-            uri,
-            headers: headers,
-            body: jsonEncode(body ?? const <String, dynamic>{}),
-          );
-        case 'PUT':
-          response = await http.put(
-            uri,
-            headers: headers,
-            body: jsonEncode(body ?? const <String, dynamic>{}),
-          );
-        case 'PATCH':
-          response = await http.patch(
-            uri,
-            headers: headers,
-            body: jsonEncode(body ?? const <String, dynamic>{}),
-          );
-        case 'DELETE':
-          response = await http.delete(uri, headers: headers);
-        default:
-          throw ApiException('Unsupported method: $method');
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 2500));
       }
-    } catch (error) {
-      if (error is ApiException) {
-        rethrow;
-      }
-      throw ApiException(_friendlyNetworkMessage(error.toString()));
-    }
 
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      if (response.body.isEmpty) {
+      final uri = Uri.parse('$_normalizedBaseUrl/api$path');
+      final headers = <String, String>{
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
+      if (_normalizedBaseUrl.contains('loca.lt')) {
+        headers['Bypass-Tunnel-Reminder'] = 'true';
+      }
+
+      if (auth) {
+        final token = _token;
+        if (token == null || token.isEmpty) {
+          throw const ApiException('Sign in before using cloud features.');
+        }
+        headers['Authorization'] = 'Bearer $token';
+      }
+
+      late http.Response response;
+      try {
+        final Future<http.Response> request;
+        switch (method) {
+          case 'GET':
+            request = http.get(uri, headers: headers);
+          case 'POST':
+            request = http.post(
+              uri,
+              headers: headers,
+              body: jsonEncode(body ?? const <String, dynamic>{}),
+            );
+          case 'PUT':
+            request = http.put(
+              uri,
+              headers: headers,
+              body: jsonEncode(body ?? const <String, dynamic>{}),
+            );
+          case 'PATCH':
+            request = http.patch(
+              uri,
+              headers: headers,
+              body: jsonEncode(body ?? const <String, dynamic>{}),
+            );
+          case 'DELETE':
+            request = http.delete(uri, headers: headers);
+          default:
+            throw ApiException('Unsupported method: $method');
+        }
+        response = await request.timeout(timeout);
+      } catch (error) {
+        if (error is ApiException) {
+          rethrow;
+        }
+        lastError = ApiException(
+          _friendlyNetworkMessage(error.toString()),
+          isNetworkError: true,
+        );
+        continue;
+      }
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (response.body.isEmpty) {
+          return const <String, dynamic>{};
+        }
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map<String, dynamic>) {
+          return decoded;
+        }
         return const <String, dynamic>{};
       }
-      final decoded = jsonDecode(response.body);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
+
+      final sessionInvalidated = auth && response.statusCode == 401;
+      if (sessionInvalidated) {
+        await clearSession();
       }
-      return const <String, dynamic>{};
+
+      final apiError = ApiException(
+        _parseErrorMessage(response),
+        statusCode: response.statusCode,
+        sessionInvalidated: sessionInvalidated,
+      );
+
+      if (_isRetryableStatus(response.statusCode) && attempt + 1 < maxAttempts) {
+        lastError = apiError;
+        continue;
+      }
+
+      throw apiError;
     }
 
-    final sessionInvalidated = auth && response.statusCode == 401;
-    if (sessionInvalidated) {
-      await clearSession();
-    }
-
-    throw ApiException(
-      _parseErrorMessage(response),
-      statusCode: response.statusCode,
-      sessionInvalidated: sessionInvalidated,
-    );
+    throw lastError ??
+        const ApiException(
+          'Could not reach the school server. Check your internet connection.',
+          isNetworkError: true,
+        );
   }
 
   static void _ensureConfigured() {
@@ -245,6 +304,12 @@ class ApiService {
       // Fall through to status-based message.
     }
 
+    if (response.statusCode == 502 || response.statusCode == 504) {
+      return 'School server is waking up. Wait about a minute and try again.';
+    }
+    if (response.statusCode == 503) {
+      return 'School server is busy. Try again in a moment.';
+    }
     if (response.statusCode == 401) {
       return 'Sign in again — your session expired.';
     }
@@ -259,6 +324,10 @@ class ApiService {
 
   static String _friendlyNetworkMessage(String message) {
     final normalized = message.toLowerCase();
+    if (normalized.contains('timeout') ||
+        normalized.contains('timed out')) {
+      return 'School server is waking up. Wait about a minute and try again, or turn off Wi‑Fi to unlock with your PIN.';
+    }
     if (normalized.contains('socketexception') ||
         normalized.contains('failed host lookup') ||
         normalized.contains('clientexception') ||

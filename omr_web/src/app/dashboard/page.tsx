@@ -34,10 +34,27 @@ const deskTasks = [
 
 export default async function DashboardHomePage() {
   const { user, profile, api } = await requireTeacherSession();
-  const [stats, lastUpdated] = await Promise.all([
-    fetchDashboardStats(api),
-    fetchCloudLastUpdated(api),
-  ]);
+
+  let stats = {
+    sectionCount: 0,
+    studentCount: 0,
+    subjectCount: 0,
+    scanCount: 0,
+    pendingReview: 0,
+  };
+  let lastUpdated: string | null = null;
+  let cloudSlow = false;
+
+  try {
+    const [nextStats, nextUpdated] = await Promise.all([
+      fetchDashboardStats(api),
+      fetchCloudLastUpdated(api),
+    ]);
+    stats = nextStats;
+    lastUpdated = nextUpdated;
+  } catch {
+    cloudSlow = true;
+  }
 
   const firstName = profile?.full_name?.split(" ")[0] ?? "Teacher";
   const hasData =
@@ -53,7 +70,12 @@ export default async function DashboardHomePage() {
         <p className="mt-1 text-sm text-slate-500">
           Prep and print here on your desk. Scan on your phone. Results show up after you sync.
         </p>
-        {lastUpdated && hasData ? (
+        {cloudSlow ? (
+          <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+            School server is waking up or busy. You are signed in — reload in about a minute for class counts.
+          </p>
+        ) : null}
+        {!cloudSlow && lastUpdated && hasData ? (
           <p className="mt-2 rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
             Cloud data last updated {formatDistanceToNow(new Date(lastUpdated), { addSuffix: true })}.
             {stats.pendingReview > 0 ? (

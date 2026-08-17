@@ -9,10 +9,28 @@ import { workspaceName } from "@/lib/theme";
 export default async function SettingsPage() {
   const { user, profile, api } = await requireTeacherSession();
   const admin = isSchoolAdmin(profile, user);
-  const [stats, lastUpdated] = await Promise.all([
-    fetchDashboardStats(api),
-    fetchCloudLastUpdated(api),
-  ]);
+
+  let stats = {
+    sectionCount: 0,
+    studentCount: 0,
+    subjectCount: 0,
+    scanCount: 0,
+    pendingReview: 0,
+  };
+  let lastUpdated: string | null = null;
+  let cloudSlow = false;
+
+  try {
+    const [nextStats, nextUpdated] = await Promise.all([
+      fetchDashboardStats(api),
+      fetchCloudLastUpdated(api),
+    ]);
+    stats = nextStats;
+    lastUpdated = nextUpdated;
+  } catch {
+    // Render free tier often times out mid-page; keep Settings usable.
+    cloudSlow = true;
+  }
 
   const hasData =
     stats.sectionCount > 0 ||
@@ -30,6 +48,12 @@ export default async function SettingsPage() {
         <h1 className="text-2xl font-extrabold text-slate-800">Settings</h1>
         <p className="mt-1 text-sm text-slate-500">Your account and how the phone app connects to this desk.</p>
       </div>
+
+      {cloudSlow ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          School server is slow or waking up. Account details below are still correct — refresh in a minute for class counts.
+        </div>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Account">

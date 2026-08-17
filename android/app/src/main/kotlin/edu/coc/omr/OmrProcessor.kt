@@ -67,7 +67,7 @@ class OmrProcessor(
         // Bubble specifications
         private const val BUBBLE_DIAMETER = 11.5  // points
         private const val BUBBLE_BORDER = 1.2  // points
-        private const val DEFAULT_FILL_THRESHOLD = 0.33  // Slightly more tolerant of light pencil shading
+        private const val DEFAULT_FILL_THRESHOLD = 0.28  // Softer for real pencil; empty paper stays below
         
         // OMR ID section layout (from OmrPageConstants)
         private const val OMR_ID_COLUMNS = 4
@@ -118,12 +118,39 @@ class OmrProcessor(
         private const val HARD_DARK_BRIGHTNESS = 42.0
         /** Original capture darker than this gets stronger safe enhancement. */
         private const val DARK_CAPTURE_BRIGHTNESS = 80.0
-        /** Extra bubble fill threshold when capture was dark (reduces false marks). */
-        private const val DARK_FILL_THRESHOLD_BOOST = 0.06
+        /** Soft-launch: keep 0 — raising this caused many false blanks in dim rooms. */
+        private const val DARK_FILL_THRESHOLD_BOOST = 0.0
+        /** When 2+ options cross the fill cut, accept the darker one if clearly ahead. */
+        private const val MULTI_MARK_CLEAR_SEPARATION = 0.12
+        /**
+         * Even for a single "filled" option, require this lead over the next option.
+         * Stops crumpled/misaligned samples from inventing answers on blank bubbles.
+         */
+        private const val MIN_WINNER_SEPARATION = 0.08
+        /** Stricter lead when timing/row geometry is weak. */
+        private const val MIN_WINNER_SEPARATION_STRICT = 0.10
+        /**
+         * Minimum binary (area) ink inside the bubble mask for answer marks.
+         * Rejects thin pen scratches that darken the mean but barely cover the circle.
+         */
+        private const val MIN_ANSWER_AREA_COVERAGE = 0.18
+        /** Softer coverage for OMR ID digit bubbles (smaller targets). */
+        private const val MIN_OMR_ID_AREA_COVERAGE = 0.12
+        /** Accepted marks below this area coverage are flagged for teacher review. */
+        private const val LIGHT_MARK_AREA_COVERAGE = 0.28
         /** If fewer than this fraction of questions yield a mark, treat as grid misalignment. */
         private const val MIN_ANSWER_YIELD = 0.12
         /** Local refine radius (px on 595-wide warp) around predicted bubble centers. */
         private const val BUBBLE_REFINE_RADIUS_PX = 2
+        /**
+         * Milder widen when geometry is shaky. ±4 was sliding into neighbor ink and
+         * inventing fills on blank bubbles.
+         */
+        private const val BUBBLE_REFINE_RADIUS_WEAK_PX = 3
+        /** Vertical search (±px) when locking answer rows to left row marks. */
+        private const val GRID_LOCK_SEARCH_RADIUS_PX = 8
+        /** Cap global Y nudge from row-mark lock (px on 595-wide warp). */
+        private const val GRID_LOCK_MAX_OFFSET_Y = 10.0
 
         // Printed QR box in page points (OmrPageConstants: 80pt square, top-right),
         // padded so a slightly skewed capture still contains the whole symbol.
@@ -148,6 +175,14 @@ class OmrProcessor(
         val rowHeight: Double,
         val columnWidth: Double,
         val bubbleSpacingX: Double
+    )
+
+    /** Nudge answer sampling when crumpled paper shifts row marks vs the corner warp. */
+    data class AnswerGridLock(
+        val offsetY: Double,
+        val rowHeightScale: Double,
+        val marksUsed: Int,
+        val applied: Boolean,
     )
 
     /** Exam turbo: session-locked layout + faster pipeline without QR per sheet. */
@@ -267,7 +302,10 @@ class OmrProcessor(
         val fillPercentage: Double,
         val confidence: Double,
         val centerX: Double,
-        val centerY: Double
+        val centerY: Double,
+        /** Fraction of bubble mask that is ink on the binary threshold image. */
+        val areaCoverage: Double = 0.0,
+        val intensityFill: Double = 0.0,
     )
     
     data class GridCalibration(
@@ -722,7 +760,37 @@ class OmrProcessor(
                 debugInfo["sheetOriginClassification"] = "coc_qr"
                 stageOk("Sheet Identity (COC QR)")
             }
+
+            // Step 9.7: Lock answer rows to surviving left row marks (crumple / local warp).
+            val gridLock = estimateAnswerGridLock(warpedMat, layout, debugInfo)
+            val lockedLayout = if (gridLock.applied) {
+                val scaledHeight = layout.rowHeight * gridLock.rowHeightScale
+                val lockedTop = layout.gridTop + gridLock.offsetY
+                layout.copy(
+                    gridTop = lockedTop,
+                    rowHeight = scaledHeight,
+                    gridBottom = lockedTop + (layout.rows * scaledHeight),
+                )
+            } else {
+                layout
+            }
+            val bubbleRefineRadius = if (
+                timingMarkScore < 0.70 ||
+                rowMarkValidation < 0.70 ||
+                gridLock.applied
+            ) {
+                BUBBLE_REFINE_RADIUS_WEAK_PX
+            } else {
+                BUBBLE_REFINE_RADIUS_PX
+            }
+            debugInfo["bubbleRefineRadiusPx"] = bubbleRefineRadius
             
+            val emptyGuardStrict =
+                timingMarkScore < 0.70 ||
+                    rowMarkValidation < 0.70 ||
+                    gridLock.applied
+            debugInfo["emptyGuardStrict"] = emptyGuardStrict
+
             // Step 10: Detect OMR ID with validation
             val omrIdResult = detectOmrIdWithValidation(thresholdMat, warpedMat, fillThreshold, debugInfo)
             if (omrIdResult != null) {
@@ -743,7 +811,14 @@ class OmrProcessor(
             stageOk("Bubble Detection Started")
             val bubbleStartMs = System.currentTimeMillis()
             val answersResult = detectAnswersWithLayout(
-                thresholdMat, warpedMat, totalQuestions, layout, fillThreshold, debugInfo,
+                thresholdMat,
+                warpedMat,
+                totalQuestions,
+                lockedLayout,
+                fillThreshold,
+                debugInfo,
+                refineRadius = bubbleRefineRadius,
+                emptyGuardStrict = emptyGuardStrict,
             )
             debugInfo["bubbleMs"] = System.currentTimeMillis() - bubbleStartMs
             debugInfo["answersDetected"] = answersResult.first.size
@@ -752,7 +827,7 @@ class OmrProcessor(
             debugInfo["blankAnswersCount"] = blankCount
             stageOk("Answers Extracted (${answersResult.first.size}/$totalQuestions, blank=$blankCount)")
 
-            attachDebugOverlay(warpedMat, layout, answersResult.first, fillThreshold, debugInfo)
+            attachDebugOverlay(warpedMat, lockedLayout, answersResult.first, fillThreshold, debugInfo)
 
             if (omrIdResult == null) {
                 val idErrorMessage = if (debugInfo["omrIdNotFilled"] == true) {
@@ -783,6 +858,13 @@ class OmrProcessor(
             val geometryWeak = timingMarkScore < 0.55 ||
                 (rowMarkScore != null && rowMarkScore < 0.55) ||
                 templateMismatch
+            val blankRatio = if (totalQuestions > 0) blankCount.toDouble() / totalQuestions else 0.0
+            val crumpleSuspect =
+                blankRatio >= 0.25 &&
+                    (timingMarkScore < 0.70 || gridLock.applied || (rowMarkScore != null && rowMarkScore < 0.70))
+            if (crumpleSuspect) {
+                debugInfo["crumpleSuspect"] = true
+            }
             val sparseAndEmptyLooking =
                 yield < MIN_ANSWER_YIELD && noSelections >= (totalQuestions * 0.7).toInt()
             if (answered == 0 && geometryWeak) {
@@ -790,7 +872,7 @@ class OmrProcessor(
                 return stageFail(
                     "Answers Extracted",
                     "Sheet was found but answer bubbles could not be read ($answered of $totalQuestions). " +
-                        "Hold the sheet flatter, keep all timing marks in frame, and print at 100% scale.",
+                        "Flatten the page under a book, keep all timing marks in frame, and rescan.",
                 )
             }
             if (sparseAndEmptyLooking && geometryWeak) {
@@ -798,7 +880,17 @@ class OmrProcessor(
                 return stageFail(
                     "Answers Extracted",
                     "Sheet was found but answer bubbles could not be read ($answered of $totalQuestions). " +
-                        "Hold the sheet flatter, keep all timing marks in frame, and print at 100% scale.",
+                        "Flatten the page under a book, keep all timing marks in frame, and rescan.",
+                )
+            }
+            // Many blanks + weak edge marks: refuse a "clean" grade — ask for a flatter rescan.
+            if (blankRatio >= 0.40 && timingMarkScore < 0.60) {
+                debugInfo["failureReason"] = "GRID_MISALIGNED"
+                debugInfo["crumpleSuspect"] = true
+                return stageFail(
+                    "Answers Extracted",
+                    "Too many blank answers ($blankCount of $totalQuestions) with weak timing marks. " +
+                        "The sheet is likely crumpled or uneven — flatten it and scan again.",
                 )
             }
             
@@ -1935,12 +2027,19 @@ class OmrProcessor(
             Imgproc.THRESH_BINARY_INV,
             15, 8.0
         )
+        // Heal thin white cracks from creases so crumpled marks still register.
+        val dilateKernel = Imgproc.getStructuringElement(
+            Imgproc.MORPH_RECT,
+            Size(2.0, 2.0),
+        )
+        Imgproc.dilate(binary, binary, dilateKernel)
+        dilateKernel.release()
         
         // Check top edge timing marks
         var x = 60.0
         while (x < 535) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, x, TIMING_MARK_EDGE_OFFSET)) {
+            if (checkTimingMark(binary, warpedMat, x, TIMING_MARK_EDGE_OFFSET, alongX = true)) {
                 foundMarks++
             }
             x += TIMING_MARK_SPACING
@@ -1950,7 +2049,14 @@ class OmrProcessor(
         x = 60.0
         while (x < 535) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, x, OUTPUT_HEIGHT - TIMING_MARK_EDGE_OFFSET)) {
+            if (checkTimingMark(
+                    binary,
+                    warpedMat,
+                    x,
+                    OUTPUT_HEIGHT - TIMING_MARK_EDGE_OFFSET,
+                    alongX = true,
+                )
+            ) {
                 foundMarks++
             }
             x += TIMING_MARK_SPACING
@@ -1960,7 +2066,7 @@ class OmrProcessor(
         var y = 60.0
         while (y < 780) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, TIMING_MARK_EDGE_OFFSET, y)) {
+            if (checkTimingMark(binary, warpedMat, TIMING_MARK_EDGE_OFFSET, y, alongX = false)) {
                 foundMarks++
             }
             y += TIMING_MARK_SPACING
@@ -1970,7 +2076,14 @@ class OmrProcessor(
         y = 60.0
         while (y < 780) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, OUTPUT_WIDTH - TIMING_MARK_EDGE_OFFSET, y)) {
+            if (checkTimingMark(
+                    binary,
+                    warpedMat,
+                    OUTPUT_WIDTH - TIMING_MARK_EDGE_OFFSET,
+                    y,
+                    alongX = false,
+                )
+            ) {
                 foundMarks++
             }
             y += TIMING_MARK_SPACING
@@ -1985,9 +2098,27 @@ class OmrProcessor(
     }
     
     /**
-     * Check if a timing mark exists at the given position
+     * Check if a timing mark exists at the given position.
+     * Searches a few pixels along the edge to tolerate crease gaps.
      */
-    private fun checkTimingMark(binary: Mat, gray: Mat, x: Double, y: Double): Boolean {
+    private fun checkTimingMark(
+        binary: Mat,
+        gray: Mat,
+        x: Double,
+        y: Double,
+        alongX: Boolean,
+    ): Boolean {
+        for (delta in intArrayOf(0, -2, 2, -4, 4)) {
+            val sx = if (alongX) x + delta else x
+            val sy = if (alongX) y else y + delta
+            if (checkTimingMarkOnce(binary, gray, sx, sy)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun checkTimingMarkOnce(binary: Mat, gray: Mat, x: Double, y: Double): Boolean {
         val radius = (TIMING_MARK_SIZE / 2 + 3).toInt()
         val cx = x.toInt().coerceIn(radius, binary.cols() - radius - 1)
         val cy = y.toInt().coerceIn(radius, binary.rows() - radius - 1)
@@ -2003,8 +2134,8 @@ class OmrProcessor(
         grayRoi.release()
         val intensityFill = 1.0 - (mean / 255.0)
 
-        // Accept either binary ink density or dark gray intensity (soft / blurry marks).
-        return binaryFill > 0.10 || intensityFill > 0.42
+        // Accept either binary ink density or dark gray intensity (soft / blurry / creased marks).
+        return binaryFill > 0.08 || intensityFill > 0.38
     }
     
     /**
@@ -2438,6 +2569,102 @@ class OmrProcessor(
             return 0.5  // Uncertain - don't fail
         }
     }
+
+    /**
+     * Estimate a small answer-grid Y lock from left row marks.
+     *
+     * Corner warp can still leave local crumple error; surviving row marks tell us
+     * where each answer row actually landed. Missing marks are skipped (gap fill via
+     * median offset + optional span scale from first/last survivors).
+     */
+    private fun estimateAnswerGridLock(
+        warpedMat: Mat,
+        layout: QrLayoutMetadata,
+        debugInfo: MutableMap<String, Any>,
+    ): AnswerGridLock {
+        val samples = mutableListOf<Pair<Double, Double>>() // expectedY → foundY
+        for (rowIndex in 0 until layout.rows) {
+            val expectedY =
+                layout.gridTop + (rowIndex * layout.rowHeight) + (layout.rowHeight / 2.0)
+            val foundY = findDarkMarkY(
+                warpedMat,
+                ROW_MARK_X,
+                expectedY,
+                GRID_LOCK_SEARCH_RADIUS_PX,
+            ) ?: continue
+            samples.add(expectedY to foundY)
+        }
+
+        debugInfo["gridLockMarksUsed"] = samples.size
+        if (samples.size < 3) {
+            debugInfo["gridLockApplied"] = false
+            return AnswerGridLock(
+                offsetY = 0.0,
+                rowHeightScale = 1.0,
+                marksUsed = samples.size,
+                applied = false,
+            )
+        }
+
+        val offsets = samples.map { it.second - it.first }.sorted()
+        val medianDy = offsets[offsets.size / 2]
+        var scale = 1.0
+        if (samples.size >= 5) {
+            val first = samples.first()
+            val last = samples.last()
+            val expectedSpan = last.first - first.first
+            val foundSpan = last.second - first.second
+            if (expectedSpan > 10.0) {
+                scale = (foundSpan / expectedSpan).coerceIn(0.97, 1.03)
+            }
+        }
+
+        val cappedDy = medianDy.coerceIn(-GRID_LOCK_MAX_OFFSET_Y, GRID_LOCK_MAX_OFFSET_Y)
+        val applied = kotlin.math.abs(cappedDy) >= 0.5 || kotlin.math.abs(scale - 1.0) >= 0.005
+        debugInfo["gridLockOffsetY"] = cappedDy
+        debugInfo["gridLockRowHeightScale"] = scale
+        debugInfo["gridLockApplied"] = applied
+        if (applied) {
+            Log.d(
+                TAG,
+                "Answer grid lock: dy=${"%.2f".format(cappedDy)}, scale=${"%.4f".format(scale)}, " +
+                    "marks=${samples.size}",
+            )
+        }
+        return AnswerGridLock(
+            offsetY = cappedDy,
+            rowHeightScale = scale,
+            marksUsed = samples.size,
+            applied = applied,
+        )
+    }
+
+    /** Darkest small window near [expectedY] on the left row-mark column. */
+    private fun findDarkMarkY(
+        grayMat: Mat,
+        markX: Double,
+        expectedY: Double,
+        searchRadius: Int,
+    ): Double? {
+        val sample = maxOf(2, (ROW_MARK_SIZE).toInt())
+        val half = sample / 2
+        val cx = markX.toInt().coerceIn(half, grayMat.cols() - half - 1)
+        var bestY = expectedY
+        var bestMean = 255.0
+        var found = false
+        for (dy in -searchRadius..searchRadius) {
+            val cy = (expectedY + dy).toInt().coerceIn(half, grayMat.rows() - half - 1)
+            val roi = Mat(grayMat, Rect(cx - half, cy - half, sample, sample))
+            val mean = Core.mean(roi).`val`[0]
+            roi.release()
+            if (mean < 110.0 && mean < bestMean) {
+                bestMean = mean
+                bestY = cy.toDouble()
+                found = true
+            }
+        }
+        return if (found) bestY else null
+    }
     
     /**
      * Calibrate fill threshold using the calibration marks in the footer
@@ -2552,6 +2779,7 @@ class OmrProcessor(
                 val result = analyzeBubbleWithRefine(
                     thresholdMat, grayMat, columnX, bubbleY, fillThreshold,
                     refineRadius = 1,
+                    minAreaCoverage = MIN_OMR_ID_AREA_COVERAGE,
                 )
                 
                 if (result.fillPercentage > bestFill) {
@@ -2685,7 +2913,14 @@ class OmrProcessor(
             
             for ((optIdx, option) in options.withIndex()) {
                 val bubbleX = bubbleAreaLeft + (optIdx * bubbleSpacing)
-                val result = analyzeBubblePrecise(thresholdMat, grayMat, bubbleX, rowCenterY, fillThreshold)
+                val result = analyzeBubblePrecise(
+                    thresholdMat,
+                    grayMat,
+                    bubbleX,
+                    rowCenterY,
+                    fillThreshold,
+                    minAreaCoverage = MIN_ANSWER_AREA_COVERAGE,
+                )
                 optionFills.add(result.fillPercentage)
                 
                 if (result.fillPercentage > bestFill) {
@@ -2697,8 +2932,9 @@ class OmrProcessor(
                 }
             }
             
-            // Check for multiple selections
+            // Two+ real marks: never auto-grade. Leave blank and flag for teacher.
             val filledCount = optionFills.count { it > fillThreshold }
+            val separation = bestFill - secondBestFill
             if (filledCount > 1) {
                 multipleSelections++
                 ambiguousQuestions.add(questionNum)
@@ -2709,7 +2945,6 @@ class OmrProcessor(
             }
             
             if (bestOption.isNotEmpty() && bestFill > fillThreshold) {
-                val separation = bestFill - secondBestFill
                 val confidence = minOf(separation / 0.15, 1.0)
                 
                 answers[questionNum] = bestOption
@@ -2735,7 +2970,9 @@ class OmrProcessor(
         totalQuestions: Int,
         layout: QrLayoutMetadata,
         fillThreshold: Double, 
-        debugInfo: MutableMap<String, Any>
+        debugInfo: MutableMap<String, Any>,
+        refineRadius: Int = BUBBLE_REFINE_RADIUS_PX,
+        emptyGuardStrict: Boolean = false,
     ): Pair<Map<Int, String>, Double> {
         
         val answers = mutableMapOf<Int, String>()
@@ -2747,6 +2984,16 @@ class OmrProcessor(
         var noSelections = 0
         var bestFillSum = 0.0
         var maxOptionFill = 0.0
+        val lightMarkQuestions = mutableListOf<Int>()
+        val scratchRejectedQuestions = mutableListOf<Int>()
+        val weakWinnerRejectedQuestions = mutableListOf<Int>()
+        // Prefer blank over a guessed letter when alignment is shaky.
+        val effectiveFillThreshold =
+            if (emptyGuardStrict) (fillThreshold + 0.04).coerceAtMost(0.45) else fillThreshold
+        val minWinnerSeparation =
+            if (emptyGuardStrict) MIN_WINNER_SEPARATION_STRICT else MIN_WINNER_SEPARATION
+        debugInfo["effectiveFillThreshold"] = effectiveFillThreshold
+        debugInfo["minWinnerSeparation"] = minWinnerSeparation
         
         // Use fixed positions from layout metadata.
         // gridTop is the actual first-row grid origin on the printed sheet.
@@ -2789,12 +3036,21 @@ class OmrProcessor(
             var bestOption = ""
             var bestFill = 0.0
             var secondBestFill = 0.0
-            val optionFills = mutableListOf<Double>()
+            var bestAreaCoverage = 0.0
+            val optionMarked = mutableListOf<Boolean>()
             
             for ((optIdx, option) in options.withIndex()) {
                 val bubbleX = bubbleAreaLeft + (optIdx * bubbleSpacingX)
-                val result = analyzeBubbleWithRefine(thresholdMat, grayMat, bubbleX, rowCenterY, fillThreshold)
-                optionFills.add(result.fillPercentage)
+                val result = analyzeBubbleWithRefine(
+                    thresholdMat,
+                    grayMat,
+                    bubbleX,
+                    rowCenterY,
+                    effectiveFillThreshold,
+                    refineRadius = refineRadius,
+                    minAreaCoverage = MIN_ANSWER_AREA_COVERAGE,
+                )
+                optionMarked.add(result.filled)
                 if (result.fillPercentage > maxOptionFill) {
                     maxOptionFill = result.fillPercentage
                 }
@@ -2803,14 +3059,17 @@ class OmrProcessor(
                     secondBestFill = bestFill
                     bestFill = result.fillPercentage
                     bestOption = option
+                    bestAreaCoverage = result.areaCoverage
                 } else if (result.fillPercentage > secondBestFill) {
                     secondBestFill = result.fillPercentage
                 }
             }
             bestFillSum += bestFill
             
-            // Check for multiple selections
-            val filledCount = optionFills.count { it > fillThreshold }
+            // Two+ real marks: never auto-grade. Leave blank and flag for teacher
+            // (crossed-out + new shade, double shade, etc.).
+            val filledCount = optionMarked.count { it }
+            val separation = bestFill - secondBestFill
             if (filledCount > 1) {
                 multipleSelections++
                 ambiguousQuestions.add(questionNum)
@@ -2820,20 +3079,37 @@ class OmrProcessor(
                 noSelections++
             }
             
-            if (bestOption.isNotEmpty() && bestFill > fillThreshold) {
-                val separation = bestFill - secondBestFill
+            val intensityLooksMarked = bestFill > effectiveFillThreshold
+            val areaLooksMarked = bestAreaCoverage >= MIN_ANSWER_AREA_COVERAGE
+            // Neighbors must look empty — otherwise crumple/noise invented a letter.
+            val clearWinner =
+                separation >= minWinnerSeparation &&
+                    secondBestFill < effectiveFillThreshold
+            if (bestOption.isNotEmpty() && intensityLooksMarked && areaLooksMarked && clearWinner) {
                 val confidence = minOf(separation / 0.15, 1.0)
-                
                 answers[questionNum] = bestOption
                 confidences.add(confidence)
+                if (bestAreaCoverage < LIGHT_MARK_AREA_COVERAGE) {
+                    lightMarkQuestions.add(questionNum)
+                }
+            } else if (bestOption.isNotEmpty() && intensityLooksMarked && !areaLooksMarked) {
+                // Dark scratch / stray line — do not credit as an answer.
+                scratchRejectedQuestions.add(questionNum)
+            } else if (bestOption.isNotEmpty() && intensityLooksMarked && areaLooksMarked && !clearWinner) {
+                // Blank / noise: one option barely edged out the others — safer as blank.
+                weakWinnerRejectedQuestions.add(questionNum)
             }
         }
         
         debugInfo["multipleSelectionsLayout"] = multipleSelections
         debugInfo["noSelectionsLayout"] = noSelections
         debugInfo["ambiguousQuestions"] = ambiguousQuestions.toList()
+        debugInfo["lightMarkQuestions"] = lightMarkQuestions.toList()
+        debugInfo["scratchRejectedQuestions"] = scratchRejectedQuestions.toList()
+        debugInfo["weakWinnerRejectedQuestions"] = weakWinnerRejectedQuestions.toList()
         debugInfo["meanBestOptionFill"] = if (totalQuestions > 0) bestFillSum / totalQuestions else 0.0
         debugInfo["maxOptionFill"] = maxOptionFill
+        debugInfo["minAnswerAreaCoverage"] = MIN_ANSWER_AREA_COVERAGE
         
         val avgConfidence = if (confidences.isNotEmpty()) confidences.average() else 0.0
         return Pair(answers, avgConfidence)
@@ -2854,6 +3130,7 @@ class OmrProcessor(
         centerY: Double,
         fillThreshold: Double,
         refineRadius: Int = BUBBLE_REFINE_RADIUS_PX,
+        minAreaCoverage: Double = MIN_ANSWER_AREA_COVERAGE,
     ): BubbleResult {
         val (rx, ry) = darkCentroidOffset(grayMat, centerX, centerY, refineRadius)
         return analyzeBubblePrecise(
@@ -2862,6 +3139,7 @@ class OmrProcessor(
             centerX + rx,
             centerY + ry,
             fillThreshold,
+            minAreaCoverage = minAreaCoverage,
         )
     }
 
@@ -2909,6 +3187,7 @@ class OmrProcessor(
         centerX: Double,
         centerY: Double,
         fillThreshold: Double = DEFAULT_FILL_THRESHOLD,
+        minAreaCoverage: Double = MIN_ANSWER_AREA_COVERAGE,
     ): BubbleResult {
         val radius = (BUBBLE_DIAMETER / 2 + 1).toInt()
         
@@ -2921,7 +3200,7 @@ class OmrProcessor(
             return BubbleResult(false, 0.0, 0.0, centerX, centerY)
         }
         
-        // Method 1: Threshold-based fill
+        // Method 1: Threshold-based fill (area coverage)
         val threshRoi = Mat(thresholdMat, Rect(x, y, size, size))
         val mask = Mat.zeros(size, size, CvType.CV_8UC1)
         // Keep mask inside the printed ring so border ink does not inflate empty bubbles.
@@ -2942,9 +3221,9 @@ class OmrProcessor(
         val meanIntensity = Core.mean(grayRoi, mask).`val`[0]
         val intensityFill = 1.0 - (meanIntensity / 255.0)
         
-        // Combine both methods (average)
-        // Heavier weight on grayscale intensity helps light pencil shading register.
-        val combinedFill = (thresholdFill * 0.35) + (intensityFill * 0.65)
+        // Slightly more weight on area so thin pen scratches need real coverage.
+        // Intensity still helps light but broad pencil shading.
+        val combinedFill = (thresholdFill * 0.45) + (intensityFill * 0.55)
         
         // Calculate confidence based on consistency between methods
         val consistency = 1.0 - abs(thresholdFill - intensityFill)
@@ -2954,6 +3233,9 @@ class OmrProcessor(
             combinedFill < 0.15 -> consistency * 0.95
             else -> consistency * 0.5
         }
+
+        val looksFilled =
+            combinedFill > fillThreshold && thresholdFill >= minAreaCoverage
         
         threshRoi.release()
         grayRoi.release()
@@ -2962,11 +3244,13 @@ class OmrProcessor(
         maskedGray.release()
         
         return BubbleResult(
-            filled = combinedFill > fillThreshold,
+            filled = looksFilled,
             fillPercentage = combinedFill,
             confidence = confidence,
             centerX = centerX,
-            centerY = centerY
+            centerY = centerY,
+            areaCoverage = thresholdFill,
+            intensityFill = intensityFill,
         )
     }
 

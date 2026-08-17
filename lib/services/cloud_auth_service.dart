@@ -3,6 +3,7 @@ import 'package:omr_app/constants/coc_school.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/utils/person_name.dart';
 
 class CloudTeacherAccount {
   const CloudTeacherAccount({
@@ -25,6 +26,28 @@ class CloudTeacherAccount {
 
   bool get isApproved =>
       isActive && accessStatus.toLowerCase() == 'approved';
+}
+
+enum CloudSessionState {
+  /// Server answered and the account is still usable.
+  valid,
+
+  /// Server answered and the account is revoked, deleted, or signed out.
+  invalid,
+
+  /// Server could not be reached — say nothing about the account.
+  unreachable,
+}
+
+class CloudSessionCheck {
+  const CloudSessionCheck(this.state, [this.account]);
+
+  final CloudSessionState state;
+  final CloudTeacherAccount? account;
+
+  bool get isValid => state == CloudSessionState.valid;
+  bool get isInvalid => state == CloudSessionState.invalid;
+  bool get isUnreachable => state == CloudSessionState.unreachable;
 }
 
 class CloudAuthException implements Exception {
@@ -69,7 +92,12 @@ class CloudAuthService {
     String school = CocSchool.name,
   }) async {
     _ensureApiReady();
-    final trimmedName = name.trim();
+    final trimmedName = PersonName.normalize(name);
+    if (trimmedName.isEmpty) {
+      throw const CloudAuthException(
+        'Enter your full name (first name, then last name).',
+      );
+    }
     final normalizedEmail = email.trim().toLowerCase();
     final trimmedSchool =
         school.trim().isEmpty ? CocSchool.name : school.trim();
@@ -187,56 +215,65 @@ class CloudAuthService {
     await LocalDataStore.instance.clearMemoryOnAuthReset();
   }
 
-  /// Returns false when the cloud session is invalid (revoked, deleted, expired).
-  Future<bool> validateActiveSession({bool signOutOnInvalid = false}) async {
+  /// Asks the server who this session belongs to.
+  ///
+  /// Only the server can say an account is revoked. When the server cannot be
+  /// reached the result is [CloudSessionState.unreachable] so the teacher keeps
+  /// working offline instead of being signed out on exam day.
+  Future<CloudSessionCheck> checkCurrentSession({
+    bool signOutOnInvalid = false,
+  }) async {
     if (!ApiService.hasActiveSession) {
-      return false;
+      return const CloudSessionCheck(CloudSessionState.invalid);
     }
 
     try {
       final response = await ApiService.getJson('/me');
       final account = _accountFromMeResponse(response);
-      if (account == null || !account.isApproved) {
+      if (account == null) {
         await ApiService.clearSession();
         if (signOutOnInvalid) {
           await signOut();
         }
-        return false;
+        return const CloudSessionCheck(CloudSessionState.invalid);
       }
-      return true;
-    } catch (error) {
-      if (error is ApiException && error.sessionInvalidated && signOutOnInvalid) {
-        await signOut();
-      }
-      return false;
-    }
-  }
-
-  Future<CloudTeacherAccount?> accountFromCurrentSession() async {
-    if (!ApiService.hasActiveSession) {
-      return null;
-    }
-
-    try {
-      final response = await ApiService.getJson('/me');
-      return _accountFromMeResponse(response);
+      return CloudSessionCheck(CloudSessionState.valid, account);
     } catch (error) {
       debugPrint('Failed to resolve session account: $error');
       if (error is ApiException && error.sessionInvalidated) {
-        return null;
+        if (signOutOnInvalid) {
+          await signOut();
+        }
+        return const CloudSessionCheck(CloudSessionState.invalid);
       }
-      final userId = ApiService.currentUserId;
-      final email = ApiService.currentEmail;
-      if (userId == null) {
-        return null;
-      }
-      return CloudTeacherAccount(
-        id: userId,
-        email: email ?? '',
-        name: email ?? 'Teacher',
-        isActive: true,
-      );
+      return const CloudSessionCheck(CloudSessionState.unreachable);
     }
+  }
+
+  /// Account for the stored session, or a cached stand-in while offline.
+  /// Returns null only when the server confirmed the session is no longer valid.
+  Future<CloudTeacherAccount?> accountFromCurrentSession() async {
+    final check = await checkCurrentSession();
+    if (check.isUnreachable) {
+      return cachedSessionAccount();
+    }
+    return check.account;
+  }
+
+  /// Account details already stored on this phone, for offline screens.
+  CloudTeacherAccount? cachedSessionAccount() {
+    final userId = ApiService.currentUserId;
+    if (userId == null || userId.isEmpty) {
+      return null;
+    }
+    final email =
+        ApiService.currentEmail ?? LocalAuthService.instance.cachedTeacherEmail;
+    return CloudTeacherAccount(
+      id: userId,
+      email: email ?? '',
+      name: LocalAuthService.instance.cachedTeacherName ?? email ?? 'Teacher',
+      isActive: true,
+    );
   }
 
   Future<CloudTeacherAccount> signInTeacher({
@@ -456,10 +493,10 @@ class CloudAuthService {
     if (normalized.contains('already been taken') ||
         normalized.contains('already registered') ||
         normalized.contains('already exists')) {
-      return 'An account with this email already exists. Sign in with your email and password instead.';
+      return 'An account with this email already exists and is approved. Sign in with your email and password instead.';
     }
     if (normalized.contains('password')) {
-      return 'The password does not meet requirements. Use at least 8 characters.';
+      return 'The password does not meet requirements. Use at least 8 characters with a letter, a number, and a symbol (e.g. !@#\$%).';
     }
     if (normalized.contains('rate limit') || normalized.contains('too many')) {
       return 'Too many attempts. Wait a minute, then try again.';

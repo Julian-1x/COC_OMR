@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Sync;
 use App\Http\Controllers\Controller;
 use App\Models\Student;
 use App\Services\SyncSnapshotService;
+use App\Support\PersonName;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -42,7 +43,7 @@ class StudentSyncController extends Controller
             ],
             [
                 'omr_id' => $validated['omr_id'],
-                'name' => trim($validated['name']),
+                'name' => PersonName::normalize($validated['name']),
                 'section_name' => trim($validated['section_name']),
                 'score' => $validated['score'] ?? null,
                 'answers' => $validated['answers'] ?? null,
