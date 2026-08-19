@@ -36,8 +36,7 @@ export async function fetchStudents(api: ApiClient, sectionName?: string): Promi
   return students ?? [];
 }
 
-export async function fetchSectionStudentCounts(api: ApiClient): Promise<Map<string, number>> {
-  const students = await fetchStudents(api);
+export function studentCountsFromRoster(students: DbStudent[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const row of students) {
     const section = String(row.section_name ?? "");
@@ -45,6 +44,10 @@ export async function fetchSectionStudentCounts(api: ApiClient): Promise<Map<str
     counts.set(section, (counts.get(section) ?? 0) + 1);
   }
   return counts;
+}
+
+export async function fetchSectionStudentCounts(api: ApiClient): Promise<Map<string, number>> {
+  return studentCountsFromRoster(await fetchStudents(api));
 }
 
 export async function fetchSubjects(api: ApiClient): Promise<DbSubject[]> {
@@ -66,8 +69,13 @@ export async function fetchSubject(api: ApiClient, localId: string): Promise<DbS
   }
 }
 
-export async function fetchScanResults(api: ApiClient): Promise<DbScanResult[]> {
-  const { scan_results } = await api.get<{ scan_results: DbScanResult[] }>("/scan-results");
+export async function fetchScanResults(
+  api: ApiClient,
+  options?: { includeAnswers?: boolean },
+): Promise<DbScanResult[]> {
+  const { scan_results } = await api.get<{ scan_results: DbScanResult[] }>("/scan-results", {
+    params: options?.includeAnswers ? { include_answers: 1 } : undefined,
+  });
   return scan_results ?? [];
 }
 
@@ -149,6 +157,7 @@ export type DashboardStats = {
   subjectCount: number;
   scanCount: number;
   pendingReview: number;
+  lastUpdated: string | null;
 };
 
 export async function fetchDashboardStats(api: ApiClient): Promise<DashboardStats> {
@@ -158,6 +167,7 @@ export async function fetchDashboardStats(api: ApiClient): Promise<DashboardStat
     subject_count: number;
     scan_count: number;
     pending_review: number;
+    last_updated?: string | null;
   }>("/dashboard/stats");
 
   return {
@@ -166,6 +176,7 @@ export async function fetchDashboardStats(api: ApiClient): Promise<DashboardStat
     subjectCount: stats.subject_count,
     scanCount: stats.scan_count,
     pendingReview: stats.pending_review,
+    lastUpdated: stats.last_updated ?? null,
   };
 }
 

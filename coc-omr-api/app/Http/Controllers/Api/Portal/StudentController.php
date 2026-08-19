@@ -24,6 +24,22 @@ class StudentController extends Controller
             $query->where('section_name', $sectionName);
         }
 
+        $query->select([
+            'id',
+            'owner_teacher_id',
+            'school_id',
+            'omr_id',
+            'name',
+            'section_name',
+            'score',
+            'scan_date',
+            'confidence',
+            'local_id',
+            'sync_status',
+            'created_at',
+            'updated_at',
+        ]);
+
         return response()->json([
             'students' => $query->get(),
         ]);

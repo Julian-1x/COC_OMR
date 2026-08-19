@@ -16,17 +16,15 @@ export default async function SettingsPage() {
     subjectCount: 0,
     scanCount: 0,
     pendingReview: 0,
+    lastUpdated: null as string | null,
   };
   let lastUpdated: string | null = null;
   let cloudSlow = false;
 
   try {
-    const [nextStats, nextUpdated] = await Promise.all([
-      fetchDashboardStats(api),
-      fetchCloudLastUpdated(api),
-    ]);
+    const nextStats = await fetchDashboardStats(api);
     stats = nextStats;
-    lastUpdated = nextUpdated;
+    lastUpdated = nextStats.lastUpdated ?? (await fetchCloudLastUpdated(api));
   } catch {
     // Render free tier often times out mid-page; keep Settings usable.
     cloudSlow = true;

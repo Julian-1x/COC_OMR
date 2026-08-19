@@ -51,9 +51,6 @@ function upstreamErrorMessage(
   return fallback;
 }
 
-  return fallback;
-}
-
 async function readUpstream(
   response: Response,
 ): Promise<{ payload: AuthResponse | null; rawBody: string }> {

@@ -19,10 +19,35 @@ class ScanResultController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $results = $this->scope
+        $query = $this->scope
             ->scanResultsQuery($request->user())
-            ->orderByDesc('scan_time')
-            ->get();
+            ->orderByDesc('scan_time');
+
+        if (! $request->boolean('include_answers')) {
+            $query->select([
+                'id',
+                'owner_teacher_id',
+                'student_omr_id',
+                'subject_id',
+                'subject_local_id',
+                'subject_name',
+                'sheet_id',
+                'score',
+                'total_questions',
+                'confidence',
+                'scan_time',
+                'review_reasons',
+                'flagged_questions',
+                'manually_confirmed',
+                'needs_review',
+                'local_id',
+                'sync_status',
+                'created_at',
+                'updated_at',
+            ]);
+        }
+
+        $results = $query->get();
 
         return response()->json(['scan_results' => $results]);
     }

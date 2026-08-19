@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import {
   isAccessApproved,
@@ -13,43 +14,23 @@ import {
   createServerApiClient,
   getServerApiToken,
 } from "@/lib/api/laravel-server";
-import { wakeSchoolApi } from "@/lib/api/wake-api";
-import { tryGetApiBaseUrl } from "@/lib/api/env";
 import type { DbTeacherProfile } from "@/lib/types/database";
 
-async function fetchMeWithRetry(api: ApiClient): Promise<{ user: ApiUser }> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await api.get<{ user: ApiUser }>("/me");
-    } catch (error) {
-      lastError = error;
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-        throw error;
-      }
-      if (attempt + 1 < 3) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-      }
-    }
-  }
-  throw lastError;
-}
-
-export async function requireTeacherSession(): Promise<{
+/**
+ * One login check per page request. Layout and the page used to each wake
+ * Render and call /me, which made every click feel slow.
+ */
+export const requireTeacherSession = cache(async (): Promise<{
   api: ApiClient;
   user: ApiUser;
   profile: DbTeacherProfile | null;
-}> {
+}> => {
   const token = await getServerApiToken();
   if (!token) redirect("/login");
 
   const api = createServerApiClient(token);
   try {
-    const baseUrl = tryGetApiBaseUrl();
-    if (baseUrl) {
-      await wakeSchoolApi(baseUrl, { attempts: 2, delayMs: 1500 });
-    }
-    const { user } = await fetchMeWithRetry(api);
+    const { user } = await api.get<{ user: ApiUser }>("/me");
     if (!isAccessApproved(user.profile)) {
       redirect("/auth/signout?next=/login&pending=1");
     }
@@ -66,7 +47,7 @@ export async function requireTeacherSession(): Promise<{
     // Keep the session cookie — Render free tier often 502s while waking.
     redirect("/warming");
   }
-}
+});
 
 export async function requireAdminSession(): Promise<{
   api: ApiClient;

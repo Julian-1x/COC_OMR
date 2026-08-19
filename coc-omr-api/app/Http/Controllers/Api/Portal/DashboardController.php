@@ -20,11 +20,24 @@ class DashboardController extends Controller
         $sectionCount = $this->scope->sectionsQuery($user)->count();
         $studentCount = $this->scope->studentsQuery($user)->count();
         $subjectCount = $this->scope->subjectsQuery($user)->count();
-        $scanCount = $this->scope->scanResultsQuery($user)->count();
-        $pendingReview = $this->scope
-            ->scanResultsQuery($user)
-            ->where('needs_review', true)
-            ->count();
+        $scanQuery = $this->scope->scanResultsQuery($user);
+        $scanCount = (clone $scanQuery)->count();
+        $pendingReview = (clone $scanQuery)->where('needs_review', true)->count();
+
+        $timestamps = [];
+        foreach (['sections', 'students', 'subjects', 'scan_results'] as $table) {
+            $query = match ($table) {
+                'sections' => $this->scope->sectionsQuery($user),
+                'students' => $this->scope->studentsQuery($user),
+                'subjects' => $this->scope->subjectsQuery($user),
+                'scan_results' => $this->scope->scanResultsQuery($user),
+            };
+            $latest = $query->orderByDesc('updated_at')->value('updated_at');
+            if ($latest !== null) {
+                $timestamps[] = (string) $latest;
+            }
+        }
+        sort($timestamps);
 
         return response()->json([
             'section_count' => $sectionCount,
@@ -32,6 +45,7 @@ class DashboardController extends Controller
             'subject_count' => $subjectCount,
             'scan_count' => $scanCount,
             'pending_review' => $pendingReview,
+            'last_updated' => $timestamps === [] ? null : end($timestamps),
         ]);
     }
 

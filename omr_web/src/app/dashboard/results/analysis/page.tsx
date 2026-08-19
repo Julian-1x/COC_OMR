@@ -5,7 +5,7 @@ import { AnalysisContent } from "./analysis-content";
 export default async function ItemAnalysisPage() {
   const { api } = await requireTeacherSession();
   const [scans, students, subjects] = await Promise.all([
-    fetchScanResults(api),
+    fetchScanResults(api, { includeAnswers: true }),
     fetchStudents(api),
     fetchSubjects(api),
   ]);

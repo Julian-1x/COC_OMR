@@ -85,12 +85,25 @@ export class ApiClient {
       headers["Bypass-Tunnel-Reminder"] = "true";
     }
 
-    const response = await fetch(this.buildUrl(path, options), {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      cache: "no-store",
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    let response: Response;
+    try {
+      response = await fetch(this.buildUrl(path, options), {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new ApiError("The school server took too long to respond.", 504);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
 
     const text = await response.text();
     const payload = text ? safeJsonParse(text) : null;

@@ -1,17 +1,10 @@
 import Link from "next/link";
 
 import { EmptyState } from "@/components/dashboard-shell";
-
 import { Input } from "@/components/ui/input";
-
 import {
-
   displaySectionStudentCount,
-
   fetchSections,
-
-  fetchSectionStudentCounts,
-
 } from "@/lib/api/data";
 
 import { requireTeacherSession } from "@/lib/api/session";
@@ -42,19 +35,10 @@ export default async function ClassesPage({
 
   const { api } = await requireTeacherSession();
 
-  const [sections, counts] = await Promise.all([
-
-    fetchSections(api, {
-
-      archived: showArchived,
-
-      schoolYear,
-
-    }),
-
-    fetchSectionStudentCounts(api),
-
-  ]);
+  const sections = await fetchSections(api, {
+    archived: showArchived,
+    schoolYear,
+  });
 
 
 
@@ -258,14 +242,9 @@ export default async function ClassesPage({
 
           sections={filtered.map((section) => {
 
-            const live = counts.get(section.name);
-
             const { count, rosterPending } = displaySectionStudentCount(
-
-              live,
-
+              undefined,
               section.student_count,
-
             );
 
             return {
