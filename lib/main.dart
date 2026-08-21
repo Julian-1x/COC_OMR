@@ -7,6 +7,7 @@ import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/services/device_scan_capability.dart';
 import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/auto_sync_service.dart';
 import 'package:omr_app/services/theme_service.dart';
 import 'package:omr_app/models/exam_data.dart';
 
@@ -20,6 +21,8 @@ Future<void> main() async {
   await ThemeService.init();
 
   await LocalDataStore.instance.loadIntoMemory();
+
+  await AutoSyncService.instance.start();
 
   rebuildStudentIndex();
 

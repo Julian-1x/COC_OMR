@@ -14,6 +14,9 @@ import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
 
+/// Called after any local database write completes. Used by [AutoSyncService].
+void Function()? onLocalDataPersisted;
+
 class LocalDataStore {
   LocalDataStore._();
 
@@ -2465,6 +2468,8 @@ class LocalDataStore {
     final next = _pendingSave.then<void>((_) => action());
     _pendingSave = next.catchError((Object error, StackTrace stackTrace) {
       debugPrint('Local data write failed: $error');
+    }).whenComplete(() {
+      onLocalDataPersisted?.call();
     });
     return next;
   }

@@ -1,6 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/pages/answer_key_page.dart';
+import 'package:omr_app/pages/exam_day_board_page.dart';
+import 'package:omr_app/pages/scan_review_page.dart';
+import 'package:omr_app/theme/app_page_transitions.dart';
 import 'package:omr_app/services/backup_service.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
@@ -35,6 +40,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
   int _sortMode = 0;
   bool _sortAscending = true;
   bool _mutated = false;
+  String? _insightsSubjectId;
 
   String get _sectionKey => _normalizeSectionName(widget.sectionName);
   List<Student> get _sectionStudents => globalStudentDatabase
@@ -148,6 +154,133 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
 
     // No scan result = no score to show
     return '--';
+  }
+
+  Subject? _subjectForScanResult(ScanResult result) {
+    final subjectId = result.subjectId?.trim();
+    if (subjectId != null && subjectId.isNotEmpty) {
+      for (final subject in globalSubjects) {
+        if (subject.id == subjectId) {
+          return subject;
+        }
+      }
+    }
+
+    final targetName = result.subjectName.trim().toLowerCase();
+    for (final subject in globalSubjects) {
+      if (subject.name.trim().toLowerCase() == targetName) {
+        return subject;
+      }
+    }
+    return null;
+  }
+
+  Map<int, double> _correctnessMapForAnswers(
+    Subject subject,
+    Map<int, String> answers,
+  ) {
+    final map = <int, double>{};
+    for (var question = 1; question <= subject.totalQuestions; question++) {
+      final answer = answers[question];
+      if (answer != null && answer.isNotEmpty) {
+        map[question] = subject.calculateQuestionScore(question, answer);
+      }
+    }
+    return map;
+  }
+
+  String _resultStatusLabel(ScanResult result) {
+    if (result.requiresReview) {
+      return 'FLAGGED';
+    }
+    if (result.passed) {
+      return 'PASS';
+    }
+    return 'REVIEW';
+  }
+
+  (Color, Color) _resultStatusColors(ScanResult result) {
+    if (result.requiresReview) {
+      return (AppColors.statusWarningBg, AppColors.statusWarning);
+    }
+    if (result.passed) {
+      return (brandGreen.withValues(alpha: 0.12), brandGreen);
+    }
+    return (const Color(0xFFFDECEC), Colors.red);
+  }
+
+  Future<void> _openSavedScanReview(
+    Student student,
+    ScanResult result,
+  ) async {
+    final subject = _subjectForScanResult(result);
+    if (subject == null) {
+      _showSnackBar(
+        'Could not find the answer key for ${result.subjectName}.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    final reviewResult = await Navigator.push<ScanReviewResult>(
+      context,
+      AppPageTransitions.fadeSlide(
+        ScanReviewPage(
+          student: student,
+          subject: subject,
+          detectedAnswers: result.detectedAnswers,
+          confidence: result.confidence,
+          sheetId: result.sheetId,
+          reviewReasons: result.reviewReasons,
+          flaggedQuestions: result.flaggedQuestions,
+        ),
+      ),
+    );
+
+    if (!mounted || reviewResult == null || !reviewResult.wasEdited) {
+      return;
+    }
+
+    final answers = reviewResult.editedAnswers;
+    final score = subject.calculateSmartScore(answers);
+    final updatedResult = ScanResult(
+      studentOmrId: result.studentOmrId,
+      subjectId: result.subjectId ?? subject.id,
+      subjectName: result.subjectName,
+      sheetId: result.sheetId,
+      detectedAnswers: answers,
+      correctnessMap: _correctnessMapForAnswers(subject, answers),
+      score: score,
+      totalQuestions: subject.totalQuestions,
+      confidence: result.confidence,
+      scanTime: result.scanTime,
+      scannedImagePath: result.scannedImagePath,
+      reviewReasons: result.reviewReasons,
+      flaggedQuestions: result.flaggedQuestions,
+      manuallyConfirmed: true,
+      needsReview: false,
+      ownerTeacherId: result.ownerTeacherId,
+      cloudId: result.cloudId,
+      syncStatus: SyncStatus.pending,
+    );
+    final updatedStudent = student.copyWith(
+      score: score,
+      answers: answers,
+      scanDate: result.scanTime,
+      confidence: result.confidence,
+    );
+
+    await LocalDataStore.instance.replaceAcceptedScan(
+      updatedStudent: updatedStudent,
+      previousResult: result,
+      replacementResult: updatedResult,
+    );
+
+    if (!mounted) {
+      return;
+    }
+    setState(() => _mutated = true);
+    _showSnackBar('Score updated for ${student.name}.');
   }
 
   Future<void> _handleImport() async {
@@ -501,15 +634,27 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               )
             else
               ...subjectResults.map(
-                (result) => Container(
+                (result) {
+                  final statusColors = _resultStatusColors(result);
+                  return Container(
                   margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(22),
                     border: Border.all(color: brandBorder),
                   ),
-                  child: Row(
+                  child: Material(
+                    color: Colors.transparent,
+                    borderRadius: BorderRadius.circular(22),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(22),
+                      onTap: () {
+                        Navigator.pop(context);
+                        unawaited(_openSavedScanReview(student, result));
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(18),
+                        child: Row(
                     children: [
                       Expanded(
                         child: Column(
@@ -547,22 +692,35 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                           vertical: 10,
                         ),
                         decoration: BoxDecoration(
-                          color: result.passed
-                              ? brandGreen.withValues(alpha: 0.12)
-                              : const Color(0xFFFDECEC),
+                          color: statusColors.$1,
                           borderRadius: BorderRadius.circular(16),
                         ),
-                        child: Text(
-                          result.passed ? 'PASS' : 'REVIEW',
-                          style: TextStyle(
-                            color: result.passed ? brandGreen : Colors.red,
-                            fontWeight: FontWeight.w800,
-                          ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _resultStatusLabel(result),
+                              style: TextStyle(
+                                color: statusColors.$2,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.chevron_right_rounded,
+                              color: statusColors.$2,
+                              size: 18,
+                            ),
+                          ],
                         ),
                       ),
                     ],
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                );
+                },
               ),
             const SizedBox(height: 20),
             OutlinedButton.icon(
@@ -966,6 +1124,50 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
             ],
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+          child: Material(
+            color: AppColors.brandSurface,
+            borderRadius: BorderRadius.circular(16),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _openExamDayBoard,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: brandBorder),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.fact_check_rounded, color: brandGreen),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Exam-day board',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              color: brandText,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'See who is scanned, missing, needs review, or duplicated',
+                            style: TextStyle(fontSize: 12, color: brandMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded, color: brandMuted),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
 
         // Search bar
         Container(
@@ -1014,14 +1216,43 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     );
   }
 
-  Widget _buildInsightsTab() {
-    final questionStats = _calculateSectionQuestionStats();
-    final hasScans = globalScanResults.any((scan) {
-      final student = findStudentByOmrId(scan.studentOmrId);
-      return student != null && student.section == widget.sectionName;
-    });
+  List<Subject> get _insightsSubjects {
+    final sectionOmrIds = _sectionStudents.map((s) => s.omrId).toSet();
+    final subjectIds = <String>{};
+    for (final scan in globalScanResults) {
+      if (!sectionOmrIds.contains(scan.studentOmrId)) continue;
+      final id = scan.subjectId?.trim();
+      if (id != null && id.isNotEmpty) {
+        subjectIds.add(id);
+      }
+    }
+    return globalSubjects
+        .where((s) => subjectIds.contains(s.id))
+        .toList();
+  }
 
-    if (!hasScans) {
+  List<ScanResult> _insightsScans(String? subjectId) {
+    final sectionOmrIds = _sectionStudents.map((s) => s.omrId).toSet();
+    return globalScanResults.where((scan) {
+      if (!sectionOmrIds.contains(scan.studentOmrId)) return false;
+      if (subjectId != null) {
+        return scan.subjectId == subjectId;
+      }
+      return true;
+    }).toList();
+  }
+
+  Widget _buildInsightsTab() {
+    final subjects = _insightsSubjects;
+    if (subjects.isNotEmpty &&
+        (_insightsSubjectId == null ||
+            !subjects.any((s) => s.id == _insightsSubjectId))) {
+      _insightsSubjectId = subjects.first.id;
+    }
+    final scans = _insightsScans(_insightsSubjectId);
+    final questionStats = _calculateSectionQuestionStats(scans);
+
+    if (scans.isEmpty && subjects.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -1047,6 +1278,20 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
       );
     }
 
+    final selectedSubject = subjects.cast<Subject?>().firstWhere(
+          (s) => s!.id == _insightsSubjectId,
+          orElse: () => null,
+        );
+    final gradedCount =
+        scans.where((s) => !s.requiresReview).length;
+    final avgPct = gradedCount == 0
+        ? 0.0
+        : scans
+                .where((s) => !s.requiresReview)
+                .map((s) => s.percentage)
+                .fold(0.0, (a, b) => a + b) /
+            gradedCount;
+
     // Sort by success rate (ascending) to find hardest questions
     final hardestQuestions = questionStats.entries.toList()
       ..sort((a, b) => a.value.compareTo(b.value));
@@ -1060,6 +1305,49 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        if (subjects.length > 1) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: SizedBox(
+              height: 38,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: subjects.map((subject) {
+                  final selected = subject.id == _insightsSubjectId;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(subject.displayName),
+                      selected: selected,
+                      selectedColor: brandGreen.withValues(alpha: 0.18),
+                      labelStyle: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: selected ? brandGreenDark : brandMuted,
+                      ),
+                      onSelected: (_) =>
+                          setState(() => _insightsSubjectId = subject.id),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (subjects.length == 1 && selectedSubject != null) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              selectedSubject.displayName,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: brandMuted,
+              ),
+            ),
+          ),
+        ],
         // Section Summary
         Container(
           padding: const EdgeInsets.all(20),
@@ -1090,7 +1378,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '${_averagePercentage.toStringAsFixed(1)}%',
+                          '${avgPct.toStringAsFixed(1)}%',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 32,
@@ -1116,7 +1404,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                     child: Column(
                       children: [
                         Text(
-                          '$_scannedStudentsCount/${_sectionStudents.length}',
+                          '$gradedCount/${_sectionStudents.length}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -1332,22 +1620,18 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
         ],
 
         // Grade distribution for this section
-        _buildSectionGradeDistribution(),
+        _buildSectionGradeDistribution(scans),
 
         const SizedBox(height: 80), // Space for FAB
       ],
     );
   }
 
-  Map<int, double> _calculateSectionQuestionStats() {
+  Map<int, double> _calculateSectionQuestionStats(List<ScanResult> scans) {
     final questionCorrect = <int, double>{};
     final questionTotal = <int, int>{};
 
-    for (final scan in globalScanResults) {
-      // Only include scans from this section
-      final student = findStudentByOmrId(scan.studentOmrId);
-      if (student == null || student.section != widget.sectionName) continue;
-
+    for (final scan in scans) {
       if (scan.detectedAnswers.isEmpty) continue;
 
       for (final entry in scan.correctnessMap.entries) {
@@ -1369,13 +1653,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     return stats;
   }
 
-  Widget _buildSectionGradeDistribution() {
+  Widget _buildSectionGradeDistribution(List<ScanResult> scans) {
     final distribution = {'A': 0, 'B': 0, 'C': 0, 'D': 0, 'F': 0};
 
-    for (final scan in globalScanResults) {
-      final student = findStudentByOmrId(scan.studentOmrId);
-      if (student == null || student.section != widget.sectionName) continue;
-
+    for (final scan in scans) {
       final percentage = scan.totalQuestions > 0
           ? (scan.score / scan.totalQuestions) * 100
           : 0;
@@ -1746,7 +2027,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     }).toList();
   }
 
-  Future<Subject?> _pickSubjectForSummary(List<Subject> subjects) async {
+  Future<Subject?> _pickSubjectForSummary(
+    List<Subject> subjects, {
+    String title = 'Choose subject for exam summary',
+  }) async {
     if (subjects.isEmpty) {
       return null;
     }
@@ -1763,9 +2047,9 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Choose subject for exam summary',
-                style: TextStyle(
+              Text(
+                title,
+                style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w800,
                   color: brandText,
@@ -1799,6 +2083,51 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
         );
       },
     );
+  }
+
+  Future<void> _openExamDayBoard() async {
+    if (_sectionStudents.isEmpty) {
+      _showSnackBar(
+        'Import the roster for this section before opening the exam-day board.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    var subjects = _trackedSubjects;
+    if (subjects.isEmpty) {
+      subjects = globalSubjects;
+    }
+    if (subjects.isEmpty) {
+      _showSnackBar(
+        'Create an answer key first, then open the exam-day board.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    final subject = subjects.length == 1
+        ? subjects.first
+        : await _pickSubjectForSummary(
+            subjects,
+            title: 'Choose exam for the board',
+          );
+    if (!mounted || subject == null) {
+      return;
+    }
+
+    await Navigator.push<void>(
+      context,
+      AppPageTransitions.fadeSlide(
+        ExamDayBoardPage(
+          sectionName: widget.sectionName,
+          subject: subject,
+        ),
+      ),
+    );
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _shareExamSummary({required bool asPdf}) async {
@@ -2053,6 +2382,15 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               onTap: () {
                 Navigator.pop(context);
                 _handleImport();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.fact_check_rounded, color: brandGreen),
+              title: const Text('Exam-day board'),
+              subtitle: const Text('Who is scanned, missing, or needs review'),
+              onTap: () {
+                Navigator.pop(context);
+                _openExamDayBoard();
               },
             ),
             ListTile(

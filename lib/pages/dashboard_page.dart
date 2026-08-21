@@ -7,6 +7,7 @@ import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/exam_data.dart' as persisted;
 import 'package:omr_app/pages/answer_key_page.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
+import 'package:omr_app/pages/exam_day_board_page.dart';
 import 'package:omr_app/pages/item_analysis_page.dart';
 import 'package:omr_app/pages/login_page.dart';
 import 'package:omr_app/pages/omr_id_list_page.dart';
@@ -23,6 +24,7 @@ import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/auto_sync_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
@@ -104,6 +106,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   String? _dataLoadError;
   SyncSummary? _lastSyncSummary;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  StreamSubscription<AutoSyncSnapshot>? _autoSyncSub;
   bool _wasOffline = false;
   bool _autoSyncOnWifi = true;
   bool _isRetryingDataLoad = false;
@@ -136,6 +139,21 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     unawaited(_loadAutoSyncPreference());
     unawaited(_loadTeacherHubMeta());
     _initConnectivityListener();
+    _autoSyncSub = AutoSyncService.instance.snapshots.listen((snapshot) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _pendingSyncCount = snapshot.pendingCount;
+        _isSyncing = snapshot.isSyncing;
+        if (snapshot.lastSyncAt != null) {
+          _lastSyncAt = snapshot.lastSyncAt;
+        }
+        if (snapshot.lastPushSummary != null) {
+          _lastSyncSummary = snapshot.lastPushSummary;
+        }
+      });
+    });
     // Defer Wi‑Fi work until after the first frame so Home paints quickly.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_runDeferredStartupNetworkWork());
@@ -684,6 +702,13 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           onTap: _handleAddStudentManually,
         ),
         _DashboardAction(
+          label: 'Exam-day board',
+          subtitle: 'Who is scanned, missing, or needs review',
+          icon: Icons.fact_check_rounded,
+          color: AppColors.brandGreenDark,
+          onTap: _openExamDayBoard,
+        ),
+        _DashboardAction(
           label: 'Export Results',
           subtitle: '${globalScanResults.length} scans',
           icon: Icons.download_rounded,
@@ -709,6 +734,182 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         '${result.displayName} created! Ready to print sheets.',
         backgroundColor: AppColors.brandGreen,
       );
+    }
+  }
+
+  Future<void> _openExamDayBoard() async {
+    if (globalStudentDatabase.isEmpty) {
+      _showSnackBar(
+        'Import a roster first, then open the exam-day board.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+    if (globalSubjects.isEmpty) {
+      _showSnackBar(
+        'Create an answer key first, then open the exam-day board.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
+
+    final choices = <_SectionChoice>[];
+    for (final group in _subjectGroups) {
+      choices.addAll(_sectionChoicesForGroup(group));
+    }
+
+    _SectionChoice? selected;
+    if (choices.length == 1) {
+      selected = choices.first;
+    } else if (choices.isNotEmpty) {
+      selected = await AppBottomSheet.showScrollable<_SectionChoice>(
+        context: context,
+        showDragHandle: true,
+        builder: (context) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Choose class and exam',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.brandText,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: ListView(
+                    children: choices
+                        .map(
+                          (choice) => ListTile(
+                            title: Text(
+                              choice.sectionName,
+                              style: const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            subtitle: Text(choice.subject.displayName),
+                            trailing: const Icon(Icons.chevron_right_rounded),
+                            onTap: () => Navigator.pop(context, choice),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    } else {
+      final sections = globalStudentDatabase
+          .map((student) => normalizeSectionName(student.section))
+          .where((name) => name.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+      if (sections.isEmpty) {
+        return;
+      }
+      final sectionName = sections.length == 1
+          ? sections.first
+          : await AppBottomSheet.showScrollable<String>(
+              context: context,
+              showDragHandle: true,
+              builder: (context) {
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Choose section',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.brandText,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: ListView(
+                          children: sections
+                              .map(
+                                (name) => ListTile(
+                                  title: Text(name),
+                                  onTap: () => Navigator.pop(context, name),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+      if (!mounted || sectionName == null) {
+        return;
+      }
+      final subject = globalSubjects.length == 1
+          ? globalSubjects.first
+          : await AppBottomSheet.showScrollable<Subject>(
+              context: context,
+              showDragHandle: true,
+              builder: (context) {
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Choose exam',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.brandText,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: ListView(
+                          children: globalSubjects
+                              .map(
+                                (subject) => ListTile(
+                                  title: Text(subject.displayName),
+                                  onTap: () => Navigator.pop(context, subject),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+      if (!mounted || subject == null) {
+        return;
+      }
+      selected = _SectionChoice(subject: subject, sectionName: sectionName);
+    }
+
+    if (!mounted || selected == null) {
+      return;
+    }
+
+    await Navigator.push<void>(
+      context,
+      AppPageTransitions.fadeSlide(
+        ExamDayBoardPage(
+          sectionName: selected.sectionName,
+          subject: selected.subject,
+        ),
+      ),
+    );
+    if (mounted) {
+      await _loadDashboardData();
     }
   }
 
@@ -950,6 +1151,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _connectivitySub?.cancel();
+    _autoSyncSub?.cancel();
     _sectionController.dispose();
     _classesSearchController.dispose();
     super.dispose();
@@ -958,10 +1160,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(() async {
-        await _validateCloudSessionIfOnline();
-        await _maybeAutoSyncIfNeeded();
-      }());
+      unawaited(_validateCloudSessionIfOnline());
     }
   }
 
@@ -1031,25 +1230,18 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
   Future<void> _afterLocalDataChanged() async {
     await _refreshSyncStatus();
-    await _maybeAutoSyncIfNeeded();
+    AutoSyncService.instance.scheduleSync();
   }
 
   Future<void> _maybeAutoSyncIfNeeded({
     List<ConnectivityResult>? connectionType,
     bool fromReconnect = false,
   }) async {
-    if (!mounted ||
-        _isSyncing ||
-        !ApiService.isReady ||
-        !ApiService.hasActiveSession ||
-        !_autoSyncOnWifi) {
+    if (!mounted || !_autoSyncOnWifi) {
       return;
     }
 
     await _refreshSyncStatus();
-    if (!mounted || _pendingSyncCount == 0) {
-      return;
-    }
 
     final results =
         connectionType ?? await Connectivity().checkConnectivity();
@@ -1058,7 +1250,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     }
 
     if (!_isWifiLikeConnection(results)) {
-      if (fromReconnect && mounted) {
+      if (fromReconnect && mounted && _pendingSyncCount > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -1075,7 +1267,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       return;
     }
 
-    if (fromReconnect && mounted) {
+    if (fromReconnect && mounted && _pendingSyncCount > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -1086,7 +1278,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       );
     }
 
-    await _handleSyncNow();
+    AutoSyncService.instance.scheduleSync(immediate: true);
   }
 
   void _initConnectivityListener() {
@@ -1103,12 +1295,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     _isOnline = !_wasOffline;
 
     if (_isOnline) {
-      // Let the dashboard paint first; auto-sync can wait a beat.
-      Future<void>.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          unawaited(_maybeAutoSyncIfNeeded(connectionType: initial));
-        }
-      });
+      unawaited(_maybeAutoSyncIfNeeded(connectionType: initial));
     }
 
     _connectivitySub = connectivity.onConnectivityChanged.listen((results) {
@@ -2272,8 +2459,12 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
     setState(() => _isSyncing = true);
     try {
-      final fullSummary = await CloudSyncService.instance.syncAll();
+      final fullSummary = await AutoSyncService.instance.syncNow();
       if (!mounted) {
+        return;
+      }
+      if (fullSummary == null) {
+        setState(() => _isSyncing = false);
         return;
       }
       await _loadDashboardData();
@@ -5000,7 +5191,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   ),
                 ),
                 subtitle: const Text(
-                  'Upload roster and score changes when you are on Wi-Fi and have pending items.',
+                  'Upload roster and score changes automatically when you are on Wi-Fi.',
                   style: TextStyle(color: AppColors.brandMuted, fontSize: 12, height: 1.3),
                 ),
                 activeThumbColor: AppColors.brandGreen,
@@ -5008,6 +5199,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                 onChanged: (value) async {
                   setState(() => _autoSyncOnWifi = value);
                   await SyncPreferencesService.setAutoSyncOnWifi(value);
+                  if (value) {
+                    AutoSyncService.instance.scheduleSync(immediate: true);
+                  }
                 },
               ),
               const SizedBox(height: 8),
