@@ -64,7 +64,9 @@ export function TurnstileField({ siteKey, onToken }: TurnstileFieldProps) {
         strategy="afterInteractive"
         onLoad={() => setReady(true)}
       />
-      <div ref={containerRef} className="my-3" />
+      <div className="my-3 flex w-full justify-center">
+        <div ref={containerRef} className="inline-flex justify-center" />
+      </div>
     </>
   );
 }
