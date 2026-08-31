@@ -173,6 +173,24 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     super.initState();
     _opencvAvailable = ScannerEngine.isReady;
     _sessionLayout = ScannerSessionLayout.fromSubject(widget.targetSubject);
+    final scanGate = ScannerSessionLayout.examReadyScanErrorForSubject(
+      widget.targetSubject,
+    );
+    if (scanGate != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(scanGate),
+            backgroundColor: AppColors.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        Navigator.of(context).maybePop();
+      });
+    }
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadScannerPreferences());
     unawaited(_bootstrapScannerEngine());

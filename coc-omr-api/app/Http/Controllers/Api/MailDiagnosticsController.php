@@ -34,6 +34,10 @@ class MailDiagnosticsController extends Controller
         if ($frontendUrl === '' || str_contains($frontendUrl, 'localhost')) {
             $issues[] = 'FRONTEND_URL must be https://omrweb.vercel.app on Render.';
         }
+        $autoVerify = (bool) config('app.auto_verify_email');
+        if ($autoVerify && config('app.env') === 'production') {
+            $issues[] = 'AUTO_VERIFY_EMAIL is true — confirmation emails are skipped and fake addresses can register. Set AUTO_VERIFY_EMAIL=false on Render.';
+        }
 
         return response()->json([
             'mailer' => $mailer,
@@ -42,7 +46,7 @@ class MailDiagnosticsController extends Controller
             'from_address' => $from !== '' ? $from : null,
             'app_url' => $appUrl,
             'frontend_url' => $frontendUrl !== '' ? $frontendUrl : null,
-            'auto_verify_email' => (bool) config('app.auto_verify_email'),
+            'auto_verify_email' => $autoVerify,
             'ok' => $issues === [],
             'issues' => $issues,
         ]);

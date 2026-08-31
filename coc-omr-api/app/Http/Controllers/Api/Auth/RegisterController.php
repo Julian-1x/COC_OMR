@@ -7,6 +7,8 @@ use App\Models\TeacherProfile;
 use App\Models\User;
 use App\Support\CocSchool;
 use App\Support\PersonName;
+use App\Services\Auth\AuthEventLogger;
+use App\Services\Auth\CaptchaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -15,6 +17,11 @@ use Illuminate\Validation\ValidationException;
 
 class RegisterController extends Controller
 {
+    public function __construct(
+        private readonly CaptchaVerifier $captcha,
+        private readonly AuthEventLogger $events,
+    ) {}
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -24,7 +31,10 @@ class RegisterController extends Controller
             'department' => ['required', 'string', 'in:'.implode(',', CocSchool::DEPARTMENTS)],
             // Accepted for backward compatibility with older clients; ignored.
             'school' => ['nullable', 'string', 'max:255'],
+            'captcha_token' => ['nullable', 'string'],
         ]);
+
+        $this->captcha->assertValid($validated['captcha_token'] ?? null, $request);
 
         $email = strtolower($validated['email']);
         $department = CocSchool::normalizeDepartment($validated['department']);
@@ -111,8 +121,21 @@ class RegisterController extends Controller
 
     private function finishRegistration(User $user, bool $resumed): JsonResponse
     {
+        $this->events->record(
+            $resumed ? 'register_resumed' : 'register_created',
+            $user->email,
+            $user,
+            request(),
+        );
+
         $verificationEmailSent = true;
         if (config('app.auto_verify_email')) {
+            if (config('app.env') === 'production') {
+                \Illuminate\Support\Facades\Log::warning('auto_verify_email_enabled_in_production', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                ]);
+            }
             $user->markEmailAsVerified();
         } else {
             $verificationEmailSent = $this->sendVerificationEmail($user);
@@ -126,6 +149,7 @@ class RegisterController extends Controller
             'token_type' => 'Bearer',
             'resumed_unverified_signup' => $resumed,
             'access_status' => $user->teacherProfile?->access_status ?? CocSchool::ACCESS_PENDING,
+            'email_sent' => $user->hasVerifiedEmail() ? null : $verificationEmailSent,
         ];
 
         if ($user->hasVerifiedEmail() && $approved) {

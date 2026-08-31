@@ -27,6 +27,8 @@ enum _AuthMode { login, register }
 
 enum _LoginStage {
   onlineAuth,
+  mfaChallenge,
+  mfaEnrollment,
   awaitingEmailConfirmation,
   awaitingAdminApproval,
   offlinePinSetup,
@@ -47,9 +49,12 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _unlockPinController = TextEditingController();
+  final TextEditingController _mfaCodeController = TextEditingController();
 
   _AuthMode _mode = _AuthMode.login;
   _LoginStage _stage = _LoginStage.onlineAuth;
+  String? _mfaTicket;
+  String? _mfaSetupSecret;
   bool _isLoading = true;
   bool _isSubmitting = false;
   bool _obscurePassword = true;
@@ -59,6 +64,8 @@ class _LoginPageState extends State<LoginPage> {
   bool _isNewRegistration = false;
   bool _restoredPinFromCloud = false;
   bool _confirmedEmailThisSession = false;
+  /// Teacher forgot offline PIN — after online login they must set a new one.
+  bool _resettingForgottenPin = false;
   String? _pendingConfirmationEmail;
   bool _isDeviceOnline = true;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
@@ -85,6 +92,7 @@ class _LoginPageState extends State<LoginPage> {
     _emailController.dispose();
     _passwordController.dispose();
     _unlockPinController.dispose();
+    _mfaCodeController.dispose();
     super.dispose();
   }
 
@@ -453,10 +461,56 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      final account = await _auth.signInTeacher(email: email, password: password);
+      final signIn = await _auth.signInTeacher(
+        email: email,
+        password: password,
+      );
 
       if (!mounted) {
         return;
+      }
+
+      if (signIn.captchaRequired) {
+        setState(() => _isSubmitting = false);
+        _showMessage(
+          signIn.message ??
+              'Too many sign-in attempts. Use the web portal to complete the security check, then try again.',
+          isError: true,
+        );
+        return;
+      }
+
+      if (signIn.needsMfaEnrollment) {
+        final ticket = signIn.mfaTicket;
+        if (ticket == null || ticket.isEmpty) {
+          throw const CloudAuthException('Sign in could not continue. Try again.');
+        }
+        final setup = await _auth.beginMfaEnrollmentDuringLogin(mfaTicket: ticket);
+        setState(() {
+          _isSubmitting = false;
+          _mfaTicket = ticket;
+          _mfaSetupSecret = setup['secret'];
+          _stage = _LoginStage.mfaEnrollment;
+        });
+        _showMessage(
+          'Set up two-factor sign-in. Add the secret to Google Authenticator, then enter the 6-digit code.',
+          isError: false,
+        );
+        return;
+      }
+
+      if (signIn.needsMfa) {
+        setState(() {
+          _isSubmitting = false;
+          _mfaTicket = signIn.mfaTicket;
+          _stage = _LoginStage.mfaChallenge;
+        });
+        return;
+      }
+
+      final account = signIn.account;
+      if (account == null) {
+        throw const CloudAuthException('Sign in failed. Try again.');
       }
 
       await _pullCloudData(showErrors: true);
@@ -470,8 +524,16 @@ class _LoginPageState extends State<LoginPage> {
       if (mounted) {
         setState(() => _isSubmitting = false);
         final message = UserErrorMessages.friendlyError(error);
-        if (message.toLowerCase().contains('admin approval') ||
-            message.toLowerCase().contains('waiting for school admin')) {
+        final lower = message.toLowerCase();
+        if (lower.contains('not been confirmed') ||
+            lower.contains('confirmation email') ||
+            lower.contains('confirm your email')) {
+          setState(() {
+            _stage = _LoginStage.awaitingEmailConfirmation;
+            _pendingConfirmationEmail = email.trim().toLowerCase();
+          });
+        } else if (lower.contains('admin approval') ||
+            lower.contains('waiting for school admin')) {
           setState(() {
             _stage = _LoginStage.awaitingAdminApproval;
             _pendingConfirmationEmail = email.trim().toLowerCase();
@@ -538,10 +600,13 @@ class _LoginPageState extends State<LoginPage> {
       }
       if (cloudBackupOk && mounted) {
         _showMessage(
-          'PIN saved. You can use it on this phone and restore it after reinstall or on a new phone.',
+          _resettingForgottenPin
+              ? 'New PIN saved. Use it next time you unlock this phone.'
+              : 'PIN saved. You can use it on this phone and restore it after reinstall or on a new phone.',
           isError: false,
         );
       }
+      _resettingForgottenPin = false;
       await _enterAppAfterAuth(
         showWelcome: _isNewRegistration && !_confirmedEmailThisSession,
       );
@@ -634,6 +699,33 @@ class _LoginPageState extends State<LoginPage> {
     CloudTeacherAccount account, {
     required bool isNewRegistration,
   }) async {
+    if (_resettingForgottenPin) {
+      final existingProfile = await _localAuth.loadProfile();
+      final existingCloudId = existingProfile?.cloudUserId?.trim();
+      if (existingCloudId != null &&
+          existingCloudId.isNotEmpty &&
+          existingCloudId != account.id) {
+        if (mounted) {
+          _showMessage(
+            'Sign in with the same school email used on this phone '
+            '(${existingProfile?.email ?? 'your teacher account'}), then set a new PIN.',
+            isError: true,
+          );
+        }
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          _pendingTrustedAccount = account;
+          _isNewRegistration = false;
+          _restoredPinFromCloud = false;
+          _stage = _LoginStage.offlinePinSetup;
+        });
+      }
+      return;
+    }
+
     final existingProfile = await _localAuth.loadProfile();
     if (existingProfile?.cloudUserId == account.id &&
         await _localAuth.hasProfile()) {
@@ -789,6 +881,52 @@ class _LoginPageState extends State<LoginPage> {
       _stage = _LoginStage.onlineAuth;
       _isSubmitting = false;
       _restoredPinFromCloud = false;
+      _resettingForgottenPin = false;
+      _mode = _AuthMode.login;
+      _unlockPinController.clear();
+    });
+  }
+
+  void _startForgotPinFlow() {
+    if (!ApiService.isReady) {
+      _showMessage(
+        'School server is not connected on this install. Ask IT for the official APK.',
+        isError: true,
+      );
+      return;
+    }
+    if (!_isDeviceOnline) {
+      _showMessage(
+        'Connect to Wi‑Fi or mobile data, then tap Forgot PIN again. '
+        'You must sign in with your school email to set a new offline PIN.',
+        isError: true,
+      );
+      return;
+    }
+
+    final email = _offlineProfile?.email?.trim();
+    setState(() {
+      _resettingForgottenPin = true;
+      _stage = _LoginStage.onlineAuth;
+      _mode = _AuthMode.login;
+      _isSubmitting = false;
+      _restoredPinFromCloud = false;
+      _unlockPinController.clear();
+      if (email != null && email.isNotEmpty) {
+        _emailController.text = email;
+      }
+    });
+    _showMessage(
+      'Sign in with your school email and password, then create a new offline PIN.',
+      isError: false,
+    );
+  }
+
+  void _returnToOfflineUnlock() {
+    setState(() {
+      _stage = _LoginStage.offlineUnlock;
+      _resettingForgottenPin = false;
+      _isSubmitting = false;
       _unlockPinController.clear();
     });
   }
@@ -898,9 +1036,144 @@ class _LoginPageState extends State<LoginPage> {
         return _buildPinSetupContent();
       case _LoginStage.offlineUnlock:
         return _buildOfflineUnlockPanel();
+      case _LoginStage.mfaChallenge:
+        return _buildMfaChallengePanel();
+      case _LoginStage.mfaEnrollment:
+        return _buildMfaEnrollmentPanel();
       case _LoginStage.onlineAuth:
         return _buildOnlineAuthPanel();
     }
+  }
+
+  Future<void> _submitMfaCode({required bool enrollment}) async {
+    final ticket = _mfaTicket;
+    final code = _mfaCodeController.text.trim();
+    if (ticket == null || ticket.isEmpty) {
+      _showMessage('Sign-in expired. Enter your password again.', isError: true);
+      setState(() => _stage = _LoginStage.onlineAuth);
+      return;
+    }
+    if (code.length < 6) {
+      _showMessage('Enter the 6-digit code from your authenticator app.', isError: true);
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+    try {
+      final account = enrollment
+          ? await _auth.completeMfaEnrollmentDuringLogin(
+              mfaTicket: ticket,
+              code: code,
+            )
+          : await _auth.completeMfaSignIn(mfaTicket: ticket, code: code);
+
+      if (!mounted) {
+        return;
+      }
+
+      await _pullCloudData(showErrors: true);
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSubmitting = false;
+        _mfaCodeController.clear();
+        _mfaTicket = null;
+        _mfaSetupSecret = null;
+        _stage = _LoginStage.onlineAuth;
+      });
+      await _routeAfterOnlineAuth(account, isNewRegistration: false);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+        _showMessage(UserErrorMessages.friendlyError(error), isError: true);
+      }
+    }
+  }
+
+  Widget _buildMfaChallengePanel() {
+    return AuthShell(
+      title: 'Two-factor code',
+      subtitle: 'Enter the 6-digit code from your authenticator app.',
+      badge: AuthBadgeType.online,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _mfaCodeController,
+            keyboardType: TextInputType.number,
+            maxLength: 8,
+            decoration: const InputDecoration(
+              labelText: 'Authenticator code',
+              counterText: '',
+            ),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          AppPrimaryButton(
+            label: 'Verify and continue',
+            icon: Icons.verified_user_outlined,
+            isLoading: _isSubmitting,
+            onPressed: !_isSubmitting
+                ? () => _submitMfaCode(enrollment: false)
+                : null,
+          ),
+          TextButton(
+            onPressed: _isSubmitting
+                ? null
+                : () {
+                    setState(() {
+                      _stage = _LoginStage.onlineAuth;
+                      _mfaTicket = null;
+                      _mfaCodeController.clear();
+                    });
+                  },
+            child: const Text('Back to sign in'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMfaEnrollmentPanel() {
+    final secret = _mfaSetupSecret ?? '';
+    return AuthShell(
+      title: 'Set up two-factor',
+      subtitle:
+          'School admins must use an authenticator app. Add this key, then enter the code.',
+      badge: AuthBadgeType.online,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (secret.isNotEmpty)
+            SelectableText(
+              secret,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          const SizedBox(height: AppSpacing.md),
+          TextField(
+            controller: _mfaCodeController,
+            keyboardType: TextInputType.number,
+            maxLength: 8,
+            decoration: const InputDecoration(
+              labelText: '6-digit code',
+              counterText: '',
+            ),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          AppPrimaryButton(
+            label: 'Finish setup',
+            icon: Icons.shield_outlined,
+            isLoading: _isSubmitting,
+            onPressed:
+                !_isSubmitting ? () => _submitMfaCode(enrollment: true) : null,
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAwaitingAdminApprovalPanel() {
@@ -917,7 +1190,8 @@ class _LoginPageState extends State<LoginPage> {
           _statusNote(
             icon: Icons.admin_panel_settings_outlined,
             text:
-                'Ask your COC admin to open the web portal → Admin → Access control and approve you.\n\n'
+                'Your email must already be confirmed. Then a COC admin opens '
+                'the web portal → Admin → Access control and approves you.\n\n'
                 'After they approve, come back here and sign in with the same email and password.',
           ),
           const SizedBox(height: AppSpacing.md),
@@ -956,7 +1230,9 @@ class _LoginPageState extends State<LoginPage> {
             icon: Icons.mark_email_read_outlined,
             text:
                 'Open the email on this phone and tap Confirm.\n\n'
-                'COC OMR will open automatically. Create your PIN once, then you\'ll land on your dashboard — no need to sign in again.',
+                'After your email is confirmed, a school admin still needs to '
+                'approve your account before you can use the app.\n\n'
+                'Check spam/junk if you do not see the message.',
           ),
           const SizedBox(height: AppSpacing.md),
           _statusNote(
@@ -1047,20 +1323,29 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildOnlineAuthPanel() {
     final isRegister = _mode == _AuthMode.register;
+    final canReturnToPin = _offlineProfile != null && !_isSubmitting;
 
     return AuthShell(
-      title: isRegister ? 'Create Teacher Account' : 'Welcome Back',
-      subtitle: isRegister
-          ? 'Register to sync your classes and scan results to the cloud.'
-          : 'Sign in to continue to OMR Hub.',
+      title: _resettingForgottenPin
+          ? 'Sign in to reset PIN'
+          : isRegister
+              ? 'Create Teacher Account'
+              : 'Welcome Back',
+      subtitle: _resettingForgottenPin
+          ? 'Use your school email and password. After sign-in you will set a new offline PIN.'
+          : isRegister
+              ? 'Register to sync your classes and scan results to the cloud.'
+              : 'Sign in to continue to OMR Hub.',
       badge: ApiService.isReady
           ? AuthBadgeType.online
           : AuthBadgeType.none,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _modeSelector(),
-          const SizedBox(height: AppSpacing.lg),
+          if (!_resettingForgottenPin) ...[
+            _modeSelector(),
+            const SizedBox(height: AppSpacing.lg),
+          ],
           if (!ApiService.isReady) ...[
             _statusNote(
               icon: Icons.cloud_off_rounded,
@@ -1070,7 +1355,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
             const SizedBox(height: AppSpacing.md),
           ],
-          if (isRegister) ...[
+          if (isRegister && !_resettingForgottenPin) ...[
             _textField(
               controller: _nameController,
               label: 'Full name',
@@ -1095,7 +1380,7 @@ class _LoginPageState extends State<LoginPage> {
           _emailField(),
           const SizedBox(height: AppSpacing.md),
           _passwordField(),
-          if (!isRegister) ...[
+          if (!isRegister || _resettingForgottenPin) ...[
             const SizedBox(height: AppSpacing.xs),
             Align(
               alignment: Alignment.centerRight,
@@ -1109,13 +1394,28 @@ class _LoginPageState extends State<LoginPage> {
           ],
           const SizedBox(height: AppSpacing.xl),
           AppPrimaryButton(
-            label: isRegister ? 'Create Account' : 'Sign In',
-            icon: isRegister
-                ? Icons.person_add_alt_1_rounded
-                : Icons.login_rounded,
+            label: _resettingForgottenPin
+                ? 'Sign in & set new PIN'
+                : isRegister
+                    ? 'Create Account'
+                    : 'Sign In',
+            icon: _resettingForgottenPin
+                ? Icons.lock_reset_rounded
+                : isRegister
+                    ? Icons.person_add_alt_1_rounded
+                    : Icons.login_rounded,
             isLoading: _isSubmitting,
             onPressed: ApiService.isReady && !_isSubmitting ? _submit : null,
           ),
+          if (canReturnToPin) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Center(
+              child: TextButton(
+                onPressed: _returnToOfflineUnlock,
+                child: const Text('Back to PIN unlock'),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1215,12 +1515,15 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildPinSetupContent() {
     final account = _pendingTrustedAccount;
+    final isReset = _resettingForgottenPin;
 
     return AuthShell(
-      title: 'Create your PIN',
-      subtitle: _confirmedEmailThisSession
-          ? 'Last step — then your dashboard opens.'
-          : 'One PIN for exam day — on this phone, after reinstall, or on a new phone.',
+      title: isReset ? 'Set a new PIN' : 'Create your PIN',
+      subtitle: isReset
+          ? 'Your online sign-in is verified. Choose a new 4–6 digit PIN for exam day.'
+          : _confirmedEmailThisSession
+              ? 'Last step — then your dashboard opens.'
+              : 'One PIN for exam day — on this phone, after reinstall, or on a new phone.',
       badge: AuthBadgeType.none,
       showLogo: false,
       compact: true,
@@ -1312,7 +1615,13 @@ class _LoginPageState extends State<LoginPage> {
           const SizedBox(height: AppSpacing.sm),
           Center(
             child: TextButton(
-              onPressed: _showOnlineLogin,
+              onPressed: _isSubmitting ? null : _startForgotPinFlow,
+              child: const Text('Forgot PIN?'),
+            ),
+          ),
+          Center(
+            child: TextButton(
+              onPressed: _isSubmitting ? null : _showOnlineLogin,
               child: const Text('Use online login'),
             ),
           ),

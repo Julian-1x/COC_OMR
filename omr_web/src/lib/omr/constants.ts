@@ -1,15 +1,17 @@
-/** Port of lib/models/omr_template_specs.dart — keep in sync with mobile scanner */
+/**
+ * Mirror of lib/models/omr_template_specs.dart (OmrPageConstants + templates).
+ * Web PDF must match lib/pages/answer_sheet_generator.dart — not a separate design.
+ * When Dart changes, update this file and run test/answer-sheet-parity.test.ts.
+ */
 
-export const PAGE = {
-  width: 595,
-  height: 842,
+export const OMR_PAGE = {
+  pageWidth: 595,
+  pageHeight: 842,
   marginLeft: 28,
   marginTop: 34,
   marginRight: 28,
   marginBottom: 28,
-  /** pageWidth - marginLeft - marginRight */
   contentWidth: 539,
-  headerTop: 34,
   cornerMarkerSize: 20,
   cornerMarkerOffset: 8,
   timingMarkSize: 6,
@@ -19,20 +21,21 @@ export const PAGE = {
   timingMarkEndX: 535,
   timingMarkStartY: 60,
   timingMarkEndY: 780,
-  qrSize: 72,
-  qrX: 495,
-  qrY: 34,
-  headerHeight: 72,
+  qrCodeSize: 80,
+  qrCodeX: 487,
+  qrCodeY: 34,
+  headerTop: 34,
+  headerHeight: 80,
   omrIdTop: 114,
   omrIdHeight: 136,
   omrIdColumns: 4,
   omrIdRows: 10,
   omrIdBubbleDiameter: 11.5,
+  omrIdBubbleBorder: 1.2,
   omrIdColumnSpacing: 50,
   omrIdRowSpacing: 12,
   omrIdFirstColumnX: 222.5,
   omrIdFirstRowY: 134,
-  omrIdBubbleBorder: 1.2,
   answerGridTop: 262,
   answerGridBottom: 800,
   answerGridLeft: 28,
@@ -41,11 +44,10 @@ export const PAGE = {
   answerGridHeight: 538,
   answerOptionIndicatorHeight: 14,
   answerGridFooterHeight: 30,
-  answerGridContentHeight: 494,
-  answerRowsBottom: 770,
   answerBubbleDiameter: 11.5,
+  answerBubbleBorder: 1.2,
   answerOptionsCount: 5,
-  answerOptionLabels: ["A", "B", "C", "D", "E"],
+  answerOptionLabels: ["A", "B", "C", "D", "E"] as const,
   answerColumnInset: 6,
   answerNumberBubbleGap: 6,
   questionNumberWidth: 16,
@@ -53,7 +55,15 @@ export const PAGE = {
   calibrationFilledX: 80,
   calibrationEmptyX: 110,
   calibrationBubbleSize: 10,
+  rowMarkX: 18,
+  rowMarkSize: 4,
+  /** Full-page standard portrait block (corners + timing hug this). */
+  contentBlockWidth: 595,
+  contentBlockHeight: 842,
 } as const;
+
+/** @deprecated Use OMR_PAGE — kept for imports during migration. */
+export const PAGE = OMR_PAGE;
 
 export type OmrTemplate = {
   templateId: string;
@@ -76,6 +86,7 @@ export const TEMPLATES: Record<string, OmrTemplate> = {
   "100": { templateId: "100", maxItems: 100, columns: 5, rows: 20, rowHeight: 24.7, columnWidth: 107.8, bubbleSpacingX: 17 },
 };
 
+/** Same tiering as OmrItemCount.forQuestionCount in Dart. */
 export function templateForCount(questions: number): OmrTemplate {
   if (questions <= 30) return TEMPLATES["30"];
   if (questions <= 40) return TEMPLATES["40"];
@@ -88,11 +99,19 @@ export function templateForCount(questions: number): OmrTemplate {
 }
 
 export function answerRowsTop() {
-  return PAGE.answerGridTop + PAGE.answerOptionIndicatorHeight;
+  return OMR_PAGE.answerGridTop + OMR_PAGE.answerOptionIndicatorHeight;
 }
 
-export function answerRowsBottom(template: OmrTemplate) {
-  return answerRowsTop() + template.rows * template.rowHeight;
+export function answerRowsBottom() {
+  return OMR_PAGE.answerGridBottom - OMR_PAGE.answerGridFooterHeight;
+}
+
+export function answerGridContentHeight() {
+  return answerRowsBottom() - answerRowsTop();
+}
+
+export function rowCenterY(template: OmrTemplate, rowIndex: number) {
+  return answerRowsTop() + rowIndex * template.rowHeight + template.rowHeight / 2;
 }
 
 export function questionPosition(template: OmrTemplate, questionNumber: number) {
@@ -101,38 +120,41 @@ export function questionPosition(template: OmrTemplate, questionNumber: number) 
 }
 
 export function bubbleCenterX(template: OmrTemplate, colIndex: number, optionIndex: number) {
-  const columnLeft = PAGE.answerGridLeft + colIndex * template.columnWidth;
-  const bubbleAreaWidth = template.bubbleSpacingX * (PAGE.answerOptionsCount - 1);
-  const usableWidth = template.columnWidth - PAGE.answerColumnInset * 2;
-  const rowContentWidth = PAGE.questionNumberWidth + PAGE.answerNumberBubbleGap + bubbleAreaWidth;
-  const rowContentLeft = columnLeft + PAGE.answerColumnInset + (usableWidth - rowContentWidth) / 2;
-  const bubbleAreaLeft = rowContentLeft + PAGE.questionNumberWidth + PAGE.answerNumberBubbleGap;
+  const columnLeft = OMR_PAGE.answerGridLeft + colIndex * template.columnWidth;
+  const bubbleAreaWidth = template.bubbleSpacingX * (OMR_PAGE.answerOptionsCount - 1);
+  const usableWidth = template.columnWidth - OMR_PAGE.answerColumnInset * 2;
+  const rowContentWidth =
+    OMR_PAGE.questionNumberWidth + OMR_PAGE.answerNumberBubbleGap + bubbleAreaWidth;
+  const rowContentLeft =
+    columnLeft + OMR_PAGE.answerColumnInset + (usableWidth - rowContentWidth) / 2;
+  const bubbleAreaLeft = rowContentLeft + OMR_PAGE.questionNumberWidth + OMR_PAGE.answerNumberBubbleGap;
   return bubbleAreaLeft + optionIndex * template.bubbleSpacingX;
 }
 
-export function rowCenterY(template: OmrTemplate, rowIndex: number) {
-  return answerRowsTop() + rowIndex * template.rowHeight + template.rowHeight / 2;
+/** Column-local bubble layout (inside one answer column). */
+export function columnBubbleLayout(template: OmrTemplate) {
+  const opts = OMR_PAGE.answerOptionsCount;
+  const bubbleAreaWidth = template.bubbleSpacingX * (opts - 1);
+  const usableWidth = template.columnWidth - OMR_PAGE.answerColumnInset * 2;
+  const rowContentWidth =
+    OMR_PAGE.questionNumberWidth + OMR_PAGE.answerNumberBubbleGap + bubbleAreaWidth;
+  const rowContentLeft = OMR_PAGE.answerColumnInset + (usableWidth - rowContentWidth) / 2;
+  const bubbleAreaLeft = rowContentLeft + OMR_PAGE.questionNumberWidth + OMR_PAGE.answerNumberBubbleGap;
+  return { rowContentLeft, bubbleAreaLeft, bubbleAreaWidth };
 }
 
-export function bubblePosition(template: OmrTemplate, questionNumber: number, optionIndex: number) {
-  const { col, row } = questionPosition(template, questionNumber);
-  return { x: bubbleCenterX(template, col, optionIndex), y: rowCenterY(template, row) };
-}
-
-export function buildQrPayload(subject: {
-  local_id: string;
-  id?: string;
-  name: string;
-  total_questions: number;
-  passing_score: number;
-  exam_date: string | null;
-  owner_teacher_id?: string;
-  owner_teacher_email?: string | null;
-  owner_teacher_name?: string | null;
-}, sectionName: string, sheetId: string) {
-  // Lean compact payload — must match Flutter's SubjectSheetQrPayload.toJson().
-  // Layout and teacher name are deliberately excluded: a denser QR could not be
-  // decoded from phone photos of the printed sheet.
+export function buildQrPayload(
+  subject: {
+    local_id: string;
+    id?: string;
+    name: string;
+    total_questions: number;
+    owner_teacher_id?: string;
+    owner_teacher_email?: string | null;
+  },
+  sectionName: string,
+  sheetId: string,
+) {
   return JSON.stringify({
     a: "coc-omr",
     v: 2,

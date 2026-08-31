@@ -103,4 +103,21 @@ void main() {
     expect(blockedResult.success, isFalse);
     expect(blockedResult.cooldownRemaining, isNotNull);
   });
+
+  test('updatePin replaces the offline PIN after online recovery', () async {
+    await auth.createProfile(
+      name: 'Ava Teacher',
+      school: 'COC',
+      pin: '1234',
+      cloudUserId: 'teacher-123',
+    );
+    await auth.lock();
+
+    await auth.updatePin('5678');
+    expect(auth.isUnlocked, isTrue);
+
+    await auth.lock();
+    expect((await auth.verifyPin('1234')).success, isFalse);
+    expect((await auth.verifyPin('5678')).success, isTrue);
+  });
 }

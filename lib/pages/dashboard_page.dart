@@ -3,8 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/models/exam_data.dart' as persisted;
+import 'package:omr_app/pages/custom_sheet_layouts_page.dart';
 import 'package:omr_app/pages/answer_key_page.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
 import 'package:omr_app/pages/exam_day_board_page.dart';
@@ -25,6 +28,7 @@ import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/auto_sync_service.dart';
+import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
@@ -36,6 +40,7 @@ import 'package:omr_app/utils/scanner_launch.dart';
 import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_empty_state.dart';
+import 'package:omr_app/widgets/app_pin_input.dart';
 import 'package:omr_app/widgets/dashboard/classes_search_filters.dart';
 import 'package:omr_app/widgets/dashboard/teacher_hub_drawer.dart';
 import 'package:omr_app/widgets/dashboard/dashboard_top_bar.dart';
@@ -109,6 +114,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   StreamSubscription<AutoSyncSnapshot>? _autoSyncSub;
   bool _wasOffline = false;
   bool _autoSyncOnWifi = true;
+  bool _showedMobileDataReminderThisSession = false;
   bool _isRetryingDataLoad = false;
   AppUpdateInfo? _updateInfo;
   List<Student> _studentsData = <Student>[];
@@ -678,6 +684,23 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           onTap: _showBatchPrintModal,
         ),
         _DashboardAction(
+          label: 'Custom sheet layouts',
+          subtitle: 'Optional — short quizzes & special sizes',
+          icon: Icons.dashboard_customize_rounded,
+          color: AppColors.brandGreenDark,
+          onTap: () async {
+            await Navigator.push<void>(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const CustomSheetLayoutsPage(),
+              ),
+            );
+            if (mounted) {
+              setState(() {});
+            }
+          },
+        ),
+        _DashboardAction(
           label: 'OMR ID List',
           subtitle: 'View & export per section',
           icon: Icons.tag_rounded,
@@ -936,8 +959,12 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     _SubjectGroup? selectedGroup;
     Subject? selectedSubject;
     String? selectedSection;
+    bool useStandardLayout = true;
+    CustomSheetLayout? selectedCustomLayout;
     int copies = 1;
+    bool savePaperTiling = true;
     int step = 0;
+    String? layoutError;
 
     await AppBottomSheet.showScrollable<void>(
       context: context,
@@ -1032,6 +1059,21 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                             setModalState(() {
                               selectedSubject = choice.subject;
                               selectedSection = choice.sectionName;
+                              useStandardLayout = true;
+                              selectedCustomLayout = null;
+                              final linkedId = choice.subject.customLayoutId;
+                              if (linkedId != null) {
+                                for (final layout in globalCustomSheetLayouts) {
+                                  if (layout.id == linkedId) {
+                                    selectedCustomLayout = layout;
+                                    useStandardLayout = false;
+                                    break;
+                                  }
+                                }
+                              } else if (choice.subject.useCustomLayout) {
+                                useStandardLayout = false;
+                              }
+                              layoutError = null;
                               step = 2;
                             });
                           },
@@ -1040,7 +1082,249 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                       .toList(),
                 );
               }
+            } else if (step == 2) {
+              final subject = selectedSubject!;
+              final matchingLayouts = globalCustomSheetLayouts
+                  .where((layout) => layout.totalQuestions == subject.totalQuestions)
+                  .toList()
+                ..sort((a, b) => a.name.compareTo(b.name));
+
+              body = ListView(
+                children: [
+                  Text(
+                    'Subject: ${_subjectLabel(subject)} · ${subject.totalQuestions} questions',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Section: $selectedSection',
+                    style: const TextStyle(color: AppColors.brandMuted),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.brandGreen.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.brandBorder),
+                    ),
+                    child: const Text(
+                      'Most exams: keep Standard sheet selected. '
+                      'Custom sheets are only for short quizzes or special paper sizes you saved earlier.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.brandText,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Sheet layout',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Standard sheet'),
+                    subtitle: const Text(
+                      'Regular exam — use this unless you made a custom sheet.',
+                    ),
+                    value: true,
+                    groupValue: useStandardLayout,
+                    onChanged: (value) {
+                      setModalState(() {
+                        useStandardLayout = true;
+                        selectedCustomLayout = null;
+                        layoutError = null;
+                      });
+                    },
+                  ),
+                  RadioListTile<bool>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Saved custom sheet'),
+                    subtitle: Text(
+                      matchingLayouts.isEmpty
+                          ? 'No saved sheet for ${subject.totalQuestions} questions yet. '
+                              'Create one under Prepare → Custom sheet layouts.'
+                          : 'Choose a sheet you saved earlier (must match ${subject.totalQuestions} questions).',
+                    ),
+                    value: false,
+                    groupValue: useStandardLayout,
+                    onChanged: matchingLayouts.isEmpty
+                        ? null
+                        : (value) {
+                            setModalState(() {
+                              useStandardLayout = false;
+                              selectedCustomLayout ??= matchingLayouts.first;
+                              layoutError = null;
+                            });
+                          },
+                  ),
+                  if (!useStandardLayout) ...[
+                    const SizedBox(height: 8),
+                    ...matchingLayouts.map((layout) {
+                      final selected = selectedCustomLayout?.id == layout.id;
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? AppColors.brandGreen.withValues(alpha: 0.08)
+                              : AppColors.brandSurface,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: selected
+                                ? AppColors.brandGreen
+                                : AppColors.brandBorder,
+                          ),
+                        ),
+                        child: ListTile(
+                          title: Text(
+                            layout.name,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          subtitle: Text(layout.previewSubtitle),
+                          trailing: selected
+                              ? const Icon(Icons.check_circle_rounded,
+                                  color: AppColors.brandGreen)
+                              : null,
+                          onTap: () {
+                            setModalState(() {
+                              selectedCustomLayout = layout;
+                              layoutError = null;
+                            });
+                          },
+                        ),
+                      );
+                    }),
+                  ],
+                  if (matchingLayouts.isEmpty) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                const CustomSheetLayoutsPage(),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.dashboard_customize_rounded),
+                      label: const Text('Create custom layout'),
+                    ),
+                  ],
+                  if (layoutError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      layoutError!,
+                      style: const TextStyle(
+                        color: AppColors.error,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () {
+                        if (!useStandardLayout &&
+                            selectedCustomLayout == null) {
+                          setModalState(() {
+                            layoutError = 'Pick a custom layout to continue.';
+                          });
+                          return;
+                        }
+                        setModalState(() {
+                          layoutError = null;
+                          step = 3;
+                        });
+                      },
+                      child: const Text('Continue'),
+                    ),
+                  ),
+                ],
+              );
             } else {
+              Subject resolvePrintSubject() {
+                final subject = selectedSubject!;
+                if (useStandardLayout) {
+                  return subject.copyWith(
+                    useCustomLayout: false,
+                    optionsCount: OmrPageConstants.answerOptionsCount,
+                    layoutShape: 'lengthwise_full',
+                    clearCustomLayoutId: true,
+                    clearCustomGrid: true,
+                  );
+                }
+                return selectedCustomLayout!.applyToSubject(subject);
+              }
+
+              final printSubjectPreview = resolvePrintSubject();
+              final sheetTiling = !useStandardLayout
+                  ? OmrSheetTiling.forGeometry(
+                      printSubjectPreview.layoutProfile.geometry,
+                    )
+                  : null;
+              final sectionStudents = selectedSection == null
+                  ? const <Student>[]
+                  : globalStudentDatabase
+                      .where(
+                        (student) =>
+                            student.section.trim().toUpperCase() ==
+                            selectedSection!.trim().toUpperCase(),
+                      )
+                      .toList();
+
+              Future<void> runPrint({
+                required Future<void> Function(Subject subject) action,
+              }) async {
+                final subject = selectedSubject!;
+                Subject printSubject;
+                if (useStandardLayout) {
+                  printSubject = subject.copyWith(
+                    useCustomLayout: false,
+                    optionsCount: OmrPageConstants.answerOptionsCount,
+                    layoutShape: 'lengthwise_full',
+                    clearCustomLayoutId: true,
+                    clearCustomGrid: true,
+                  );
+                } else {
+                  final layout = selectedCustomLayout!;
+                  final validation = layout.validateForSubject(subject);
+                  if (validation != null) {
+                    setModalState(() => layoutError = validation);
+                    return;
+                  }
+                  printSubject = layout.applyToSubject(subject);
+                }
+
+                Navigator.pop(context);
+                try {
+                  await LocalDataStore.instance.upsertSubject(printSubject);
+                  if (!useStandardLayout && selectedCustomLayout != null) {
+                    await LocalDataStore.instance.markCustomSheetLayoutUsed(
+                      layoutId: selectedCustomLayout!.id,
+                      usedAt: DateTime.now(),
+                    );
+                  }
+                  await action(printSubject);
+                  if (mounted) {
+                    setState(() {});
+                  }
+                } catch (error) {
+                  if (mounted) {
+                    _showSnackBar(
+                      'Unable to generate the answer sheets.',
+                      backgroundColor: Colors.red,
+                    );
+                  }
+                }
+              }
+
               body = ListView(
                 children: [
                   Text(
@@ -1052,7 +1336,73 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     'Section: $selectedSection',
                     style: const TextStyle(color: AppColors.brandMuted),
                   ),
+                  const SizedBox(height: 6),
+                  Text(
+                    useStandardLayout
+                        ? 'Layout: Standard sheet'
+                        : 'Layout: ${selectedCustomLayout?.name ?? 'Custom'}',
+                    style: const TextStyle(color: AppColors.brandMuted),
+                  ),
+                  if (sheetTiling != null) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.brandGreen.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: AppColors.brandBorder),
+                      ),
+                      child: SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          'Save paper · ${sheetTiling.sheetsPerPage} per bond paper',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(sheetTiling.savePaperSubtitle),
+                        value: savePaperTiling,
+                        activeThumbColor: AppColors.brandGreen,
+                        onChanged: (value) {
+                          setModalState(() => savePaperTiling = value);
+                        },
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 16),
+                  if (sectionStudents.isNotEmpty) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: () => runPrint(
+                          action: (printSubject) => AnswerSheetGenerator.batchGenerate(
+                            subject: printSubject,
+                            sectionName: selectedSection!,
+                            printContext: context,
+                            tileMultiUp: savePaperTiling,
+                          ),
+                        ),
+                        icon: const Icon(Icons.groups_rounded),
+                        label: Text(
+                          'Print for class (${sectionStudents.length} students)',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'One sheet per student with name and OMR ID filled in.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: AppColors.brandMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Or print identical blank copies',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   Row(
                     children: [
                       const Text(
@@ -1084,26 +1434,19 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () async {
-                        Navigator.pop(context);
-                        try {
-                          await AnswerSheetGenerator.generateMultiple(
-                            subject: selectedSubject!,
-                            sectionName: selectedSection!,
-                            copies: copies,
-                          );
-                        } catch (error) {
-                          if (mounted) {
-                            _showSnackBar(
-                              'Unable to generate the answer sheets.',
-                              backgroundColor: Colors.red,
-                            );
-                          }
-                        }
-                      },
+                    child: OutlinedButton.icon(
+                      onPressed: () => runPrint(
+                        action: (printSubject) =>
+                            AnswerSheetGenerator.generateMultiple(
+                          subject: printSubject,
+                          sectionName: selectedSection!,
+                          copies: copies,
+                          printContext: context,
+                          tileMultiUp: savePaperTiling,
+                        ),
+                      ),
                       icon: const Icon(Icons.print_rounded),
-                      label: Text('Print $copies sheet(s)'),
+                      label: Text('Print $copies identical sheet(s)'),
                     ),
                   ),
                 ],
@@ -1121,7 +1464,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Choose subject, section, then how many sheets to print.',
+                    'Choose subject, section, sheet layout, then copies.',
                   ),
                   const SizedBox(height: 16),
                   Expanded(child: body),
@@ -1129,7 +1472,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     const SizedBox(height: 8),
                     TextButton(
                       onPressed: () => setModalState(() {
-                        if (step == 2) {
+                        if (step == 3) {
+                          step = 2;
+                        } else if (step == 2) {
                           step = 1;
                         } else {
                           step = 0;
@@ -1237,7 +1582,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     List<ConnectivityResult>? connectionType,
     bool fromReconnect = false,
   }) async {
-    if (!mounted || !_autoSyncOnWifi) {
+    if (!mounted) {
       return;
     }
 
@@ -1250,20 +1595,11 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     }
 
     if (!_isWifiLikeConnection(results)) {
-      if (fromReconnect && mounted && _pendingSyncCount > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Online on mobile data. $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting — connect to Wi-Fi or tap Sync now.',
-            ),
-            behavior: SnackBarBehavior.floating,
-            action: SnackBarAction(
-              label: 'Sync now',
-              onPressed: _handleSyncNow,
-            ),
-          ),
-        );
-      }
+      _showMobileDataSyncReminder();
+      return;
+    }
+
+    if (!_autoSyncOnWifi) {
       return;
     }
 
@@ -1274,11 +1610,36 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
             'Wi-Fi is back. Syncing $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'}…',
           ),
           behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
 
     AutoSyncService.instance.scheduleSync(immediate: true);
+  }
+
+  void _showMobileDataSyncReminder() {
+    if (!mounted ||
+        _pendingSyncCount <= 0 ||
+        _showedMobileDataReminderThisSession) {
+      return;
+    }
+    _showedMobileDataReminderThisSession = true;
+    final count = _pendingSyncCount;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Online on mobile data. $count item${count == 1 ? '' : 's'} waiting — connect to Wi-Fi or tap Sync now.',
+        ),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 6),
+        dismissDirection: DismissDirection.down,
+        action: SnackBarAction(
+          label: 'Sync now',
+          onPressed: _handleSyncNow,
+        ),
+      ),
+    );
   }
 
   void _initConnectivityListener() {
@@ -1328,30 +1689,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       return;
     }
 
-    if (_autoSyncOnWifi) {
-      await _maybeAutoSyncIfNeeded(
-        connectionType: results,
-        fromReconnect: true,
-      );
-      return;
-    }
-
-    await _refreshSyncStatus();
-    if (!mounted || _pendingSyncCount == 0) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Internet is back. $_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting to sync.',
-        ),
-        behavior: SnackBarBehavior.floating,
-        action: SnackBarAction(
-          label: 'Sync now',
-          onPressed: _handleSyncNow,
-        ),
-      ),
+    await _maybeAutoSyncIfNeeded(
+      connectionType: results,
+      fromReconnect: true,
     );
   }
 
@@ -3603,8 +3943,10 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   title: '$_pendingSyncCount item${_pendingSyncCount == 1 ? '' : 's'} waiting to sync',
                   subtitle: !ApiService.hasActiveSession
                       ? 'Sign in while online to upload your work.'
-                      : 'Upload pending scores to the cloud.',
-                  actionLabel: _isSyncing ? 'Syncing…' : 'Sync',
+                      : !_isOnline
+                          ? 'Connect to the internet, then tap Sync now.'
+                          : 'Upload pending scores to the cloud. Tap Sync now.',
+                  actionLabel: _isSyncing ? 'Syncing…' : 'Sync now',
                   onTap: _isSyncing
                       ? null
                       : () {
@@ -5409,6 +5751,33 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
+                  onPressed: _showChangeOfflinePinSheet,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.brandText,
+                    side: const BorderSide(color: AppColors.brandBorder),
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                  icon: const Icon(Icons.pin_outlined),
+                  label: const Text('Change offline PIN'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Forgot your PIN? Sign out, tap Forgot PIN on the unlock screen, '
+                'then sign in online to set a new one.',
+                style: TextStyle(
+                  color: AppColors.brandMuted,
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
                   onPressed: () {
                     _handleSignOut();
                   },
@@ -5429,6 +5798,169 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         ),
       ],
     );
+  }
+
+  Future<void> _showChangeOfflinePinSheet() async {
+    final hasPin = await LocalAuthService.instance.hasProfile();
+    if (!mounted) {
+      return;
+    }
+    if (!hasPin) {
+      _showSnackBar(
+        'No offline PIN on this phone yet. Sign out and set one after online login.',
+        backgroundColor: Colors.orange,
+      );
+      return;
+    }
+
+    final currentPinController = TextEditingController();
+    var step = 0; // 0 = verify current, 1 = set new
+    var saving = false;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final bottom = MediaQuery.of(context).viewInsets.bottom;
+            return Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Change offline PIN',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    step == 0
+                        ? 'Enter your current PIN first.'
+                        : 'Choose a new 4–6 digit PIN for exam-day unlock.',
+                    style: const TextStyle(
+                      color: AppColors.brandMuted,
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (step == 0) ...[
+                    AppPinInput(
+                      controller: currentPinController,
+                      label: 'Current PIN',
+                      enabled: !saving,
+                      compact: true,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton(
+                      onPressed: saving
+                          ? null
+                          : () async {
+                              final pin = currentPinController.text.trim();
+                              if (!RegExp(r'^\d{4,6}$').hasMatch(pin)) {
+                                _showSnackBar(
+                                  'Enter your full 4–6 digit PIN.',
+                                  backgroundColor: Colors.red,
+                                );
+                                return;
+                              }
+                              setSheetState(() => saving = true);
+                              final result =
+                                  await LocalAuthService.instance.verifyPin(pin);
+                              if (!mounted) {
+                                return;
+                              }
+                              setSheetState(() => saving = false);
+                              if (!result.success) {
+                                _showSnackBar(
+                                  result.message ?? 'Incorrect PIN.',
+                                  backgroundColor: Colors.red,
+                                );
+                                return;
+                              }
+                              setSheetState(() => step = 1);
+                            },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.brandGreen,
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                      child: saving
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text('Continue'),
+                    ),
+                  ] else ...[
+                    AppPinSetupFlow(
+                      isLoading: saving,
+                      onConfirmed: (newPin) async {
+                        setSheetState(() => saving = true);
+                        try {
+                          await LocalAuthService.instance.updatePin(newPin);
+                          final credentials = await LocalAuthService.instance
+                              .storedPinCredentials();
+                          var cloudOk = false;
+                          if (credentials != null &&
+                              ApiService.hasActiveSession) {
+                            try {
+                              await TeacherPinSyncService.instance.uploadPin(
+                                pinHash: credentials.hash,
+                                pinSalt: credentials.salt,
+                              );
+                              cloudOk = true;
+                            } catch (_) {
+                              cloudOk = false;
+                            }
+                          }
+                          if (!sheetContext.mounted) {
+                            return;
+                          }
+                          Navigator.pop(sheetContext);
+                          if (!mounted) {
+                            return;
+                          }
+                          _showSnackBar(
+                            cloudOk
+                                ? 'Offline PIN updated and backed up to your account.'
+                                : ApiService.hasActiveSession
+                                    ? 'PIN updated on this phone. Cloud backup failed — try Sync later on Wi‑Fi.'
+                                    : 'PIN updated on this phone. Sign in online later to back it up.',
+                          );
+                        } catch (error) {
+                          if (mounted) {
+                            setSheetState(() => saving = false);
+                            _showSnackBar(
+                              'Could not update PIN. Try again.',
+                              backgroundColor: Colors.red,
+                            );
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    currentPinController.dispose();
   }
 
   Widget _buildTopBar({

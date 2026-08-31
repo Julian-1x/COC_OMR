@@ -11,6 +11,8 @@ class ApiException implements Exception {
     this.statusCode,
     this.sessionInvalidated = false,
     this.isNetworkError = false,
+    this.captchaRequired = false,
+    this.captchaSiteKey,
   });
 
   final String message;
@@ -20,6 +22,10 @@ class ApiException implements Exception {
   /// True when the server was never reached (offline, DNS, timeout).
   /// Callers must not treat this as an account problem.
   final bool isNetworkError;
+
+  /// Server asked for a CAPTCHA before retrying (Cloudflare Turnstile).
+  final bool captchaRequired;
+  final String? captchaSiteKey;
 
   @override
   String toString() => message;
@@ -257,6 +263,8 @@ class ApiService {
         _parseErrorMessage(response),
         statusCode: response.statusCode,
         sessionInvalidated: sessionInvalidated,
+        captchaRequired: _captchaRequired(response),
+        captchaSiteKey: _captchaSiteKey(response),
       );
 
       if (_isRetryableStatus(response.statusCode) && attempt + 1 < maxAttempts) {
@@ -319,7 +327,31 @@ class ApiService {
     if (response.statusCode == 422) {
       return 'Check the form and try again.';
     }
+    if (response.statusCode == 429) {
+      return 'Too many attempts. Wait a minute, then try again.';
+    }
     return 'Server error (${response.statusCode}). Try again later.';
+  }
+
+  static bool _captchaRequired(http.Response response) {
+    final decoded = _tryDecodeJson(response.body);
+    return decoded?['captcha_required'] == true;
+  }
+
+  static String? _captchaSiteKey(http.Response response) {
+    final decoded = _tryDecodeJson(response.body);
+    final key = decoded?['captcha_site_key'];
+    return key is String && key.isNotEmpty ? key : null;
+  }
+
+  static Map<String, dynamic>? _tryDecodeJson(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    } catch (_) {}
+    return null;
   }
 
   static String _friendlyNetworkMessage(String message) {

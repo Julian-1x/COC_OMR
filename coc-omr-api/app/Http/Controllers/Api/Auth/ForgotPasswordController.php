@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Services\Auth\AuthEventLogger;
+use App\Services\Auth\CaptchaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -11,11 +13,20 @@ use Illuminate\Validation\ValidationException;
 
 class ForgotPasswordController extends Controller
 {
+    public function __construct(
+        private readonly CaptchaVerifier $captcha,
+        private readonly AuthEventLogger $events,
+    ) {}
+
     public function __invoke(Request $request): JsonResponse
     {
-        $request->validate([
+        $validated = $request->validate([
             'email' => ['required', 'email'],
+            'captcha_token' => ['nullable', 'string'],
         ]);
+
+        $email = strtolower($validated['email']);
+        $this->captcha->assertValid($validated['captcha_token'] ?? null, $request);
 
         try {
             $status = Password::sendResetLink([
@@ -33,6 +44,8 @@ class ForgotPasswordController extends Controller
         }
 
         if ($status === Password::RESET_LINK_SENT || $status === Password::INVALID_USER) {
+            $this->events->record('password_reset_requested', $email, null, $request);
+
             return response()->json([
                 'message' => 'If that email is registered, a reset link is on its way.',
             ]);

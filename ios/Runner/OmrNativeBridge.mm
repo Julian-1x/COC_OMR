@@ -75,50 +75,86 @@ struct QrLayout {
   double rowHeight = 0;
   double columnWidth = 0;
   double bubbleSpacingX = 17.0;
+  int optionsCount = kAnswerOpts;
+  double pageWidth = kOutputW;
+  double pageHeight = kOutputH;
+  double contentBlockWidth = kOutputW;
+  double contentBlockHeight = kOutputH;
+  double answerGridLeft = kAnsGridL;
+  double answerColumnInset = kAnsInset;
+  double answerNumberBubbleGap = kAnsGap;
+  double questionNumberWidth = kQNumW;
+  bool isCustom = false;
+  std::string layoutMode = "preset";
+  std::string layoutShape = "lengthwise_full";
+  bool useFrozenRegistrationMarks = true;
+  double cornerMarkerSize = kCornerMarkerSize;
+  double cornerMarkerOffset = kCornerOffset;
+  double timingMarkSize = kTimingMarkSize;
+  double timingMarkSpacing = kTimingSpacing;
+  double timingMarkEdgeOffset = kTimingEdge;
+  double timingMarkStartX = 60.0;
+  double timingMarkEndX = 535.0;
+  double timingMarkStartY = 60.0;
+  double timingMarkEndY = 780.0;
+  double rowMarkX = kRowMarkX;
+  double rowMarkSize = kRowMarkSz;
+  double omrIdFirstColumnX = kOmrFirstColX;
+  double omrIdFirstRowY = kOmrFirstRowY;
+  double omrIdColumnSpacing = kOmrColSpc;
+  double omrIdRowSpacing = kOmrRowSpc;
+  double calibrationY = kCalY;
+  double calibrationFilledX = kCalFillX;
+  double calibrationEmptyX = kCalEmptyX;
+  double calibrationBubbleSize = 10.0;
 };
 
-double distancePt(cv::Point2f a, cv::Point2f b) {
-  return std::hypot(a.x - b.x, a.y - b.y);
-}
-
 Corners *assignCorners(std::vector<cv::Point2f> &cand, double w, double h) {
-  bool htl = false, htr = false, hbl = false, hbr = false;
-  double btl = 1e9, btr = 1e9, bbl = 1e9, bbr = 1e9;
-  cv::Point2f tl, tr, bl, br;
-  for (auto &p : cand) {
-    if (p.x < w * 0.3f && p.y < h * 0.3f) {
-      double s = p.x + p.y;
-      if (!htl || s < btl) { btl = s; tl = p; htl = true; }
+  // Prefer image-quadrant hits, then nearest-corner fallback (half/¼ markers
+  // often sit mid-page when the whole bond sheet is framed).
+  auto pick = [&](auto scoreFn) -> cv::Point2f {
+    cv::Point2f best = cand[0];
+    double bestScore = scoreFn(best);
+    for (size_t i = 1; i < cand.size(); i++) {
+      double s = scoreFn(cand[i]);
+      if (s < bestScore) {
+        bestScore = s;
+        best = cand[i];
+      }
     }
-    if (p.x > w * 0.7f && p.y < h * 0.3f) {
-      double s = (w - p.x) + p.y;
-      if (!htr || s < btr) { btr = s; tr = p; htr = true; }
-    }
-    if (p.x < w * 0.3f && p.y > h * 0.7f) {
-      double s = p.x + (h - p.y);
-      if (!hbl || s < bbl) { bbl = s; bl = p; hbl = true; }
-    }
-    if (p.x > w * 0.7f && p.y > h * 0.7f) {
-      double s = (w - p.x) + (h - p.y);
-      if (!hbr || s < bbr) { bbr = s; br = p; hbr = true; }
-    }
+    return best;
+  };
+  cv::Point2f tl = pick([&](cv::Point2f p) { return p.x + p.y; });
+  cv::Point2f tr = pick([&](cv::Point2f p) { return (w - p.x) + p.y; });
+  cv::Point2f bl = pick([&](cv::Point2f p) { return p.x + (h - p.y); });
+  cv::Point2f br = pick([&](cv::Point2f p) { return (w - p.x) + (h - p.y); });
+
+  auto near = [](cv::Point2f a, cv::Point2f b) {
+    return std::hypot(a.x - b.x, a.y - b.y) < 2.0;
+  };
+  if (near(tl, tr) || near(tl, bl) || near(tl, br) || near(tr, bl) ||
+      near(tr, br) || near(bl, br)) {
+    return nullptr;
   }
-  if (!htl || !htr || !hbl || !hbr) return nullptr;
   return new Corners{tl, tr, bl, br};
 }
 
-cv::Mat warpGray(const cv::Mat &gray, const Corners &c) {
-  const float markerCenterOffset = (float)(kCornerOffset + (kCornerMarkerSize / 2.0));
+cv::Mat warpGray(const cv::Mat &gray, const Corners &c, int outW, int outH,
+                 double cornerSize = kCornerMarkerSize,
+                 double cornerOffset = kCornerOffset) {
+  const float markerCenterOffset = (float)(cornerOffset + (cornerSize / 2.0));
+  const int width = outW > 0 ? outW : kOutputW;
+  const int height = outH > 0 ? outH : kOutputH;
   std::vector<cv::Point2f> src = {c.tl, c.tr, c.br, c.bl};
   std::vector<cv::Point2f> dst = {
     {markerCenterOffset, markerCenterOffset},
-    {(float)kOutputW - markerCenterOffset, markerCenterOffset},
-    {(float)kOutputW - markerCenterOffset, (float)kOutputH - markerCenterOffset},
-    {markerCenterOffset, (float)kOutputH - markerCenterOffset}
+    {(float)width - markerCenterOffset, markerCenterOffset},
+    {(float)width - markerCenterOffset, (float)height - markerCenterOffset},
+    {markerCenterOffset, (float)height - markerCenterOffset}
   };
   cv::Mat M = cv::getPerspectiveTransform(src, dst);
   cv::Mat out;
-  cv::warpPerspective(gray, out, M, cv::Size(kOutputW, kOutputH));
+  cv::warpPerspective(gray, out, M, cv::Size(width, height));
   return out;
 }
 
@@ -211,8 +247,9 @@ BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double
   return a;
 }
 
-bool checkTimingMark(const cv::Mat &bin, double x, double y) {
-  int rad = (int)(kTimingMarkSize / 2 + 2);
+bool checkTimingMark(const cv::Mat &bin, double x, double y, double markSize = kTimingMarkSize) {
+  int rad = (int)(markSize / 2 + 2);
+  if (rad < 3) rad = 3;
   int cx = std::max(rad, std::min((int)x, bin.cols - rad - 1));
   int cy = std::max(rad, std::min((int)y, bin.rows - rad - 1));
   cv::Rect roi(cx - rad, cy - rad, rad * 2, rad * 2);
@@ -222,25 +259,35 @@ bool checkTimingMark(const cv::Mat &bin, double x, double y) {
   return (nz / tot) > 0.15;
 }
 
-double validateTimingMarks(const cv::Mat &warped) {
+double validateTimingMarks(const cv::Mat &warped, const QrLayout *layout) {
   cv::Mat bin;
   cv::threshold(warped, bin, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+  bool frozen = layout == nullptr || layout->useFrozenRegistrationMarks;
+  double startX = frozen ? 60.0 : layout->timingMarkStartX;
+  double endX = frozen ? 535.0 : layout->timingMarkEndX;
+  double startY = frozen ? 60.0 : layout->timingMarkStartY;
+  double endY = frozen ? 780.0 : layout->timingMarkEndY;
+  double spacing = frozen ? kTimingSpacing : layout->timingMarkSpacing;
+  double edge = frozen ? kTimingEdge : layout->timingMarkEdgeOffset;
+  double markSize = frozen ? kTimingMarkSize : layout->timingMarkSize;
+  double warpW = warped.cols;
+  double warpH = warped.rows;
   int found = 0, exp = 0;
-  for (double x = 60; x < 535; x += kTimingSpacing) {
+  for (double x = startX; x < endX; x += spacing) {
     exp++;
-    if (checkTimingMark(bin, x, kTimingEdge)) found++;
+    if (checkTimingMark(bin, x, edge, markSize)) found++;
   }
-  for (double x = 60; x < 535; x += kTimingSpacing) {
+  for (double x = startX; x < endX; x += spacing) {
     exp++;
-    if (checkTimingMark(bin, x, kOutputH - kTimingEdge)) found++;
+    if (checkTimingMark(bin, x, warpH - edge, markSize)) found++;
   }
-  for (double y = 60; y < 780; y += kTimingSpacing) {
+  for (double y = startY; y < endY; y += spacing) {
     exp++;
-    if (checkTimingMark(bin, kTimingEdge, y)) found++;
+    if (checkTimingMark(bin, edge, y, markSize)) found++;
   }
-  for (double y = 60; y < 780; y += kTimingSpacing) {
+  for (double y = startY; y < endY; y += spacing) {
     exp++;
-    if (checkTimingMark(bin, kOutputW - kTimingEdge, y)) found++;
+    if (checkTimingMark(bin, warpW - edge, y, markSize)) found++;
   }
   return exp > 0 ? (double)found / exp : 0;
 }
@@ -428,7 +475,7 @@ NSString *detectQR(const cv::Mat &warped) {
   return nil;
 }
 
-NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary *debug) {
+NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary *debug, NSDictionary *sessionLayout) {
   if (data.length == 0) return nil;
   std::vector<uchar> buf((uchar *)data.bytes, (uchar *)data.bytes + data.length);
   cv::Mat color = cv::imdecode(buf, cv::IMREAD_COLOR);
@@ -469,24 +516,149 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     return err;
   }
   debug[@"cornersDetected"] = @YES;
-  cv::Mat warped = warpGray(gray, *corners);
+  bool sessionWantsCustom = NO;
+  QrLayout *layout = nullptr;
+  double cornerSize = kCornerMarkerSize;
+  double cornerOffset = kCornerOffset;
+  int warpW = kOutputW;
+  int warpH = kOutputH;
+  if ([sessionLayout isKindOfClass:[NSDictionary class]]) {
+    id isCustomVal = sessionLayout[@"isCustom"];
+    if ([isCustomVal respondsToSelector:@selector(boolValue)]) {
+      sessionWantsCustom = [isCustomVal boolValue];
+    } else if ([sessionLayout[@"layoutMode"] isKindOfClass:[NSString class]] &&
+               [sessionLayout[@"layoutMode"] isEqualToString:@"custom"]) {
+      sessionWantsCustom = YES;
+    }
+    int cols = [sessionLayout[@"cols"] intValue];
+    int rows = [sessionLayout[@"rows"] intValue];
+    double rowHeight = [sessionLayout[@"rowHeight"] doubleValue];
+    NSString *templateId = [sessionLayout[@"template"] isKindOfClass:[NSString class]]
+        ? (NSString *)sessionLayout[@"template"]
+        : @"";
+    if (cols > 0 && rows > 0 && rowHeight > 0 && templateId.length > 0) {
+      layout = new QrLayout();
+      layout->templateId = [templateId UTF8String];
+      layout->columns = cols;
+      layout->rows = rows;
+      layout->gridTop = [sessionLayout[@"gridTop"] doubleValue];
+      if (layout->gridTop <= 0) layout->gridTop = kAnsGridTop;
+      layout->gridBottom = [sessionLayout[@"gridBottom"] doubleValue];
+      if (layout->gridBottom <= 0) layout->gridBottom = kAnsGridBot;
+      layout->rowHeight = rowHeight;
+      layout->columnWidth = [sessionLayout[@"colWidth"] doubleValue];
+      if (layout->columnWidth <= 0) layout->columnWidth = (kAnsGridR - kAnsGridL) / cols;
+      layout->bubbleSpacingX = [sessionLayout[@"bubbleSpacingX"] doubleValue];
+      if (layout->bubbleSpacingX <= 0) layout->bubbleSpacingX = 17.0;
+      int opts = [sessionLayout[@"optionsCount"] intValue];
+      layout->optionsCount = (opts >= 2 && opts <= kAnswerOpts) ? opts : kAnswerOpts;
+      double pw = [sessionLayout[@"pageWidth"] doubleValue];
+      double ph = [sessionLayout[@"pageHeight"] doubleValue];
+      layout->pageWidth = pw > 0 ? pw : kOutputW;
+      layout->pageHeight = ph > 0 ? ph : kOutputH;
+      double cbw = [sessionLayout[@"contentBlockWidth"] doubleValue];
+      double cbh = [sessionLayout[@"contentBlockHeight"] doubleValue];
+      layout->contentBlockWidth = cbw > 0 ? cbw : layout->pageWidth;
+      layout->contentBlockHeight = cbh > 0 ? cbh : layout->pageHeight;
+      double gridLeft = [sessionLayout[@"answerGridLeft"] doubleValue];
+      layout->answerGridLeft = gridLeft >= 0 ? gridLeft : kAnsGridL;
+      double inset = [sessionLayout[@"answerColumnInset"] doubleValue];
+      layout->answerColumnInset = inset > 0 ? inset : kAnsInset;
+      double gap = [sessionLayout[@"answerNumberBubbleGap"] doubleValue];
+      layout->answerNumberBubbleGap = gap > 0 ? gap : kAnsGap;
+      double qnw = [sessionLayout[@"questionNumberWidth"] doubleValue];
+      layout->questionNumberWidth = qnw > 0 ? qnw : kQNumW;
+      layout->isCustom = sessionWantsCustom;
+      NSString *mode = [sessionLayout[@"layoutMode"] isKindOfClass:[NSString class]]
+          ? (NSString *)sessionLayout[@"layoutMode"]
+          : (sessionWantsCustom ? @"custom" : @"preset");
+      layout->layoutMode = [mode UTF8String];
+      NSString *shape = [sessionLayout[@"layoutShape"] isKindOfClass:[NSString class]]
+          ? (NSString *)sessionLayout[@"layoutShape"]
+          : @"lengthwise_full";
+      layout->layoutShape = [shape UTF8String];
+      id frozenVal = sessionLayout[@"useFrozenRegistrationMarks"];
+      if ([frozenVal respondsToSelector:@selector(boolValue)]) {
+        layout->useFrozenRegistrationMarks = [frozenVal boolValue];
+      } else {
+        layout->useFrozenRegistrationMarks = !sessionWantsCustom;
+      }
+      auto readD = [&](NSString *key, double fallback) -> double {
+        double v = [sessionLayout[key] doubleValue];
+        return v > 0 ? v : fallback;
+      };
+      layout->cornerMarkerSize = readD(@"cornerMarkerSize", kCornerMarkerSize);
+      layout->cornerMarkerOffset = readD(@"cornerMarkerOffset", kCornerOffset);
+      layout->timingMarkSize = readD(@"timingMarkSize", kTimingMarkSize);
+      layout->timingMarkSpacing = readD(@"timingMarkSpacing", kTimingSpacing);
+      layout->timingMarkEdgeOffset = readD(@"timingMarkEdgeOffset", kTimingEdge);
+      layout->timingMarkStartX = readD(@"timingMarkStartX", 60.0);
+      layout->timingMarkEndX = readD(@"timingMarkEndX", 535.0);
+      layout->timingMarkStartY = readD(@"timingMarkStartY", 60.0);
+      layout->timingMarkEndY = readD(@"timingMarkEndY", 780.0);
+      layout->rowMarkX = readD(@"rowMarkX", kRowMarkX);
+      layout->rowMarkSize = readD(@"rowMarkSize", kRowMarkSz);
+      layout->omrIdFirstColumnX = readD(@"omrIdFirstColumnX", kOmrFirstColX);
+      layout->omrIdFirstRowY = readD(@"omrIdFirstRowY", kOmrFirstRowY);
+      layout->omrIdColumnSpacing = readD(@"omrIdColumnSpacing", kOmrColSpc);
+      layout->omrIdRowSpacing = readD(@"omrIdRowSpacing", kOmrRowSpc);
+      layout->calibrationY = readD(@"calibrationY", kCalY);
+      layout->calibrationFilledX = readD(@"calibrationFilledX", kCalFillX);
+      layout->calibrationEmptyX = readD(@"calibrationEmptyX", kCalEmptyX);
+      layout->calibrationBubbleSize = readD(@"calibrationBubbleSize", 10.0);
+      cornerSize = layout->cornerMarkerSize;
+      cornerOffset = layout->cornerMarkerOffset;
+      warpW = (int)llround(layout->contentBlockWidth);
+      warpH = (int)llround(layout->contentBlockHeight);
+      if (warpW < 100) warpW = kOutputW;
+      if (warpH < 100) warpH = kOutputH;
+      debug[@"layoutFromSession"] = @YES;
+    }
+  }
+  cv::Mat warped = warpGray(gray, *corners, warpW, warpH, cornerSize, cornerOffset);
   delete corners;
   debug[@"warpedSize"] = [NSString stringWithFormat:@"%dx%d", warped.cols, warped.rows];
-  double timingScore = validateTimingMarks(warped);
+  debug[@"contentBlockWarp"] = [NSString stringWithFormat:@"%dx%d", warpW, warpH];
+  double timingScore = validateTimingMarks(warped, layout);
   debug[@"timingMarkScore"] = @(timingScore);
   NSString *qrStr = detectQR(warped);
   debug[@"qrDetected"] = @(qrStr != nil);
-  QrLayout *layout = parseQrLayout(qrStr);
+  if (sessionWantsCustom && !layout) {
+    NSDictionary *err = @{
+      @"success": @NO,
+      @"omrId": [NSNull null],
+      @"answers": @{},
+      @"confidence": @0,
+      @"qrData": qrStr ?: [NSNull null],
+      @"errorMessage":
+          @"Custom sheet layout could not be locked. Open Scan from this subject again "
+          @"(custom sheets are not chosen by question count alone).",
+      @"debugInfo": debug
+    };
+    return err;
+  }
+  if (!layout) {
+    layout = parseQrLayout(qrStr);
+    debug[@"layoutFromSession"] = @NO;
+  }
   if (!layout) {
     layout = new QrLayout(fallbackLayout(totalQuestions));
     debug[@"layoutFromQr"] = @NO;
-  } else {
+  } else if (debug[@"layoutFromSession"] == nil || ![debug[@"layoutFromSession"] boolValue]) {
     debug[@"layoutFromQr"] = @YES;
+  } else {
+    debug[@"layoutFromQr"] = @NO;
   }
   debug[@"layoutTemplate"] = [NSString stringWithUTF8String:layout->templateId.c_str()];
+  debug[@"layoutIsCustom"] = @(layout->isCustom);
+  debug[@"layoutMode"] = [NSString stringWithUTF8String:layout->layoutMode.c_str()];
+  debug[@"layoutShape"] = [NSString stringWithUTF8String:layout->layoutShape.c_str()];
   double fillTh = kDefaultFillThresh;
-  double ff = sampleBubbleFillGray(warped, kCalFillX, kCalY);
-  double ef = sampleBubbleFillGray(warped, kCalEmptyX, kCalY);
+  double calFillX = layout->useFrozenRegistrationMarks ? kCalFillX : layout->calibrationFilledX;
+  double calEmptyX = layout->useFrozenRegistrationMarks ? kCalEmptyX : layout->calibrationEmptyX;
+  double calY = layout->useFrozenRegistrationMarks ? kCalY : layout->calibrationY;
+  double ff = sampleBubbleFillGray(warped, calFillX, calY);
+  double ef = sampleBubbleFillGray(warped, calEmptyX, calY);
   debug[@"calibrationFilledSample"] = @(ff);
   debug[@"calibrationEmptySample"] = @(ef);
   bool calibrated = ff > ef + 0.10;
@@ -498,12 +670,16 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   NSMutableString *omr = [NSMutableString string];
   NSMutableArray *digitConf = [NSMutableArray array];
   bool omrOk = YES;
+  double omrFirstX = layout->useFrozenRegistrationMarks ? kOmrFirstColX : layout->omrIdFirstColumnX;
+  double omrFirstY = layout->useFrozenRegistrationMarks ? kOmrFirstRowY : layout->omrIdFirstRowY;
+  double omrColSpc = layout->useFrozenRegistrationMarks ? kOmrColSpc : layout->omrIdColumnSpacing;
+  double omrRowSpc = layout->useFrozenRegistrationMarks ? kOmrRowSpc : layout->omrIdRowSpacing;
   for (int col = 0; col < kOmrCols && omrOk; col++) {
-    double colX = kOmrFirstColX + col * kOmrColSpc;
+    double colX = omrFirstX + col * omrColSpc;
     int bestD = -1;
     double bestF = 0, secondF = 0;
     for (int d = 0; d < kOmrRows; d++) {
-      double y = kOmrFirstRowY + d * kOmrRowSpc;
+      double y = omrFirstY + d * omrRowSpc;
       BubbleAn a = analyzeBubble(th, warped, colX, y);
       if (a.fill > bestF) { secondF = bestF; bestF = a.fill; bestD = d; }
       else if (a.fill > secondF) secondF = a.fill;
@@ -537,21 +713,24 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   NSMutableArray *scratchRejected = [NSMutableArray array];
   NSMutableArray *weakWinnerRejected = [NSMutableArray array];
   const char *opts = "ABCDE";
+  int optionCount = layout->optionsCount;
+  if (optionCount < 2) optionCount = 2;
+  if (optionCount > kAnswerOpts) optionCount = kAnswerOpts;
   for (int qn = 1; qn <= totalQuestions; qn++) {
     int col = (qn - 1) / layout->rows;
     int row = (qn - 1) % layout->rows;
     if (col >= layout->columns) break;
     double rowY = layout->gridTop + row * layout->rowHeight + layout->rowHeight / 2.0;
-    double bubbleAreaW = layout->bubbleSpacingX * (kAnswerOpts - 1);
-    double usableW = layout->columnWidth - kAnsInset * 2;
-    double rowContentW = kQNumW + kAnsGap + bubbleAreaW;
-    double colLeft = kAnsGridL + col * layout->columnWidth;
-    double rowContentL = colLeft + kAnsInset + (usableW - rowContentW) / 2.0;
-    double bubbleLeft = rowContentL + kQNumW + kAnsGap;
+    double bubbleAreaW = layout->bubbleSpacingX * (optionCount - 1);
+    double usableW = layout->columnWidth - layout->answerColumnInset * 2;
+    double rowContentW = layout->questionNumberWidth + layout->answerNumberBubbleGap + bubbleAreaW;
+    double colLeft = layout->answerGridLeft + col * layout->columnWidth;
+    double rowContentL = colLeft + layout->answerColumnInset + (usableW - rowContentW) / 2.0;
+    double bubbleLeft = rowContentL + layout->questionNumberWidth + layout->answerNumberBubbleGap;
     double bestF = 0, secondF = 0, bestArea = 0;
     int bestIdx = -1;
     int filledCnt = 0;
-    for (int oi = 0; oi < kAnswerOpts; oi++) {
+    for (int oi = 0; oi < optionCount; oi++) {
       double bx = bubbleLeft + oi * layout->bubbleSpacingX;
       BubbleAn a = analyzeBubble(th, warped, bx, rowY);
       bool marked = a.fill > fillTh && a.area >= kMinAnswerAreaCoverage;
@@ -633,9 +812,11 @@ NSString *jsonFromDict(NSDictionary *d) {
   return YES;
 }
 
-+ (NSString *)processWithImageBytes:(NSData *)data totalQuestions:(NSInteger)totalQuestions {
++ (NSString *)processWithImageBytes:(NSData *)data
+                     totalQuestions:(NSInteger)totalQuestions
+                      sessionLayout:(NSDictionary<NSString *, id> *)sessionLayout {
   NSMutableDictionary *dbg = [NSMutableDictionary dictionary];
-  NSDictionary *out = processCore(data, (int)totalQuestions, dbg);
+  NSDictionary *out = processCore(data, (int)totalQuestions, dbg, sessionLayout);
   if (!out) {
     out = @{
       @"success": @NO,
@@ -650,8 +831,12 @@ NSString *jsonFromDict(NSDictionary *d) {
   return jsonFromDict(out);
 }
 
++ (NSString *)processWithImageBytes:(NSData *)data totalQuestions:(NSInteger)totalQuestions {
+  return [self processWithImageBytes:data totalQuestions:totalQuestions sessionLayout:nil];
+}
+
 + (NSString *)processImageBytesLegacy:(NSData *)data {
-  return [self processWithImageBytes:data totalQuestions:50];
+  return [self processWithImageBytes:data totalQuestions:50 sessionLayout:nil];
 }
 
 + (NSDictionary<NSString *, id> *)detectSheet:(NSData *)data {

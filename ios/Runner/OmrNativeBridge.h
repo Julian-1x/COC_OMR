@@ -7,7 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (BOOL)isOpenCvReady;
 
-+ (nullable NSString *)processWithImageBytes:(NSData *)data totalQuestions:(NSInteger)totalQuestions;
++ (nullable NSString *)processWithImageBytes:(NSData *)data
+                              totalQuestions:(NSInteger)totalQuestions
+                               sessionLayout:(nullable NSDictionary<NSString *, id> *)sessionLayout;
 
 /// Same as Android `process` → JSON string.
 + (nullable NSString *)processImageBytesLegacy:(NSData *)data;

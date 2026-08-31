@@ -342,3 +342,28 @@ export async function fetchSectionStudentsForAdmin(
     throw error;
   }
 }
+
+export type AuthEventRow = {
+  id: string;
+  user_id: string | null;
+  email: string;
+  event: string;
+  ip_address: string | null;
+  user_agent: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+};
+
+export async function fetchAuthEvents(
+  api: ApiClient,
+  filters?: { email?: string; event?: string; limit?: number },
+): Promise<AuthEventRow[]> {
+  const { events } = await api.get<{ events: AuthEventRow[] }>("/admin/auth-events", {
+    params: {
+      email: filters?.email,
+      event: filters?.event,
+      limit: filters?.limit ?? 100,
+    },
+  });
+  return events ?? [];
+}

@@ -26,6 +26,9 @@ class Subject extends Model
         'exam_date',
         'passing_score',
         'use_partial_credit',
+        'use_custom_layout',
+        'options_count',
+        'layout_shape',
         'sync_status',
     ];
 
@@ -39,6 +42,8 @@ class Subject extends Model
             'total_questions' => 'integer',
             'passing_score' => 'integer',
             'use_partial_credit' => 'boolean',
+            'use_custom_layout' => 'boolean',
+            'options_count' => 'integer',
         ];
     }
 

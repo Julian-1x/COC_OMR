@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart' as generator;
+import 'package:omr_app/pages/custom_sheet_layouts_page.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
@@ -62,9 +64,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   static const Color _fieldFill = Colors.white;
   static const Color _fieldBorder = AppColors.borderLight;
   static const Color _warningOrange = AppColors.cautionAccent;
-  static const List<String> _answerChoices =
+  static const List<String> _allAnswerChoices =
       OmrPageConstants.answerOptionLabels;
-  static const Set<String> _answerChoiceSet = {'A', 'B', 'C', 'D', 'E'};
   static const List<int> _supportedQuestionCounts = [
     30,
     40,
@@ -78,16 +79,61 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _sectionController = TextEditingController();
+
+  List<String> get _answerChoices =>
+      _allAnswerChoices.take(_optionsCount.clamp(2, 5)).toList();
+  Set<String> get _answerChoiceSet => _answerChoices.toSet();
+
+  int get _optionsCount {
+    final layout = _selectedCustomLayout;
+    if (layout != null) {
+      return layout.optionsCount;
+    }
+    if (_isEditing && widget.subjectToEdit!.useCustomLayout) {
+      return widget.subjectToEdit!.optionsCount;
+    }
+    return OmrPageConstants.answerOptionsCount;
+  }
+
   final Map<int, Set<String>> _correctAnswers = {};
   int _questionCount = 50;
   int _editorStep = 0;
   bool _isEditing = false;
-  bool _showFullLayoutGrid = false;
+  /// New keys: standard 30–100 vs a saved custom sheet from the library.
+  bool _useSavedCustomSheet = false;
+  String? _selectedCustomLayoutId;
   Set<String> _selectedSections = {};
   bool _usePartialCredit = false;
   bool _splitEditMode = false;
   bool _sharedEditWarning = false;
   bool _sharedEditPromptHandled = false;
+
+  CustomSheetLayout? get _selectedCustomLayout {
+    final id = _selectedCustomLayoutId;
+    if (id == null) {
+      return null;
+    }
+    for (final layout in globalCustomSheetLayouts) {
+      if (layout.id == id) {
+        return layout;
+      }
+    }
+    return null;
+  }
+
+  List<CustomSheetLayout> get _sortedCustomLayouts {
+    final layouts = globalCustomSheetLayouts
+        // All six forms are scannable when session geometry drives native.
+        .toList()
+      ..sort((a, b) {
+        final byQuestions = a.totalQuestions.compareTo(b.totalQuestions);
+        if (byQuestions != 0) {
+          return byQuestions;
+        }
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+    return layouts;
+  }
 
   String? get _focusedSection {
     final raw = widget.editSectionFocus?.trim();
@@ -328,8 +374,23 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       issues
           .add('Remove unavailable section(s): ${missingSections.join(', ')}.');
     }
-    if (!_supportedQuestionCounts.contains(_questionCount)) {
-      issues.add('Choose a supported question count.');
+    if (_useSavedCustomSheet) {
+      final layout = _selectedCustomLayout;
+      if (layout == null) {
+        issues.add(
+          'Pick a saved custom sheet, or switch back to a standard 30–100 exam.',
+        );
+      } else if (layout.totalQuestions != _questionCount) {
+        issues.add(
+          'This key must have ${layout.totalQuestions} questions to match '
+          '"${layout.name}".',
+        );
+      }
+    } else if (!_supportedQuestionCounts.contains(_questionCount) &&
+        !_isEditing) {
+      issues.add(
+        'Choose a standard sheet size: 30, 40, 50, 60, 70, 80, 90, or 100.',
+      );
     }
     if (invalidAnswerQuestions.isNotEmpty) {
       issues.add(
@@ -481,29 +542,31 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     if (widget.subjectToEdit != null) {
       _isEditing = true;
       _nameController.text = widget.subjectToEdit!.name;
-      for (final entry in widget.subjectToEdit!.answerKey.entries) {
-        final sanitized = _sanitizeAnswers(entry.value);
-        if (sanitized.isNotEmpty) {
-          _correctAnswers[entry.key] = sanitized;
-        }
-      }
       _questionCount = widget.subjectToEdit!.totalQuestions;
       _selectedSections =
           (widget.subjectToEdit!.sectionNames ?? const <String>[])
               .map(_canonicalizeSectionName)
               .toSet();
       _usePartialCredit = widget.subjectToEdit!.usePartialCredit;
+      _initCustomSheetModeFromSubject(widget.subjectToEdit!);
+      for (final entry in widget.subjectToEdit!.answerKey.entries) {
+        final sanitized = _sanitizeAnswers(entry.value);
+        if (sanitized.isNotEmpty) {
+          _correctAnswers[entry.key] = sanitized;
+        }
+      }
     } else if (widget.templateSubject != null) {
       final template = widget.templateSubject!;
       _nameController.text = template.name;
+      _questionCount = template.totalQuestions;
+      _usePartialCredit = template.usePartialCredit;
+      _initCustomSheetModeFromSubject(template);
       for (final entry in template.answerKey.entries) {
         final sanitized = _sanitizeAnswers(entry.value);
         if (sanitized.isNotEmpty) {
           _correctAnswers[entry.key] = sanitized;
         }
       }
-      _questionCount = template.totalQuestions;
-      _usePartialCredit = template.usePartialCredit;
     }
 
     if (widget.initialSection != null &&
@@ -523,6 +586,144 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     _nameController.dispose();
     _sectionController.dispose();
     super.dispose();
+  }
+
+  Subject _preserveSheetLayout(Subject saved, Subject? existing) {
+    if (existing == null) {
+      return saved;
+    }
+    return saved.copyWith(
+      useCustomLayout: existing.useCustomLayout,
+      optionsCount: existing.optionsCount,
+      layoutShape: existing.layoutShape,
+      customLayoutId: existing.customLayoutId,
+      customGridColumns: existing.customGridColumns,
+      customGridRows: existing.customGridRows,
+    );
+  }
+
+  void _initCustomSheetModeFromSubject(Subject subject) {
+    if (!subject.useCustomLayout) {
+      _useSavedCustomSheet = false;
+      _selectedCustomLayoutId = null;
+      return;
+    }
+    _useSavedCustomSheet = true;
+    final linkedId = subject.customLayoutId;
+    if (linkedId != null &&
+        globalCustomSheetLayouts.any((layout) => layout.id == linkedId)) {
+      _selectedCustomLayoutId = linkedId;
+      return;
+    }
+    final matches = globalCustomSheetLayouts
+        .where((layout) => layout.totalQuestions == subject.totalQuestions)
+        .toList();
+    if (matches.length == 1) {
+      _selectedCustomLayoutId = matches.first.id;
+    } else {
+      _selectedCustomLayoutId = linkedId;
+    }
+  }
+
+  /// Persist standard vs custom sheet fields from the editor mode.
+  Subject _applySheetModeToSubject(Subject saved) {
+    if (_useSavedCustomSheet) {
+      final layout = _selectedCustomLayout;
+      if (layout != null) {
+        return layout.applyToSubject(saved);
+      }
+      final existing = widget.subjectToEdit;
+      if (existing != null && existing.useCustomLayout) {
+        return _preserveSheetLayout(saved, existing);
+      }
+    }
+    return saved.copyWith(
+      useCustomLayout: false,
+      optionsCount: OmrPageConstants.answerOptionsCount,
+      layoutShape: 'lengthwise_full',
+      clearCustomLayoutId: true,
+      clearCustomGrid: true,
+    );
+  }
+
+  void _switchToStandardSheet() {
+    setState(() {
+      _useSavedCustomSheet = false;
+      _selectedCustomLayoutId = null;
+      if (!_supportedQuestionCounts.contains(_questionCount)) {
+        _questionCount = 50;
+        _correctAnswers.removeWhere((question, _) => question > _questionCount);
+      }
+      _resanitizeLoadedAnswers();
+    });
+  }
+
+  void _switchToCustomSheetMode() {
+    setState(() {
+      _useSavedCustomSheet = true;
+      if (_selectedCustomLayout == null && _sortedCustomLayouts.isNotEmpty) {
+        _applyCustomLayoutSelection(_sortedCustomLayouts.first, announce: false);
+      }
+    });
+  }
+
+  void _applyCustomLayoutSelection(
+    CustomSheetLayout layout, {
+    bool announce = true,
+  }) {
+    final newCount = layout.totalQuestions;
+    _selectedCustomLayoutId = layout.id;
+    _useSavedCustomSheet = true;
+    if (newCount < _questionCount) {
+      _correctAnswers.removeWhere((question, _) => question > newCount);
+    }
+    _questionCount = newCount;
+    _resanitizeLoadedAnswers();
+    if (announce && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Using "${layout.name}" · $newCount questions · '
+            '${layout.optionsCount} choices. Fill answers below, then print '
+            'with this sheet under Print Sheets.',
+          ),
+          backgroundColor: _brandGreen,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  void _resanitizeLoadedAnswers() {
+    final keys = _correctAnswers.keys.toList();
+    for (final question in keys) {
+      final sanitized = _sanitizeAnswers(_correctAnswers[question] ?? const {});
+      if (sanitized.isEmpty) {
+        _correctAnswers.remove(question);
+      } else {
+        _correctAnswers[question] = sanitized;
+      }
+    }
+  }
+
+  Future<void> _openCustomLayoutsLibrary() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const CustomSheetLayoutsPage(),
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (_useSavedCustomSheet &&
+          _selectedCustomLayoutId != null &&
+          _selectedCustomLayout == null &&
+          _sortedCustomLayouts.isNotEmpty) {
+        _applyCustomLayoutSelection(_sortedCustomLayouts.first, announce: false);
+      }
+    });
   }
 
   Future<void> _showAddSectionPicker() async {
@@ -1020,8 +1221,12 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         usePartialCredit: _usePartialCredit,
       );
 
-      await LocalDataStore.instance.upsertSubject(updatedOriginal);
-      await LocalDataStore.instance.upsertSubject(newSubject);
+      await LocalDataStore.instance.upsertSubject(
+        _preserveSheetLayout(updatedOriginal, existingSubject),
+      );
+      await LocalDataStore.instance.upsertSubject(
+        _applySheetModeToSubject(newSubject),
+      );
 
       if (!mounted) {
         return;
@@ -1060,14 +1265,16 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       cloudId: targetSubject?.cloudId,
     );
 
-    await LocalDataStore.instance.upsertSubject(subject);
+    final persistedSubject = _applySheetModeToSubject(subject);
+
+    await LocalDataStore.instance.upsertSubject(persistedSubject);
 
     if (!mounted) {
       return;
     }
 
     if (_isEditing) {
-      Navigator.pop(context, AnswerKeyEditorResult.updated(subject));
+      Navigator.pop(context, AnswerKeyEditorResult.updated(persistedSubject));
     } else {
       if (!mounted) {
         return;
@@ -1079,7 +1286,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           backgroundColor: colorScheme.primary,
         ),
       );
-      Navigator.pop(context, subject);
+      Navigator.pop(context, persistedSubject);
     }
   }
 
@@ -2467,67 +2674,164 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         const SizedBox(height: 12),
         _buildStepCard(
           title: 'Sheet size',
-          subtitle: 'How many questions are on the answer sheet.',
+          subtitle: _useSavedCustomSheet
+              ? 'Question count and choices come from your saved custom sheet.'
+              : 'Standard exam sheets only (30–100). These sizes are fixed and proven for scanning.',
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              DropdownButtonFormField<int>(
-                key: ValueKey(_questionCount),
-                initialValue: _questionCount,
-                decoration: const InputDecoration(
-                  labelText: 'Questions on sheet',
-                ),
-                items: _supportedQuestionCounts
-                    .map(
-                      (count) => DropdownMenuItem<int>(
-                        value: count,
-                        child: Text('$count questions'),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (count) {
-                  if (count != null && count != _questionCount) {
-                    _changeQuestionCount(count);
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment<bool>(
+                    value: false,
+                    label: Text('Standard 30–100'),
+                    icon: Icon(Icons.fact_check_outlined, size: 18),
+                  ),
+                  ButtonSegment<bool>(
+                    value: true,
+                    label: Text('Saved custom'),
+                    icon: Icon(Icons.dashboard_customize_outlined, size: 18),
+                  ),
+                ],
+                selected: {_useSavedCustomSheet},
+                onSelectionChanged: (value) {
+                  if (value.first) {
+                    _switchToCustomSheetMode();
+                  } else {
+                    _switchToStandardSheet();
                   }
                 },
               ),
-              TextButton(
-                onPressed: () {
-                  setState(() => _showFullLayoutGrid = !_showFullLayoutGrid);
-                },
-                child: Text(
-                  _showFullLayoutGrid ? 'Hide layout grid' : 'Change layout',
-                ),
-              ),
-              if (_showFullLayoutGrid)
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: _supportedQuestionCounts.map((count) {
-                    final selected = _questionCount == count;
-                    final template = OmrTemplateSpec.forItemCount(count);
-                    return ChoiceChip(
-                      label: Text('$count (${template.columns}x${template.rows})'),
-                      selected: selected,
-                      onSelected: (value) {
-                        if (value && count != _questionCount) {
-                          _changeQuestionCount(count);
+              const SizedBox(height: 12),
+              if (!_useSavedCustomSheet) ...[
+                if (_supportedQuestionCounts.contains(_questionCount))
+                  DropdownButtonFormField<int>(
+                    key: ValueKey('standard-$_questionCount'),
+                    initialValue: _questionCount,
+                    decoration: const InputDecoration(
+                      labelText: 'Questions on sheet',
+                    ),
+                    items: _supportedQuestionCounts
+                        .map(
+                          (count) => DropdownMenuItem<int>(
+                            value: count,
+                            child: Text('$count questions'),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (count) {
+                      if (count != null && count != _questionCount) {
+                        _changeQuestionCount(count);
+                      }
+                    },
+                  )
+                else
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _brandSurface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _brandBorder),
+                    ),
+                    child: Text(
+                      '$_questionCount questions — switch to Saved custom if this '
+                      'key uses a custom sheet, or pick a standard 30–100 size.',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: _brandText,
+                      ),
+                    ),
+                  ),
+              ] else ...[
+                if (_sortedCustomLayouts.isEmpty) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.warningBg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.warningBorder),
+                    ),
+                    child: const Text(
+                      'No custom sheets saved yet. Create one under Prepare → '
+                      'Custom sheet layouts, then come back here.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.warningText,
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  DropdownButtonFormField<String>(
+                    key: ValueKey(_selectedCustomLayoutId ?? 'none'),
+                    initialValue: _selectedCustomLayout?.id,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Custom sheet layout',
+                    ),
+                    items: _sortedCustomLayouts
+                        .map(
+                          (layout) => DropdownMenuItem<String>(
+                            value: layout.id,
+                            child: Text(
+                              '${layout.name} · ${layout.totalQuestions} Q · '
+                              '${layout.optionsCount} choices',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (layoutId) {
+                      if (layoutId == null) {
+                        return;
+                      }
+                      CustomSheetLayout? picked;
+                      for (final layout in _sortedCustomLayouts) {
+                        if (layout.id == layoutId) {
+                          picked = layout;
+                          break;
                         }
-                      },
-                      backgroundColor: Colors.white,
-                      selectedColor: _brandGreen.withValues(alpha: 0.12),
-                      showCheckmark: true,
-                      surfaceTintColor: Colors.transparent,
-                      side: BorderSide(
-                        color: selected ? _brandGreen : _brandBorder,
+                      }
+                      if (picked == null) {
+                        return;
+                      }
+                      setState(() {
+                        _applyCustomLayoutSelection(picked!);
+                      });
+                    },
+                  ),
+                  if (_selectedCustomLayout != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '${_selectedCustomLayout!.previewSubtitle}\n'
+                      'Fill ${_selectedCustomLayout!.totalQuestions} answers below. '
+                      'At Print Sheets, pick this same layout.',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        height: 1.4,
+                        color: _brandMuted,
+                        fontWeight: FontWeight.w600,
                       ),
-                      labelStyle: TextStyle(
-                        color: selected ? _brandGreen : _brandText,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    );
-                  }).toList(),
+                    ),
+                  ],
+                ],
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _openCustomLayoutsLibrary,
+                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                    label: Text(
+                      _sortedCustomLayouts.isEmpty
+                          ? 'Create custom sheet'
+                          : 'Manage custom sheets',
+                    ),
+                  ),
                 ),
+              ],
             ],
           ),
         ),

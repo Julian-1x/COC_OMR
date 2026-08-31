@@ -38,6 +38,7 @@ const adminNavBase = [
 
 const adminNavSuper = [
   { href: "/dashboard/admin/departments", label: "Dept admins", icon: Users },
+  { href: "/dashboard/admin/security", label: "Sign-in log", icon: Shield },
 ];
 
 const adminNavTail = [

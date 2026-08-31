@@ -6,13 +6,17 @@ use App\Http\Controllers\Api\Auth\ForgotPasswordController;
 use App\Http\Controllers\Api\Auth\LoginController;
 use App\Http\Controllers\Api\Auth\LogoutController;
 use App\Http\Controllers\Api\Auth\MeController;
+use App\Http\Controllers\Api\Auth\MfaChallengeController;
+use App\Http\Controllers\Api\Auth\MfaEnrollController;
 use App\Http\Controllers\Api\Auth\RegisterController;
 use App\Http\Controllers\Api\Auth\ResendVerificationController;
 use App\Http\Controllers\Api\Auth\ResetPasswordController;
+use App\Http\Controllers\Api\Auth\SecurityConfigController;
 use App\Http\Controllers\Api\Auth\VerificationStatusController;
 use App\Http\Controllers\Api\MailDiagnosticsController;
 use App\Http\Controllers\Api\PinController;
 use App\Http\Controllers\Api\Portal\AdminController;
+use App\Http\Controllers\Api\Portal\AuthEventsController;
 use App\Http\Controllers\Api\Portal\DashboardController;
 use App\Http\Controllers\Api\Portal\ScanResultController;
 use App\Http\Controllers\Api\Portal\SectionController;
@@ -28,11 +32,22 @@ use App\Http\Controllers\Api\Sync\SyncDeleteController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('register')->group(function () {
-    Route::post('/', RegisterController::class);
+    Route::post('/', RegisterController::class)->middleware('throttle:register-ip');
 });
 
-Route::post('/login', LoginController::class);
-Route::post('/forgot-password', ForgotPasswordController::class);
+Route::get('/auth/security-config', SecurityConfigController::class);
+
+Route::post('/login', LoginController::class)
+    ->middleware(['throttle:login-ip', 'throttle:login-email']);
+Route::post('/login/mfa', MfaChallengeController::class)
+    ->middleware(['throttle:login-ip', 'throttle:login-email']);
+Route::post('/login/mfa/setup', [MfaEnrollController::class, 'setupDuringLogin'])
+    ->middleware(['throttle:login-ip', 'throttle:login-email']);
+Route::post('/login/mfa/enroll', [MfaEnrollController::class, 'enrollDuringLogin'])
+    ->middleware(['throttle:login-ip', 'throttle:login-email']);
+
+Route::post('/forgot-password', ForgotPasswordController::class)
+    ->middleware('throttle:6,1');
 Route::post('/reset-password', ResetPasswordController::class);
 Route::post('/email/resend-verification', ResendVerificationController::class)
     ->middleware('throttle:6,1');
@@ -50,6 +65,13 @@ Route::post('/health/mail-test', [MailDiagnosticsController::class, 'sendTest'])
 Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(function () {
     Route::post('/logout', LogoutController::class);
     Route::get('/me', MeController::class);
+
+    Route::prefix('mfa')->group(function () {
+        Route::post('/setup', [MfaEnrollController::class, 'setup']);
+        Route::post('/confirm', [MfaEnrollController::class, 'confirm']);
+        Route::post('/disable', [MfaEnrollController::class, 'disable']);
+    });
+
     Route::post('/email/verification-notification', [EmailVerificationController::class, 'resend'])
         ->middleware('throttle:6,1');
 
@@ -89,6 +111,7 @@ Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(funct
 
         Route::middleware('super.admin')->group(function () {
             Route::get('/department-admins', [AdminController::class, 'departmentAdmins']);
+            Route::get('/auth-events', [AuthEventsController::class, 'index']);
             Route::post('/teachers/{teacherId}/make-dept-admin', [AdminController::class, 'makeDeptAdmin']);
             Route::post('/teachers/{teacherId}/revoke-dept-admin', [AdminController::class, 'revokeDeptAdmin']);
             Route::delete('/teachers/{teacherId}', [AdminController::class, 'destroy']);

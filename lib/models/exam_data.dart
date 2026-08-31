@@ -1,3 +1,5 @@
+import 'package:omr_app/models/omr_template_specs.dart';
+
 final RegExp _storedAnswerPattern = RegExp(r'[A-E]');
 
 String formatScoreValue(num? score) {
@@ -262,6 +264,17 @@ class Subject {
   DateTime? examDate;
   int passingScore;
   bool usePartialCredit; // Enable partial credit for multi-answer questions
+  /// When false, print/scan use frozen 30–100 presets (recommended).
+  bool useCustomLayout;
+  /// Options shown on the sheet (2–5). Ignored when [useCustomLayout] is false.
+  int optionsCount;
+  /// Custom form id: `lengthwise_full`, `crosswise_quarter`, etc.
+  String layoutShape;
+  /// Saved library layout linked at print time (local only).
+  String? customLayoutId;
+  /// Fixed answer grid from saved custom layout (print + scan must match).
+  int? customGridColumns;
+  int? customGridRows;
   String? ownerTeacherId;
   String? cloudId;
   String syncStatus;
@@ -277,6 +290,12 @@ class Subject {
     this.examDate,
     int? passingScore,
     this.usePartialCredit = false,
+    this.useCustomLayout = false,
+    int optionsCount = OmrPageConstants.answerOptionsCount,
+    String layoutShape = 'lengthwise_full',
+    this.customLayoutId,
+    this.customGridColumns,
+    this.customGridRows,
     this.ownerTeacherId,
     this.cloudId,
     this.syncStatus = SyncStatus.pending,
@@ -285,10 +304,38 @@ class Subject {
         answerKey = _normalizeAnswerKey(answerKey),
         sectionQrData = sectionQrData ?? <String, String>{},
         passingScore = passingScore ?? (totalQuestions * 0.6).round(),
+        optionsCount = optionsCount.clamp(2, 5),
+        layoutShape = OmrLayoutForm.fromId(layoutShape).id,
         updatedAt = updatedAt ?? DateTime.now();
 
   String get normalizedName => name.trim().toUpperCase();
   String get displayName => name;
+
+  OmrLayoutForm get layoutForm => OmrLayoutForm.fromId(layoutShape);
+
+  OmrLayoutProfile get layoutProfile {
+    if (useCustomLayout &&
+        customGridColumns != null &&
+        customGridRows != null &&
+        customGridColumns! > 0 &&
+        customGridRows! > 0) {
+      final explicit = OmrLayoutProfile.tryComputeExplicitGrid(
+        columns: customGridColumns!,
+        rows: customGridRows!,
+        optionsCount: optionsCount,
+        form: layoutForm,
+      );
+      if (explicit.profile != null) {
+        return explicit.profile!;
+      }
+    }
+    return OmrLayoutProfile.resolve(
+      totalQuestions: totalQuestions,
+      useCustomLayout: useCustomLayout,
+      optionsCount: optionsCount,
+      form: layoutForm,
+    );
+  }
 
   Subject copyWith({
     String? name,
@@ -299,6 +346,14 @@ class Subject {
     DateTime? examDate,
     int? passingScore,
     bool? usePartialCredit,
+    bool? useCustomLayout,
+    int? optionsCount,
+    String? layoutShape,
+    String? customLayoutId,
+    int? customGridColumns,
+    int? customGridRows,
+    bool clearCustomLayoutId = false,
+    bool clearCustomGrid = false,
     String? ownerTeacherId,
     String? cloudId,
     String? syncStatus,
@@ -314,6 +369,16 @@ class Subject {
       examDate: examDate ?? this.examDate,
       passingScore: passingScore ?? this.passingScore,
       usePartialCredit: usePartialCredit ?? this.usePartialCredit,
+      useCustomLayout: useCustomLayout ?? this.useCustomLayout,
+      optionsCount: optionsCount ?? this.optionsCount,
+      layoutShape: layoutShape ?? this.layoutShape,
+      customLayoutId: clearCustomLayoutId
+          ? null
+          : (customLayoutId ?? this.customLayoutId),
+      customGridColumns:
+          clearCustomGrid ? null : (customGridColumns ?? this.customGridColumns),
+      customGridRows:
+          clearCustomGrid ? null : (customGridRows ?? this.customGridRows),
       ownerTeacherId: ownerTeacherId ?? this.ownerTeacherId,
       cloudId: cloudId ?? this.cloudId,
       syncStatus: syncStatus ?? this.syncStatus,
@@ -440,6 +505,12 @@ class Subject {
       'examDate': examDate?.toIso8601String(),
       'passingScore': passingScore,
       'usePartialCredit': usePartialCredit,
+      'useCustomLayout': useCustomLayout,
+      'optionsCount': optionsCount,
+      'layoutShape': layoutShape,
+      'customLayoutId': customLayoutId,
+      'customGridColumns': customGridColumns,
+      'customGridRows': customGridRows,
       'ownerTeacherId': ownerTeacherId,
       'cloudId': cloudId,
       'syncStatus': syncStatus,
@@ -475,6 +546,13 @@ class Subject {
           : DateTime.tryParse(json['examDate'].toString()),
       passingScore: json['passingScore'] as int?,
       usePartialCredit: json['usePartialCredit'] as bool? ?? false,
+      useCustomLayout: json['useCustomLayout'] as bool? ?? false,
+      optionsCount: json['optionsCount'] as int? ??
+          OmrPageConstants.answerOptionsCount,
+      layoutShape: json['layoutShape']?.toString() ?? 'lengthwise_full',
+      customLayoutId: json['customLayoutId']?.toString(),
+      customGridColumns: json['customGridColumns'] as int?,
+      customGridRows: json['customGridRows'] as int?,
       ownerTeacherId: json['ownerTeacherId']?.toString(),
       cloudId: json['cloudId']?.toString(),
       syncStatus: json['syncStatus']?.toString() ?? SyncStatus.pending,

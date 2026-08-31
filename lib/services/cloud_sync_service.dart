@@ -320,6 +320,9 @@ class CloudSyncService {
       examDate: _parseDate(row['exam_date']),
       passingScore: row['passing_score'] as int?,
       usePartialCredit: row['use_partial_credit'] == true,
+      useCustomLayout: row['use_custom_layout'] == true,
+      optionsCount: row['options_count'] as int? ?? 5,
+      layoutShape: row['layout_shape']?.toString() ?? 'lengthwise_full',
       ownerTeacherId: row['owner_teacher_id']?.toString(),
       cloudId: row['id']?.toString(),
       syncStatus: SyncStatus.synced,
@@ -480,6 +483,9 @@ class CloudSyncService {
       'exam_date': subject.examDate?.toIso8601String().split('T').first,
       'passing_score': subject.passingScore,
       'use_partial_credit': subject.usePartialCredit,
+      'use_custom_layout': subject.useCustomLayout,
+      'options_count': subject.optionsCount,
+      'layout_shape': subject.layoutShape,
       'updated_at': subject.updatedAt.toIso8601String(),
     };
     final response = await ApiService.postJson('/sync/subjects', row);

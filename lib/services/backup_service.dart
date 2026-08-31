@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
@@ -27,6 +28,8 @@ class BackupService {
       'exportRecords': globalExportRecords.map((e) => e.toJson()).toList(),
       'answerKeyTemplates':
           globalAnswerKeyTemplates.map((e) => e.toJson()).toList(),
+      'customSheetLayouts':
+          globalCustomSheetLayouts.map((e) => e.toJson()).toList(),
       'omrCounter': nextOmrIdValue,
       'subjectCounter': nextSubjectCounterValue,
       'sheetCounter': nextSheetCounterValue,

@@ -21,6 +21,11 @@ type AuthResponse = {
   access_status?: string;
   access_pending?: boolean;
   errors?: Record<string, string[]>;
+  mfa_required?: boolean;
+  mfa_enrollment_required?: boolean;
+  mfa_ticket?: string;
+  captcha_required?: boolean;
+  captcha_site_key?: string;
 };
 
 function authErrorMessage(payload: AuthResponse | null, fallback: string): string {
@@ -105,6 +110,10 @@ export async function POST(request: Request) {
       name?: string;
       school?: string;
       department?: string;
+      captcha_token?: string;
+      mfa_ticket?: string;
+      mfa_code?: string;
+      mfa_enrollment?: boolean;
     };
 
     const mode = body.mode ?? "login";
@@ -148,6 +157,7 @@ export async function POST(request: Request) {
           full_name: name,
           school: COC_SCHOOL_NAME,
           department,
+          captcha_token: body.captcha_token,
         }),
       });
 
@@ -185,6 +195,36 @@ export async function POST(request: Request) {
       });
     }
 
+    if (mode === "login" && body.mfa_ticket && body.mfa_code) {
+      const mfaPath = body.mfa_enrollment ? "/api/login/mfa/enroll" : "/api/login/mfa";
+      const mfaResponse = await fetchAuthUpstream(`${baseUrl}${mfaPath}`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          mfa_ticket: body.mfa_ticket,
+          code: body.mfa_code,
+          device_name: "web",
+        }),
+      });
+      const { payload: mfaPayload, rawBody: mfaRaw } = await readUpstream(mfaResponse);
+      if (!mfaResponse.ok || !mfaPayload?.token) {
+        return NextResponse.json(
+          {
+            error: upstreamErrorMessage(
+              mfaResponse,
+              mfaPayload,
+              "Security code did not match.",
+              mfaRaw,
+            ),
+          },
+          { status: mfaResponse.status || 400 },
+        );
+      }
+      const cookieStore = await cookies();
+      cookieStore.set(API_TOKEN_COOKIE, mfaPayload.token, apiTokenCookieOptions());
+      return NextResponse.json({ ok: true });
+    }
+
     const response = await fetchAuthUpstream(`${baseUrl}/api/login`, {
       method: "POST",
       headers: jsonHeaders,
@@ -192,11 +232,33 @@ export async function POST(request: Request) {
         email,
         password,
         device_name: "web",
+        captcha_token: body.captcha_token,
       }),
     });
 
     const { payload, rawBody } = await readUpstream(response);
+    if (payload?.mfa_required || payload?.mfa_enrollment_required) {
+      return NextResponse.json({
+        ok: false,
+        mfaRequired: true,
+        mfaEnrollmentRequired: payload.mfa_enrollment_required === true,
+        mfaTicket: payload.mfa_ticket,
+        message: payload.message,
+      });
+    }
+
     if (!response.ok || !payload?.token) {
+      if (payload?.captcha_required) {
+        return NextResponse.json(
+          {
+            error: payload.message ?? "Complete the security check, then try signing in again.",
+            captchaRequired: true,
+            captchaSiteKey: payload.captcha_site_key,
+          },
+          { status: response.status || 422 },
+        );
+      }
+
       const message = upstreamErrorMessage(
         response,
         payload,

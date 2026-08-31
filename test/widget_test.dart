@@ -134,13 +134,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Print Sheets'), findsOneWidget);
 
+    // Roster & results starts expanded — scroll to Export (do not tap the
+    // section header; that would collapse it).
     await tester.scrollUntilVisible(
-      find.text('Roster & results'),
+      find.text('Export Results'),
       120,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Roster & results'));
-    await tester.pumpAndSettle();
     expect(find.text('Export Results'), findsOneWidget);
 
     expect(find.text('Classes'), findsOneWidget);

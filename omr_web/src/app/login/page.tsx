@@ -16,6 +16,10 @@ import {
 } from "@/lib/auth/password-rules";
 import { COC_DEPARTMENTS, COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
+import { TurnstileField } from "@/components/auth/turnstile-field";
+
+const CAPTCHA_SITE_KEY =
+  process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY?.trim() ?? "";
 
 function LoginForm() {
   const router = useRouter();
@@ -31,6 +35,13 @@ function LoginForm() {
   const [resendLoading, setResendLoading] = useState(false);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [awaitingMfa, setAwaitingMfa] = useState(false);
+  const [awaitingMfaEnrollment, setAwaitingMfaEnrollment] = useState(false);
+  const [mfaTicket, setMfaTicket] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaSetupSecret, setMfaSetupSecret] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaSiteKey, setCaptchaSiteKey] = useState(CAPTCHA_SITE_KEY);
   const [slowServerHint, setSlowServerHint] = useState(false);
   const autoSignInInFlight = useRef(false);
   const loadingRef = useRef(false);
@@ -264,6 +275,45 @@ function LoginForm() {
     };
   }, [awaitingConfirmation, email, password, signInWithPassword]);
 
+  useEffect(() => {
+    if (!awaitingMfaEnrollment || !mfaTicket) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadSetup() {
+      try {
+        const response = await fetch("/auth/login/mfa-setup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mfa_ticket: mfaTicket }),
+        });
+        const payload = await readJsonResponse<{
+          error?: string;
+          secret?: string;
+          otpauthUrl?: string;
+        }>(response);
+        if (!response.ok || !payload.secret) {
+          throw new Error(payload.error ?? "Could not start two-factor setup.");
+        }
+        if (!cancelled) {
+          setMfaSetupSecret(payload.secret);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Could not start two-factor setup.");
+        }
+      }
+    }
+
+    void loadSetup();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [awaitingMfaEnrollment, mfaTicket]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -292,12 +342,16 @@ function LoginForm() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          mode,
+          mode: awaitingMfa ? "login" : mode,
           email,
           password,
           name,
           school: COC_SCHOOL_NAME,
           department: mode === "register" ? department : undefined,
+          captcha_token: captchaToken ?? undefined,
+          mfa_ticket: awaitingMfa ? mfaTicket ?? undefined : undefined,
+          mfa_code: awaitingMfa ? mfaCode : undefined,
+          mfa_enrollment: awaitingMfa && awaitingMfaEnrollment ? true : undefined,
         }),
       });
 
@@ -307,8 +361,37 @@ function LoginForm() {
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
         message?: string;
+        mfaRequired?: boolean;
+        mfaEnrollmentRequired?: boolean;
+        mfaTicket?: string;
+        captchaRequired?: boolean;
+        captchaSiteKey?: string;
       }>(response);
+
+      if (payload.mfaRequired && payload.mfaTicket) {
+        setAwaitingMfa(true);
+        setAwaitingMfaEnrollment(payload.mfaEnrollmentRequired === true);
+        setMfaTicket(payload.mfaTicket);
+        setMfaSetupSecret(null);
+        setNotice(
+          payload.message ??
+            (payload.mfaEnrollmentRequired
+              ? "Set up two-factor sign-in to continue."
+              : "Enter your authenticator code to continue."),
+        );
+        return;
+      }
+
       if (!response.ok || payload.error) {
+        if (payload.captchaRequired) {
+          if (payload.captchaSiteKey) {
+            setCaptchaSiteKey(payload.captchaSiteKey);
+          }
+          throw new Error(
+            payload.error ??
+              "Complete the security check below, then try signing in again.",
+          );
+        }
         throw new Error(payload.error ?? "Sign in failed.");
       }
 
@@ -499,6 +582,40 @@ function LoginForm() {
             ) : null}
           </div>
 
+          {awaitingMfa ? (
+            <div className="mb-4 space-y-3">
+              {awaitingMfaEnrollment ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-950">
+                  <p className="font-bold">Set up an authenticator app</p>
+                  <p className="mt-1">
+                    Add this key to Google Authenticator, Microsoft Authenticator, or a similar app,
+                    then enter the 6-digit code.
+                  </p>
+                  {mfaSetupSecret ? (
+                    <p className="mt-2 break-all font-mono text-xs font-bold">{mfaSetupSecret}</p>
+                  ) : (
+                    <p className="mt-2 text-xs text-emerald-800">Preparing your setup key…</p>
+                  )}
+                </div>
+              ) : null}
+              <div>
+                <Label htmlFor="mfa">Authenticator code</Label>
+                <Input
+                  id="mfa"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={mfaCode}
+                  onChange={(e) => setMfaCode(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {captchaSiteKey && !awaitingMfa ? (
+            <TurnstileField siteKey={captchaSiteKey} onToken={setCaptchaToken} />
+          ) : null}
+
           {awaitingConfirmation ? (
             <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
               <p className="font-bold">Waiting for email confirmation</p>
@@ -545,7 +662,11 @@ function LoginForm() {
                 : "Please wait…"
               : mode === "register"
                 ? "Create account"
-                : "Sign in"}
+                : awaitingMfa
+                  ? awaitingMfaEnrollment
+                    ? "Finish two-factor setup"
+                    : "Verify code"
+                  : "Sign in"}
           </Button>
 
           {awaitingConfirmation ? (

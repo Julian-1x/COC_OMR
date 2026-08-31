@@ -138,8 +138,9 @@ export default function PrintSheetsPage() {
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Print OMR sheets</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Print at 100% scale (Actual size). Sheets are blank — students bubble their own OMR ID on exam day.
-          No names are printed on the paper.
+          Same layout as the phone app (standard 30–100 sheets). Print at 100% scale (Actual size).
+          Sheets are blank — students bubble their own OMR ID on exam day. Custom layouts: print from
+          the phone only.
         </p>
       </div>
 

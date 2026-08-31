@@ -59,6 +59,9 @@ class SubjectController extends Controller
             'exam_date' => ['nullable', 'date'],
             'passing_score' => ['required', 'integer'],
             'use_partial_credit' => ['nullable', 'boolean'],
+            'use_custom_layout' => ['nullable', 'boolean'],
+            'options_count' => ['nullable', 'integer', 'min:2', 'max:5'],
+            'layout_shape' => ['nullable', 'string', 'max:64'],
         ]);
 
         $subject = Subject::query()->updateOrCreate(
@@ -77,6 +80,9 @@ class SubjectController extends Controller
                     : null,
                 'passing_score' => $validated['passing_score'],
                 'use_partial_credit' => $validated['use_partial_credit'] ?? false,
+                'use_custom_layout' => $validated['use_custom_layout'] ?? false,
+                'options_count' => $validated['options_count'] ?? 5,
+                'layout_shape' => $validated['layout_shape'] ?? 'lengthwise_full',
                 'sync_status' => 'synced',
                 'updated_at' => now(),
             ],
@@ -99,6 +105,9 @@ class SubjectController extends Controller
             'exam_date' => ['nullable', 'date'],
             'passing_score' => ['sometimes', 'integer'],
             'use_partial_credit' => ['nullable', 'boolean'],
+            'use_custom_layout' => ['nullable', 'boolean'],
+            'options_count' => ['nullable', 'integer', 'min:2', 'max:5'],
+            'layout_shape' => ['nullable', 'string', 'max:64'],
         ]);
 
         if (isset($validated['exam_date'])) {

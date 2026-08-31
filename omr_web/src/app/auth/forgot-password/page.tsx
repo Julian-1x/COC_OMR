@@ -7,12 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured } from "@/lib/api/env";
 import { workspaceName } from "@/lib/theme";
+import { TurnstileField } from "@/components/auth/turnstile-field";
+
+const CAPTCHA_SITE_KEY =
+  process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY?.trim() ?? "";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -28,7 +33,10 @@ export default function ForgotPasswordPage() {
       const response = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({
+          email,
+          captcha_token: captchaToken ?? undefined,
+        }),
       });
 
       const payload = (await response.json()) as { error?: string; ok?: boolean };
@@ -74,6 +82,10 @@ export default function ForgotPasswordPage() {
               required
             />
           </div>
+
+          {CAPTCHA_SITE_KEY ? (
+            <TurnstileField siteKey={CAPTCHA_SITE_KEY} onToken={setCaptchaToken} />
+          ) : null}
 
           {notice ? (
             <p className="mb-3 rounded-xl bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">

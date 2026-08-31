@@ -262,6 +262,29 @@ class LocalAuthService {
     );
   }
 
+  /// Replaces the offline PIN after the teacher proves identity online
+  /// (forgot PIN) or after verifying the current PIN in Settings.
+  Future<void> updatePin(String pin) async {
+    _validatePin(pin);
+    final prefs = await SharedPreferences.getInstance();
+    if (!prefs.containsKey(_pinHashKey) || !prefs.containsKey(_pinSaltKey)) {
+      throw StateError('No local profile is set up yet.');
+    }
+
+    final salt = _createSalt();
+    await prefs.setString(_pinSaltKey, salt);
+    await prefs.setString(_pinHashKey, _hashPin(pin, salt));
+    await prefs.setString(
+      _lastUnlockedAtKey,
+      DateTime.now().toIso8601String(),
+    );
+    await prefs.remove(_failedAttemptsKey);
+    await prefs.remove(_cumulativeFailedAttemptsKey);
+    await prefs.remove(_cooldownUntilKey);
+    _isUnlocked = true;
+    _activeCloudUserId = prefs.getString(_cloudUserIdKey);
+  }
+
   Future<void> lock() async {
     _isUnlocked = false;
     _activeCloudUserId = null;

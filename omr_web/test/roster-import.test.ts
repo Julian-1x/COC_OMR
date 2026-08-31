@@ -84,7 +84,7 @@ describe("roster import official Class_List_Report format", () => {
     expect(preview.rows.length).toBe(42);
     expect(preview.rows[0]).toMatchObject({
       schoolId: "02-2324-01002",
-      name: "ADAJAR, JAYCKOUZZ EMANN DAGAWASAN",
+      name: "Jayckouzz Emann Dagawasan Adajar",
       section: "COC-FA-ME2-02",
     });
   });

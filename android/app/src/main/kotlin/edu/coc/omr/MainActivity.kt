@@ -305,47 +305,29 @@ class MainActivity: FlutterActivity() {
                                 val turboMode = args?.get("turboMode") as? Boolean ?: false
                                 val sessionLayoutRaw = args?.get("sessionLayout") as? Map<*, *>
 
-                                fun readSessionLayout(raw: Map<*, *>?): OmrProcessor.QrLayoutMetadata? {
-                                    if (raw == null || raw.isEmpty()) return null
-                                    fun readDouble(key: String): Double {
-                                        val value = raw[key] ?: return 0.0
-                                        return when (value) {
-                                            is Number -> value.toDouble()
-                                            else -> value.toString().toDoubleOrNull() ?: 0.0
-                                        }
+                                // Full geometry parse (content block, timing, OMR ID, calibration…)
+                                // — same engine as frozen templates, values from the subject's layout.
+                                val parsedSession = omrProcessor.parseSessionLayoutFromMap(sessionLayoutRaw)
+                                val rawWantsCustom = when (val v = sessionLayoutRaw?.get("isCustom")) {
+                                    is Boolean -> v
+                                    is Number -> v.toInt() != 0
+                                    else -> sessionLayoutRaw?.get("layoutMode")?.toString() == "custom"
+                                }
+                                if (rawWantsCustom && parsedSession == null && sessionLayoutRaw != null) {
+                                    isProcessing.set(false)
+                                    withContext(Dispatchers.Main) {
+                                        result.error(
+                                            "CUSTOM_LAYOUT_REQUIRED",
+                                            "Custom sheet layout could not be locked. Open Scan from this subject again.",
+                                            null,
+                                        )
                                     }
-                                    fun readInt(key: String): Int {
-                                        val value = raw[key] ?: return 0
-                                        return when (value) {
-                                            is Number -> value.toInt()
-                                            else -> value.toString().toIntOrNull() ?: 0
-                                        }
-                                    }
-                                    val templateId = raw["template"]?.toString()?.trim().orEmpty()
-                                    val columns = readInt("cols")
-                                    val rows = readInt("rows")
-                                    val rowHeight = readDouble("rowHeight")
-                                    if (templateId.isEmpty() || columns <= 0 || rows <= 0 || rowHeight <= 0.0) {
-                                        return null
-                                    }
-                                    val columnWidth = readDouble("colWidth")
-                                    val bubbleSpacingX = readDouble("bubbleSpacingX")
-                                    return OmrProcessor.QrLayoutMetadata(
-                                        templateId = templateId,
-                                        columns = columns,
-                                        rows = rows,
-                                        gridTop = readDouble("gridTop").takeIf { it > 0.0 } ?: 276.0,
-                                        gridBottom = readDouble("gridBottom").takeIf { it > 0.0 } ?: 770.0,
-                                        rowHeight = rowHeight,
-                                        columnWidth = columnWidth.takeIf { it > 0.0 }
-                                            ?: (539.0 / columns),
-                                        bubbleSpacingX = bubbleSpacingX.takeIf { it > 0.0 } ?: 17.0,
-                                    )
+                                    return@launch
                                 }
 
                                 val config = OmrProcessor.ProcessConfig(
                                     totalQuestions = totalQuestions,
-                                    sessionLayout = readSessionLayout(sessionLayoutRaw),
+                                    sessionLayout = parsedSession,
                                     turboMode = turboMode,
                                 )
 

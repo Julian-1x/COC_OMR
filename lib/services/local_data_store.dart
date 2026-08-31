@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
@@ -23,7 +24,7 @@ class LocalDataStore {
   static final LocalDataStore instance = LocalDataStore._();
 
   static const String _databaseName = 'omr_app.db';
-  static const int _databaseVersion = 6;
+  static const int _databaseVersion = 9;
   static const String _legacyFileName = 'omr_offline_store.json';
   static const String _safetyBackupFolderName = 'safety_backups';
   static const int _maxSafetyBackups = 20;
@@ -73,6 +74,9 @@ class LocalDataStore {
         exportRecords: const <ExportRecord>[],
         answerKeyTemplates: List<AnswerKeyTemplate>.from(
           globalAnswerKeyTemplates,
+        ),
+        customSheetLayouts: List<CustomSheetLayout>.from(
+          globalCustomSheetLayouts,
         ),
         omrCounter: nextOmrIdValue,
         subjectCounter: nextSubjectCounterValue,
@@ -133,6 +137,7 @@ class LocalDataStore {
             deadlines: combined.deadlines,
             exportRecords: combined.exportRecords,
             answerKeyTemplates: combined.answerKeyTemplates,
+            customSheetLayouts: combined.customSheetLayouts,
             omrCounter: _maxCounter(allLocal.omrCounter, snapshot.omrCounter),
             subjectCounter:
                 _maxCounter(allLocal.subjectCounter, snapshot.subjectCounter),
@@ -1440,6 +1445,77 @@ class LocalDataStore {
     globalAnswerKeyTemplates[index] = updatedTemplate;
   }
 
+  Future<void> upsertCustomSheetLayout(CustomSheetLayout layout) async {
+    if (kIsWeb) {
+      _upsertCustomSheetLayoutInMemory(layout);
+      return;
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.insert(
+        'custom_sheet_layouts',
+        _customSheetLayoutRow(layout),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
+
+    _upsertCustomSheetLayoutInMemory(layout);
+  }
+
+  Future<void> deleteCustomSheetLayout(String layoutId) async {
+    if (kIsWeb) {
+      globalCustomSheetLayouts.removeWhere((entry) => entry.id == layoutId);
+      return;
+    }
+
+    await _createSafetyBackupIfNeeded(action: 'delete_custom_layout_$layoutId');
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.delete(
+        'custom_sheet_layouts',
+        where: 'id = ?',
+        whereArgs: <Object?>[layoutId],
+      );
+    });
+
+    globalCustomSheetLayouts.removeWhere((entry) => entry.id == layoutId);
+  }
+
+  Future<void> markCustomSheetLayoutUsed({
+    required String layoutId,
+    required DateTime usedAt,
+  }) async {
+    final index = globalCustomSheetLayouts.indexWhere(
+      (entry) => entry.id == layoutId,
+    );
+    if (index == -1) {
+      return;
+    }
+
+    final updated = globalCustomSheetLayouts[index].copyWith(
+      lastUsedAt: usedAt,
+    );
+
+    if (kIsWeb) {
+      globalCustomSheetLayouts[index] = updated;
+      return;
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.update(
+        'custom_sheet_layouts',
+        <String, Object?>{'last_used_at': usedAt.toIso8601String()},
+        where: 'id = ?',
+        whereArgs: <Object?>[layoutId],
+      );
+    });
+
+    globalCustomSheetLayouts[index] = updated;
+  }
+
   Future<void> upsertDeadline(Deadline deadline) async {
     if (kIsWeb) {
       _upsertDeadlineInMemory(deadline);
@@ -1924,6 +2000,7 @@ class LocalDataStore {
           deadlines: merged.deadlines,
           exportRecords: local.exportRecords,
           answerKeyTemplates: local.answerKeyTemplates,
+          customSheetLayouts: local.customSheetLayouts,
           omrCounter: local.omrCounter,
           subjectCounter: local.subjectCounter,
           sheetCounter: local.sheetCounter,
@@ -1947,6 +2024,7 @@ class LocalDataStore {
         deadlines: const <Deadline>[],
         exportRecords: const <ExportRecord>[],
         answerKeyTemplates: const <AnswerKeyTemplate>[],
+        customSheetLayouts: const <CustomSheetLayout>[],
         omrCounter: 1,
         subjectCounter: 1,
         sheetCounter: 1,
@@ -1979,6 +2057,7 @@ class LocalDataStore {
             deadlines: merged.deadlines,
             exportRecords: allLocal.exportRecords,
             answerKeyTemplates: allLocal.answerKeyTemplates,
+            customSheetLayouts: allLocal.customSheetLayouts,
             omrCounter: allLocal.omrCounter,
             subjectCounter: allLocal.subjectCounter,
             sheetCounter: allLocal.sheetCounter,
@@ -2107,6 +2186,15 @@ class LocalDataStore {
         if (oldVersion < 6) {
           await _upgradeToV6(db);
         }
+        if (oldVersion < 7) {
+          await _upgradeToV7(db);
+        }
+        if (oldVersion < 8) {
+          await _upgradeToV8(db);
+        }
+        if (oldVersion < 9) {
+          await _upgradeToV9(db);
+        }
       },
     );
 
@@ -2163,6 +2251,12 @@ class LocalDataStore {
         exam_date TEXT,
         passing_score INTEGER NOT NULL,
         use_partial_credit INTEGER NOT NULL DEFAULT 0,
+        use_custom_layout INTEGER NOT NULL DEFAULT 0,
+        options_count INTEGER NOT NULL DEFAULT 5,
+        layout_shape TEXT NOT NULL DEFAULT 'lengthwise_full',
+        custom_layout_id TEXT,
+        custom_grid_columns INTEGER,
+        custom_grid_rows INTEGER,
         owner_teacher_id TEXT,
         cloud_id TEXT,
         sync_status TEXT NOT NULL DEFAULT 'pending',
@@ -2170,6 +2264,22 @@ class LocalDataStore {
       )
     ''');
     await db.execute('CREATE INDEX idx_subjects_name ON subjects(name)');
+
+    await db.execute('''
+      CREATE TABLE custom_sheet_layouts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        total_questions INTEGER NOT NULL,
+        options_count INTEGER NOT NULL,
+        layout_shape TEXT NOT NULL,
+        grid_columns INTEGER NOT NULL,
+        grid_rows INTEGER NOT NULL,
+        input_mode TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+      )
+    ''');
 
     await db.execute('''
       CREATE TABLE scan_results (
@@ -2322,6 +2432,48 @@ class LocalDataStore {
     await _addColumnIfMissing(db, 'sections', 'archived_at TEXT');
   }
 
+  Future<void> _upgradeToV7(Database db) async {
+    await _addColumnIfMissing(
+      db,
+      'subjects',
+      'use_custom_layout INTEGER NOT NULL DEFAULT 0',
+    );
+    await _addColumnIfMissing(
+      db,
+      'subjects',
+      'options_count INTEGER NOT NULL DEFAULT 5',
+    );
+    await _addColumnIfMissing(
+      db,
+      'subjects',
+      "layout_shape TEXT NOT NULL DEFAULT 'lengthwise_full'",
+    );
+  }
+
+  Future<void> _upgradeToV8(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS custom_sheet_layouts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        total_questions INTEGER NOT NULL,
+        options_count INTEGER NOT NULL,
+        layout_shape TEXT NOT NULL,
+        grid_columns INTEGER NOT NULL,
+        grid_rows INTEGER NOT NULL,
+        input_mode TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+      )
+    ''');
+    await _addColumnIfMissing(db, 'subjects', 'custom_layout_id TEXT');
+  }
+
+  Future<void> _upgradeToV9(Database db) async {
+    await _addColumnIfMissing(db, 'subjects', 'custom_grid_columns INTEGER');
+    await _addColumnIfMissing(db, 'subjects', 'custom_grid_rows INTEGER');
+  }
+
   Future<void> _upgradeToV5(Database db) async {
     final snapshot = await _readSnapshotFromDatabase(
       db,
@@ -2418,9 +2570,11 @@ class LocalDataStore {
         'scanResults': globalScanResults.map((e) => e.toJson()).toList(),
         'deadlines': globalDeadlines.map((e) => e.toJson()).toList(),
         'exportRecords': globalExportRecords.map((e) => e.toJson()).toList(),
-        'answerKeyTemplates':
-            globalAnswerKeyTemplates.map((e) => e.toJson()).toList(),
-        'omrCounter': nextOmrIdValue,
+      'answerKeyTemplates':
+          globalAnswerKeyTemplates.map((e) => e.toJson()).toList(),
+      'customSheetLayouts':
+          globalCustomSheetLayouts.map((e) => e.toJson()).toList(),
+      'omrCounter': nextOmrIdValue,
         'subjectCounter': nextSubjectCounterValue,
         'sheetCounter': nextSheetCounterValue,
       };
@@ -2507,6 +2661,7 @@ class LocalDataStore {
     await executor.delete('deadlines');
     await executor.delete('export_records');
     await executor.delete('answer_key_templates');
+    await executor.delete('custom_sheet_layouts');
     await executor.delete('subjects');
     await executor.delete('students');
     await executor.delete('sections');
@@ -2593,6 +2748,16 @@ class LocalDataStore {
     }
     await templatesBatch.commit(noResult: true);
 
+    final layoutsBatch = executor.batch();
+    for (final layout in snapshot.customSheetLayouts) {
+      layoutsBatch.insert(
+        'custom_sheet_layouts',
+        _customSheetLayoutRow(layout),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    await layoutsBatch.commit(noResult: true);
+
     final metaBatch = executor.batch();
     metaBatch.insert(
       'app_meta',
@@ -2673,6 +2838,10 @@ class LocalDataStore {
       'answer_key_templates',
       orderBy: 'created_at ASC, id ASC',
     );
+    final layoutRows = await database.query(
+      'custom_sheet_layouts',
+      orderBy: 'created_at ASC, id ASC',
+    );
     final metaRows = await database.query('app_meta');
 
     final meta = <String, String>{
@@ -2715,6 +2884,11 @@ class LocalDataStore {
         templatesRows,
         _answerKeyTemplateFromRow,
         label: 'answer key template',
+      ),
+      customSheetLayouts: _safeMapRows(
+        layoutRows,
+        _customSheetLayoutFromRow,
+        label: 'custom sheet layout',
       ),
       omrCounter: int.tryParse(meta['omrCounter'] ?? '') ?? 1,
       subjectCounter: int.tryParse(meta['subjectCounter'] ?? '') ?? 1,
@@ -2761,6 +2935,7 @@ class LocalDataStore {
       'scan_results',
       'deadlines',
       'answer_key_templates',
+      'custom_sheet_layouts',
       'export_records',
     ];
 
@@ -2900,6 +3075,12 @@ class LocalDataStore {
         'examDate': row['exam_date'],
         'passingScore': _readInt(row['passing_score']),
         'usePartialCredit': row['use_partial_credit'] == 1,
+        'useCustomLayout': row['use_custom_layout'] == 1,
+        'optionsCount': _readInt(row['options_count'], fallback: 5),
+        'layoutShape': row['layout_shape']?.toString() ?? 'lengthwise_full',
+        'customLayoutId': row['custom_layout_id']?.toString(),
+        'customGridColumns': row['custom_grid_columns'] as int?,
+        'customGridRows': row['custom_grid_rows'] as int?,
         'ownerTeacherId': row['owner_teacher_id'],
         'cloudId': row['cloud_id'],
         'syncStatus': row['sync_status'],
@@ -3048,6 +3229,7 @@ class LocalDataStore {
       deadlines: _filterDeadlinesByOwner(snapshot.deadlines),
       exportRecords: snapshot.exportRecords,
       answerKeyTemplates: snapshot.answerKeyTemplates,
+      customSheetLayouts: snapshot.customSheetLayouts,
       omrCounter: snapshot.omrCounter,
       subjectCounter: snapshot.subjectCounter,
       sheetCounter: snapshot.sheetCounter,
@@ -3073,6 +3255,7 @@ class LocalDataStore {
           .toList(),
       exportRecords: const <ExportRecord>[],
       answerKeyTemplates: const <AnswerKeyTemplate>[],
+      customSheetLayouts: const <CustomSheetLayout>[],
       omrCounter: snapshot.omrCounter,
       subjectCounter: snapshot.subjectCounter,
       sheetCounter: snapshot.sheetCounter,
@@ -3094,6 +3277,9 @@ class LocalDataStore {
       answerKeyTemplates: primary.answerKeyTemplates.isEmpty
           ? secondary.answerKeyTemplates
           : primary.answerKeyTemplates,
+      customSheetLayouts: primary.customSheetLayouts.isEmpty
+          ? secondary.customSheetLayouts
+          : primary.customSheetLayouts,
       omrCounter: primary.omrCounter,
       subjectCounter: primary.subjectCounter,
       sheetCounter: primary.sheetCounter,
@@ -3160,6 +3346,7 @@ class LocalDataStore {
       deadlines: snapshot.deadlines.map(restampDeadline).toList(),
       exportRecords: snapshot.exportRecords,
       answerKeyTemplates: snapshot.answerKeyTemplates,
+      customSheetLayouts: snapshot.customSheetLayouts,
       omrCounter: snapshot.omrCounter,
       subjectCounter: snapshot.subjectCounter,
       sheetCounter: snapshot.sheetCounter,
@@ -3360,6 +3547,12 @@ class LocalDataStore {
       'exam_date': subject.examDate?.toIso8601String(),
       'passing_score': subject.passingScore,
       'use_partial_credit': subject.usePartialCredit ? 1 : 0,
+      'use_custom_layout': subject.useCustomLayout ? 1 : 0,
+      'options_count': subject.optionsCount,
+      'layout_shape': subject.layoutShape,
+      'custom_layout_id': subject.customLayoutId,
+      'custom_grid_columns': subject.customGridColumns,
+      'custom_grid_rows': subject.customGridRows,
       ..._syncColumns(
         ownerTeacherId: subject.ownerTeacherId,
         cloudId: subject.cloudId,
@@ -3424,6 +3617,51 @@ class LocalDataStore {
       'created_at': template.createdAt.toIso8601String(),
       'last_used_at': template.lastUsedAt?.toIso8601String(),
     };
+  }
+
+  Map<String, Object?> _customSheetLayoutRow(CustomSheetLayout layout) {
+    return <String, Object?>{
+      'id': layout.id,
+      'name': layout.name,
+      'description': layout.description,
+      'total_questions': layout.totalQuestions,
+      'options_count': layout.optionsCount,
+      'layout_shape': layout.layoutShape,
+      'grid_columns': layout.gridColumns,
+      'grid_rows': layout.gridRows,
+      'input_mode': layout.inputMode.id,
+      'created_at': layout.createdAt.toIso8601String(),
+      'last_used_at': layout.lastUsedAt?.toIso8601String(),
+    };
+  }
+
+  CustomSheetLayout _customSheetLayoutFromRow(Map<String, Object?> row) {
+    return CustomSheetLayout.fromJson(
+      <String, dynamic>{
+        'id': row['id'],
+        'name': row['name'],
+        'description': row['description'],
+        'totalQuestions': _readInt(row['total_questions'], fallback: 50),
+        'optionsCount': _readInt(row['options_count'], fallback: 5),
+        'layoutShape': row['layout_shape']?.toString() ?? 'lengthwise_full',
+        'gridColumns': _readInt(row['grid_columns'], fallback: 5),
+        'gridRows': _readInt(row['grid_rows'], fallback: 10),
+        'inputMode': row['input_mode']?.toString(),
+        'createdAt': row['created_at'],
+        'lastUsedAt': row['last_used_at'],
+      },
+    );
+  }
+
+  void _upsertCustomSheetLayoutInMemory(CustomSheetLayout layout) {
+    final index = globalCustomSheetLayouts.indexWhere(
+      (entry) => entry.id == layout.id,
+    );
+    if (index == -1) {
+      globalCustomSheetLayouts.add(layout);
+    } else {
+      globalCustomSheetLayouts[index] = layout;
+    }
   }
 
   Map<String, Object?> _exportRecordRow(ExportRecord record) {
@@ -3751,6 +3989,9 @@ class LocalDataStore {
       answerKeyTemplates: globalAnswerKeyTemplates
           .map((entry) => AnswerKeyTemplate.fromJson(entry.toJson()))
           .toList(),
+      customSheetLayouts: globalCustomSheetLayouts
+          .map((entry) => CustomSheetLayout.fromJson(entry.toJson()))
+          .toList(),
       omrCounter: nextOmrIdValue,
       subjectCounter: nextSubjectCounterValue,
       sheetCounter: nextSheetCounterValue,
@@ -3785,6 +4026,13 @@ class LocalDataStore {
                     AnswerKeyTemplate.fromJson(_asStringDynamicMap(entry)),
               )
               .toList(),
+      customSheetLayouts:
+          (decoded['customSheetLayouts'] as List? ?? const <dynamic>[])
+              .map(
+                (entry) =>
+                    CustomSheetLayout.fromJson(_asStringDynamicMap(entry)),
+              )
+              .toList(),
       omrCounter: _readCounter(decoded['omrCounter']),
       subjectCounter: _readCounter(decoded['subjectCounter']),
       sheetCounter: _readCounter(decoded['sheetCounter']),
@@ -3799,6 +4047,7 @@ class LocalDataStore {
     globalDeadlines = snapshot.deadlines;
     globalExportRecords = snapshot.exportRecords;
     globalAnswerKeyTemplates = snapshot.answerKeyTemplates;
+    globalCustomSheetLayouts = snapshot.customSheetLayouts;
 
     restoreCounters(
       omrCounter: snapshot.omrCounter,
@@ -3889,6 +4138,7 @@ class _AppSnapshot {
     required this.deadlines,
     required this.exportRecords,
     required this.answerKeyTemplates,
+    required this.customSheetLayouts,
     required this.omrCounter,
     required this.subjectCounter,
     required this.sheetCounter,
@@ -3901,6 +4151,7 @@ class _AppSnapshot {
   final List<Deadline> deadlines;
   final List<ExportRecord> exportRecords;
   final List<AnswerKeyTemplate> answerKeyTemplates;
+  final List<CustomSheetLayout> customSheetLayouts;
   final int omrCounter;
   final int subjectCounter;
   final int sheetCounter;

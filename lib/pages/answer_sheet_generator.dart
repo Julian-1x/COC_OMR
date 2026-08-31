@@ -1,11 +1,15 @@
 import 'dart:convert';
+import 'dart:math' show min;
 
 import 'package:barcode/barcode.dart';
+import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/scanner_session_layout.dart';
+import 'package:omr_app/theme/app_colors.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -122,34 +126,136 @@ class AnswerSheetGenerator {
     );
   }
 
+  /// Block printing Custom sheets that do not fit — wrong density risks bad grades.
+  static void _ensureCustomLayoutPrintable(Subject subject) {
+    if (!subject.useCustomLayout) {
+      return;
+    }
+    final examReadyError =
+        ScannerSessionLayout.examReadyScanErrorForSubject(subject);
+    if (examReadyError != null) {
+      throw Exception(examReadyError);
+    }
+    final profile = subject.layoutProfile;
+    if (profile.itemCount != subject.totalQuestions) {
+      throw Exception(
+        'Custom sheet question count does not match a scannable layout. '
+        'Pick the layout again under Print Sheets before printing.',
+      );
+    }
+    final fit = subject.customGridColumns != null && subject.customGridRows != null
+        ? OmrLayoutProfile.tryComputeExplicitGrid(
+            columns: subject.customGridColumns!,
+            rows: subject.customGridRows!,
+            optionsCount: subject.optionsCount,
+            form: subject.layoutForm,
+          )
+        : OmrLayoutProfile.tryCompute(
+            itemCount: subject.totalQuestions,
+            optionsCount: subject.optionsCount,
+            form: subject.layoutForm,
+          );
+    if (!fit.isOk) {
+      throw Exception(
+        fit.errorMessage ??
+            'This custom sheet layout does not fit. '
+                'Change the saved layout or question count before printing.',
+      );
+    }
+  }
+
+  static PdfPageFormat _printPageFormat(OmrSheetGeometry geometry) =>
+      PdfPageFormat(geometry.pageWidth, geometry.pageHeight);
+
+  static Future<bool> _confirmPrintOrientation(
+    BuildContext context,
+    OmrLayoutProfile profile,
+  ) async {
+    if (!profile.shouldConfirmPrintOrientation) {
+      return true;
+    }
+    final orientation = profile.geometry.printOrientationLabel;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Print in $orientation'),
+        content: Text(profile.printOrientationReminder),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.brandGreen,
+            ),
+            child: const Text('Continue to print'),
+          ),
+        ],
+      ),
+    );
+    return proceed ?? false;
+  }
+
+  static Future<void> _layoutPdfForProfile({
+    required OmrLayoutProfile profile,
+    required LayoutCallback onLayout,
+    String name = 'Document',
+    BuildContext? printContext,
+  }) async {
+    if (printContext != null && printContext.mounted) {
+      final ok = await _confirmPrintOrientation(printContext, profile);
+      if (!ok) {
+        return;
+      }
+    }
+    final format = _printPageFormat(profile.geometry);
+    await Printing.layoutPdf(
+      onLayout: onLayout,
+      name: name,
+      format: format,
+    );
+  }
+
   /// Generate single OMR sheet (original)
   static Future<void> generateAndPrint({
     required Subject subject,
     String? sectionName,
+    BuildContext? printContext,
+    bool tileMultiUp = true,
   }) async {
+    _ensureCustomLayoutPrintable(subject);
     final pdf = pw.Document();
     final totalQuestions =
         subject.totalQuestions > 0 ? subject.totalQuestions : 50;
     final qrPayload = _buildSheetQrPayload(subject, sectionName: sectionName);
-    final template = OmrTemplateSpec.forItemCount(totalQuestions);
+    final profile = subject.layoutProfile;
+    final template = profile.grid;
+    final optionsCount = profile.optionsCount;
+    final g = profile.geometry;
 
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(0),
-        build: (context) => pw.Stack(
-          children: [
-            // Corner markers and timing marks (absolute positioned)
-            _cornerMarkers(totalQuestions),
-            // All content using absolute positions from OmrPageConstants
-            ..._buildAbsoluteLayout(
-                subject, qrPayload, totalQuestions, template),
-          ],
+    _appendTiledPages(
+      pdf: pdf,
+      profile: profile,
+      tileMultiUp: tileMultiUp,
+      sheetBodies: [
+        _buildAbsoluteLayout(
+          subject,
+          qrPayload,
+          totalQuestions,
+          template,
+          g,
+          optionsCount: optionsCount,
         ),
-      ),
+      ],
     );
 
-    await Printing.layoutPdf(onLayout: (_) async => pdf.save());
+    await _layoutPdfForProfile(
+      profile: profile,
+      printContext: printContext,
+      onLayout: (_) async => pdf.save(),
+    );
     await LocalDataStore.instance.persistCountersNow();
   }
 
@@ -158,40 +264,58 @@ class AnswerSheetGenerator {
     required Subject subject,
     required String sectionName,
     required int copies,
+    BuildContext? printContext,
+    bool tileMultiUp = true,
   }) async {
+    _ensureCustomLayoutPrintable(subject);
     final safeCopies = copies < 1 ? 1 : copies;
     final pdf = pw.Document();
     final totalQuestions =
         subject.totalQuestions > 0 ? subject.totalQuestions : 50;
+    final profile = subject.layoutProfile;
+    final template = profile.grid;
+    final optionsCount = profile.optionsCount;
+    final g = profile.geometry;
 
+    final sheetBodies = <List<pw.Widget>>[];
     for (var i = 0; i < safeCopies; i++) {
       final qrPayload = _buildSheetQrPayload(subject, sectionName: sectionName);
-      final template = OmrTemplateSpec.forItemCount(totalQuestions);
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.all(0),
-          build: (context) => pw.Stack(
-            children: [
-              _cornerMarkers(totalQuestions),
-              ..._buildAbsoluteLayout(
-                  subject, qrPayload, totalQuestions, template),
-            ],
-          ),
+      sheetBodies.add(
+        _buildAbsoluteLayout(
+          subject,
+          qrPayload,
+          totalQuestions,
+          template,
+          g,
+          optionsCount: optionsCount,
         ),
       );
     }
 
-    await Printing.layoutPdf(
-      onLayout: (_) async => pdf.save(),
+    _appendTiledPages(
+      pdf: pdf,
+      profile: profile,
+      tileMultiUp: tileMultiUp,
+      sheetBodies: sheetBodies,
+    );
+
+    await _layoutPdfForProfile(
+      profile: profile,
+      printContext: printContext,
       name: '${subject.displayName}_${sectionName}_${safeCopies}copies.pdf',
+      onLayout: (_) async => pdf.save(),
     );
     await LocalDataStore.instance.persistCountersNow();
   }
 
-  /// NEW: Batch generate class set (1 sheet per student, pre-filled OMR)
-  static Future<void> batchGenerate(
-      {required Subject subject, required String sectionName}) async {
+  /// Batch generate class set (1 sheet per student, pre-filled OMR)
+  static Future<void> batchGenerate({
+    required Subject subject,
+    required String sectionName,
+    BuildContext? printContext,
+    bool tileMultiUp = true,
+  }) async {
+    _ensureCustomLayoutPrintable(subject);
     final sectionStudents = globalStudentDatabase
         .where((s) =>
             s.section.trim().toUpperCase() == sectionName.trim().toUpperCase())
@@ -204,32 +328,145 @@ class AnswerSheetGenerator {
     final pdf = pw.Document();
     final totalQuestions =
         subject.totalQuestions > 0 ? subject.totalQuestions : 50;
+    final profile = subject.layoutProfile;
+    final template = profile.grid;
+    final optionsCount = profile.optionsCount;
+    final g = profile.geometry;
 
+    final sheetBodies = <List<pw.Widget>>[];
     for (final student in sectionStudents) {
       final qrPayload = _buildSheetQrPayload(subject, sectionName: sectionName);
-      final template = OmrTemplateSpec.forItemCount(totalQuestions);
+      sheetBodies.add(
+        _buildAbsoluteLayoutBatch(
+          subject,
+          qrPayload,
+          totalQuestions,
+          template,
+          student,
+          sectionName,
+          g,
+          optionsCount: optionsCount,
+        ),
+      );
+    }
+
+    _appendTiledPages(
+      pdf: pdf,
+      profile: profile,
+      tileMultiUp: tileMultiUp,
+      sheetBodies: sheetBodies,
+    );
+
+    await _layoutPdfForProfile(
+      profile: profile,
+      printContext: printContext,
+      name:
+          '${subject.displayName}_${sectionName}_${sectionStudents.length}sheets.pdf',
+      onLayout: (_) async => pdf.save(),
+    );
+    await LocalDataStore.instance.persistCountersNow();
+  }
+
+  /// Pack [sheetBodies] onto PDF pages. Each body is one sheet (no corner marks).
+  static void _appendTiledPages({
+    required pw.Document pdf,
+    required OmrLayoutProfile profile,
+    required List<List<pw.Widget>> sheetBodies,
+    required bool tileMultiUp,
+  }) {
+    if (sheetBodies.isEmpty) {
+      return;
+    }
+
+    final g = profile.geometry;
+    final tiling =
+        tileMultiUp ? OmrSheetTiling.forGeometry(g) : null;
+    final perPage = tiling?.sheetsPerPage ?? 1;
+    final pageFormat = PdfPageFormat(g.pageWidth, g.pageHeight);
+
+    for (var start = 0; start < sheetBodies.length; start += perPage) {
+      final end = min(start + perPage, sheetBodies.length);
+      final chunk = sheetBodies.sublist(start, end);
 
       pdf.addPage(
         pw.Page(
-          pageFormat: PdfPageFormat.a4,
+          pageFormat: pageFormat,
           margin: const pw.EdgeInsets.all(0),
           build: (context) => pw.Stack(
             children: [
-              _cornerMarkers(totalQuestions),
-              ..._buildAbsoluteLayoutBatch(subject, qrPayload, totalQuestions,
-                  template, student, sectionName),
+              if (tiling != null) ..._buildTileCutGuides(tiling, g),
+              for (var slot = 0; slot < chunk.length; slot++)
+                _positionedSheetTile(
+                  profile: profile,
+                  dx: tiling?.tileOffsetX(slot, g) ?? 0,
+                  dy: tiling?.tileOffsetY(slot, g) ?? 0,
+                  body: chunk[slot],
+                ),
             ],
           ),
         ),
       );
     }
+  }
 
-    await Printing.layoutPdf(
-      onLayout: (_) async => pdf.save(),
-      name:
-          '${subject.displayName}_${sectionName}_${sectionStudents.length}sheets.pdf',
+  static pw.Widget _positionedSheetTile({
+    required OmrLayoutProfile profile,
+    required double dx,
+    required double dy,
+    required List<pw.Widget> body,
+  }) {
+    return pw.Positioned(
+      left: dx,
+      top: dy,
+      child: pw.Stack(
+        children: [
+          _cornerMarkers(profile),
+          ...body,
+        ],
+      ),
     );
-    await LocalDataStore.instance.persistCountersNow();
+  }
+
+  /// Light guides between tiled sheets — cosmetic only; marks stay on each tile.
+  static List<pw.Widget> _buildTileCutGuides(
+    OmrSheetTiling tiling,
+    OmrSheetGeometry g,
+  ) {
+    const guideColor = PdfColors.grey300;
+    const guideWidth = 0.6;
+    final guides = <pw.Widget>[];
+    final blockW = g.contentBlockWidth;
+    final blockH = g.contentBlockHeight;
+
+    for (var column = 1; column < tiling.columns; column++) {
+      final x = column * blockW;
+      guides.add(
+        pw.Positioned(
+          left: x - guideWidth / 2,
+          top: 0,
+          child: pw.Container(
+            width: guideWidth,
+            height: g.pageHeight,
+            color: guideColor,
+          ),
+        ),
+      );
+    }
+    for (var row = 1; row < tiling.rows; row++) {
+      final y = row * blockH;
+      guides.add(
+        pw.Positioned(
+          left: 0,
+          top: y - guideWidth / 2,
+          child: pw.Container(
+            width: g.pageWidth,
+            height: guideWidth,
+            color: guideColor,
+          ),
+        ),
+      );
+    }
+    return guides;
   }
 
   static SubjectSheetQrPayload _buildSheetQrPayload(
@@ -309,90 +546,108 @@ class AnswerSheetGenerator {
     );
   }
 
-  static pw.Widget _cornerMarkers(int totalQuestions) {
-    const size = OmrPageConstants.cornerMarkerSize;
-    const offset = OmrPageConstants.cornerMarkerOffset;
+  /// Content-block bounds for registration marks.
+  /// Full-page presets hug the PDF page; half/quarter hug the used block only.
+  static List<double> _usedBlock(OmrSheetGeometry g) {
+    return [0.0, 0.0, g.contentBlockWidth, g.contentBlockHeight];
+  }
+
+  static pw.Widget _cornerMarkers(OmrLayoutProfile profile) {
+    final g = profile.geometry;
+    final size = g.cornerMarkerSize;
+    final offset = g.cornerMarkerOffset;
+    final block = _usedBlock(g);
+    final usedLeft = block[0];
+    final usedTop = block[1];
+    final usedRight = block[2];
+    final usedBottom = block[3];
     return pw.Stack(
       children: [
-        // Four corner markers for alignment
+        // Four corner markers at content-block corners (not full page for half/quarter)
         pw.Positioned(
-          left: offset,
-          top: offset,
+          left: usedLeft + offset,
+          top: usedTop + offset,
           child: _cornerBox(size),
         ),
         pw.Positioned(
-          right: offset,
-          top: offset,
+          left: usedRight - offset - size,
+          top: usedTop + offset,
           child: _cornerBox(size),
         ),
         pw.Positioned(
-          left: offset,
-          bottom: offset,
+          left: usedLeft + offset,
+          top: usedBottom - offset - size,
           child: _cornerBox(size),
         ),
         pw.Positioned(
-          right: offset,
-          bottom: offset,
+          left: usedRight - offset - size,
+          top: usedBottom - offset - size,
           child: _cornerBox(size),
         ),
-        // Scanner registration marks — positions are fixed for every template.
-        // Do not move/resize without updating OmrProcessor + reprinting sheets.
-        ..._buildTimingMarks(),
+        // Scanner registration marks — positions come from layout geometry.
+        ..._buildTimingMarks(g),
         // Row reference marks for answer grid alignment validation
-        ..._buildRowMarks(totalQuestions),
+        ..._buildRowMarks(profile),
       ],
     );
   }
 
-  /// Build all page content using absolute positioning from OmrPageConstants
-  /// This ensures PDF positions exactly match what the scanner expects
+  /// Build all page content using absolute positioning from layout geometry.
+  /// This ensures PDF positions exactly match what the scanner expects.
   static List<pw.Widget> _buildAbsoluteLayout(
     Subject subject,
     SubjectSheetQrPayload qrPayload,
     int totalQuestions,
     OmrTemplateSpec template,
-  ) {
+    OmrSheetGeometry g, {
+    int optionsCount = OmrPageConstants.answerOptionsCount,
+  }) {
     return [
       // Header section at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.headerTop,
+        left: g.marginLeft,
+        top: g.headerTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
-          height: OmrPageConstants.headerHeight,
-          child: _headerSection(subject, qrPayload),
+          width: g.answerGridWidth,
+          height: g.headerHeight,
+          child: _headerSection(subject, qrPayload, g),
         ),
       ),
       // OMR ID section at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.omrIdTop,
+        left: g.marginLeft,
+        top: g.omrIdTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
-          height: OmrPageConstants.omrIdHeight,
-          child: _idSection(),
+          width: g.answerGridWidth,
+          height: g.omrIdHeight,
+          child: _idSection(g),
         ),
       ),
       // Answer grid at fixed position - this is the critical section
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.answerGridTop,
+        left: g.answerGridLeft,
+        top: g.answerGridTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.answerGridWidth,
-          height: OmrPageConstants.answerGridHeight,
-          child: _answersSectionAbsolute(totalQuestions, template),
+          width: g.answerGridWidth,
+          height: g.answerGridHeight,
+          child: _answersSectionAbsolute(
+            totalQuestions,
+            template,
+            g,
+            optionsCount: optionsCount,
+          ),
         ),
       ),
       // Footer/calibration section at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.answerRowsBottom,
+        left: g.marginLeft,
+        top: g.answerRowsBottom,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
+          width: g.answerGridWidth,
           child: _footerNotes(subject, qrPayload),
         ),
       ),
-      ..._buildCalibrationMarks(),
+      ..._buildCalibrationMarks(g),
     ];
   }
 
@@ -404,57 +659,69 @@ class AnswerSheetGenerator {
     OmrTemplateSpec template,
     Student student,
     String sectionName,
-  ) {
+    OmrSheetGeometry g, {
+    int optionsCount = OmrPageConstants.answerOptionsCount,
+  }) {
     return [
       // Header section with student info at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.headerTop,
+        left: g.marginLeft,
+        top: g.headerTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
-          height: OmrPageConstants.headerHeight,
-          child: _headerSectionBatch(subject, qrPayload, student, sectionName),
+          width: g.answerGridWidth,
+          height: g.headerHeight,
+          child: _headerSectionBatch(
+              subject, qrPayload, student, sectionName, g),
         ),
       ),
       // Pre-filled OMR ID section at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.omrIdTop,
+        left: g.marginLeft,
+        top: g.omrIdTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
-          height: OmrPageConstants.omrIdHeight,
-          child: _idSectionPreFilled(student.omrId),
+          width: g.answerGridWidth,
+          height: g.omrIdHeight,
+          child: _idSectionPreFilled(student.omrId, g),
         ),
       ),
       // Answer grid at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.answerGridTop,
+        left: g.answerGridLeft,
+        top: g.answerGridTop,
         child: pw.SizedBox(
-          width: OmrPageConstants.answerGridWidth,
-          height: OmrPageConstants.answerGridHeight,
-          child: _answersSectionAbsolute(totalQuestions, template),
+          width: g.answerGridWidth,
+          height: g.answerGridHeight,
+          child: _answersSectionAbsolute(
+            totalQuestions,
+            template,
+            g,
+            optionsCount: optionsCount,
+          ),
         ),
       ),
       // Footer/calibration section at fixed position
       pw.Positioned(
-        left: OmrPageConstants.marginLeft,
-        top: OmrPageConstants.answerRowsBottom,
+        left: g.marginLeft,
+        top: g.answerRowsBottom,
         child: pw.SizedBox(
-          width: OmrPageConstants.contentWidth,
+          width: g.answerGridWidth,
           child: _footerNotes(subject, qrPayload),
         ),
       ),
-      ..._buildCalibrationMarks(),
+      ..._buildCalibrationMarks(g),
     ];
   }
 
   /// Answer section using absolute row positioning to match scanner expectations
   static pw.Widget _answersSectionAbsolute(
-      int totalQuestions, OmrTemplateSpec template) {
+    int totalQuestions,
+    OmrTemplateSpec template,
+    OmrSheetGeometry g, {
+    int optionsCount = OmrPageConstants.answerOptionsCount,
+  }) {
     return pw.Container(
-      width: OmrPageConstants.answerGridWidth,
-      height: OmrPageConstants.answerGridHeight,
+      width: g.answerGridWidth,
+      height: g.answerGridHeight,
       decoration: pw.BoxDecoration(
         border: pw.Border.all(
           width: _panelBorderWidth,
@@ -476,19 +743,21 @@ class AnswerSheetGenerator {
               top: 0,
               child: pw.SizedBox(
                 width: template.columnWidth,
-                height: OmrPageConstants.answerGridHeight,
+                height: g.answerGridHeight,
                 child: pw.Stack(
                   children: [
                     _answerOptionIndicatorRow(
                       bubbleSpacingX: template.bubbleSpacingX,
                       columnWidth: template.columnWidth,
+                      g: g,
+                      optionsCount: optionsCount,
                     ),
                     pw.Positioned(
                       left: 0,
-                      top: OmrPageConstants.answerOptionIndicatorHeight,
+                      top: g.answerOptionIndicatorHeight,
                       child: pw.SizedBox(
                         width: template.columnWidth,
-                        height: OmrPageConstants.answerGridContentHeight,
+                        height: g.answerGridContentHeight,
                         child: _questionColumnAbsolute(
                           startQuestion: startQ,
                           endQuestion: endQ,
@@ -496,6 +765,8 @@ class AnswerSheetGenerator {
                           rowHeight: template.rowHeight,
                           bubbleSpacingX: template.bubbleSpacingX,
                           columnWidth: template.columnWidth,
+                          g: g,
+                          optionsCount: optionsCount,
                         ),
                       ),
                     ),
@@ -512,25 +783,25 @@ class AnswerSheetGenerator {
   static pw.Widget _answerOptionIndicatorRow({
     required double bubbleSpacingX,
     required double columnWidth,
+    required OmrSheetGeometry g,
+    int optionsCount = OmrPageConstants.answerOptionsCount,
   }) {
-    final bubbleAreaWidth =
-        bubbleSpacingX * (OmrPageConstants.answerOptionsCount - 1);
-    final usableWidth = columnWidth - (OmrPageConstants.answerColumnInset * 2);
-    final rowContentWidth = OmrPageConstants.questionNumberWidth +
-        OmrPageConstants.answerNumberBubbleGap +
+    final opts = optionsCount.clamp(2, 5);
+    final bubbleAreaWidth = bubbleSpacingX * (opts - 1);
+    final usableWidth = columnWidth - (g.answerColumnInset * 2);
+    final rowContentWidth = g.questionNumberWidth +
+        g.answerNumberBubbleGap +
         bubbleAreaWidth;
-    final rowContentLeft = OmrPageConstants.answerColumnInset +
-        ((usableWidth - rowContentWidth) / 2);
-    final bubbleAreaLeft = rowContentLeft +
-        OmrPageConstants.questionNumberWidth +
-        OmrPageConstants.answerNumberBubbleGap;
+    final rowContentLeft =
+        g.answerColumnInset + ((usableWidth - rowContentWidth) / 2);
+    final bubbleAreaLeft =
+        rowContentLeft + g.questionNumberWidth + g.answerNumberBubbleGap;
 
     return pw.SizedBox(
       width: columnWidth,
-      height: OmrPageConstants.answerOptionIndicatorHeight,
+      height: g.answerOptionIndicatorHeight,
       child: pw.Stack(
-        children:
-            List.generate(OmrPageConstants.answerOptionsCount, (optIndex) {
+        children: List.generate(opts, (optIndex) {
           final bubbleCenterX = bubbleAreaLeft + (optIndex * bubbleSpacingX);
           return pw.Positioned(
             left: bubbleCenterX - 5,
@@ -561,19 +832,21 @@ class AnswerSheetGenerator {
     required double rowHeight,
     required double bubbleSpacingX,
     required double columnWidth,
+    required OmrSheetGeometry g,
+    int optionsCount = OmrPageConstants.answerOptionsCount,
   }) {
+    final opts = optionsCount.clamp(2, 5);
     final questionCount = endQuestion - startQuestion + 1;
-    final bubbleAreaWidth =
-        bubbleSpacingX * (OmrPageConstants.answerOptionsCount - 1);
-    final usableWidth = columnWidth - (OmrPageConstants.answerColumnInset * 2);
-    final rowContentWidth = OmrPageConstants.questionNumberWidth +
-        OmrPageConstants.answerNumberBubbleGap +
+    final bubbleAreaWidth = bubbleSpacingX * (opts - 1);
+    final usableWidth = columnWidth - (g.answerColumnInset * 2);
+    final rowContentWidth = g.questionNumberWidth +
+        g.answerNumberBubbleGap +
         bubbleAreaWidth;
-    final rowContentLeft = OmrPageConstants.answerColumnInset +
-        ((usableWidth - rowContentWidth) / 2);
-    final bubbleAreaLeft = rowContentLeft +
-        OmrPageConstants.questionNumberWidth +
-        OmrPageConstants.answerNumberBubbleGap;
+    final rowContentLeft =
+        g.answerColumnInset + ((usableWidth - rowContentWidth) / 2);
+    final bubbleAreaLeft =
+        rowContentLeft + g.questionNumberWidth + g.answerNumberBubbleGap;
+    final bubbleDiameter = g.answerBubbleDiameter;
 
     return pw.Stack(
       children: List.generate(totalRows, (rowIndex) {
@@ -596,15 +869,13 @@ class AnswerSheetGenerator {
                   child: pw.Text('$questionNumber.',
                       style: const pw.TextStyle(fontSize: 7)),
                 ),
-                ...List.generate(OmrPageConstants.answerOptionsCount,
-                    (optIndex) {
+                ...List.generate(opts, (optIndex) {
                   return pw.Positioned(
                     left: bubbleAreaLeft +
                         (optIndex * bubbleSpacingX) -
-                        (OmrPageConstants.answerBubbleDiameter / 2),
-                    top: (rowHeight / 2) -
-                        (OmrPageConstants.answerBubbleDiameter / 2),
-                    child: _bubble(),
+                        (bubbleDiameter / 2),
+                    top: (rowHeight / 2) - (bubbleDiameter / 2),
+                    child: _bubble(bubbleDiameter),
                   );
                 }),
               ],
@@ -617,21 +888,26 @@ class AnswerSheetGenerator {
 
   /// Timing marks along edges help detect rotation and skew.
   /// Printed as small squares (same size/positions the scanner expects).
-  static List<pw.Widget> _buildTimingMarks() {
-    const markSize = OmrPageConstants.timingMarkSize;
-    const markSpacing = OmrPageConstants.timingMarkSpacing;
-    const edgeOffset = OmrPageConstants.timingMarkEdgeOffset;
-    const startX = OmrPageConstants.timingMarkStartX;
-    const endX = OmrPageConstants.timingMarkEndX;
-    const startY = OmrPageConstants.timingMarkStartY;
-    const endY = OmrPageConstants.timingMarkEndY;
+  static List<pw.Widget> _buildTimingMarks(OmrSheetGeometry g) {
+    final markSize = g.timingMarkSize;
+    final markSpacing = g.timingMarkSpacing;
+    final edgeOffset = g.timingMarkEdgeOffset;
+    final startX = g.timingMarkStartX;
+    final endX = g.timingMarkEndX;
+    final startY = g.timingMarkStartY;
+    final endY = g.timingMarkEndY;
+    final block = _usedBlock(g);
+    final usedLeft = block[0];
+    final usedTop = block[1];
+    final usedRight = block[2];
+    final usedBottom = block[3];
     final marks = <pw.Widget>[];
 
     // Top edge timing marks (skip corners)
     for (double x = startX; x < endX; x += markSpacing) {
       marks.add(pw.Positioned(
         left: x,
-        top: edgeOffset,
+        top: usedTop + edgeOffset,
         child: pw.Container(
           width: markSize,
           height: markSize,
@@ -642,11 +918,11 @@ class AnswerSheetGenerator {
       ));
     }
 
-    // Bottom edge timing marks (skip corners)
+    // Bottom edge timing marks (skip corners) — hug content block, not page
     for (double x = startX; x < endX; x += markSpacing) {
       marks.add(pw.Positioned(
         left: x,
-        bottom: edgeOffset,
+        top: usedBottom - edgeOffset - markSize,
         child: pw.Container(
           width: markSize,
           height: markSize,
@@ -660,7 +936,7 @@ class AnswerSheetGenerator {
     // Left edge timing marks (skip corners)
     for (double y = startY; y < endY; y += markSpacing) {
       marks.add(pw.Positioned(
-        left: edgeOffset,
+        left: usedLeft + edgeOffset,
         top: y,
         child: pw.Container(
           width: markSize,
@@ -672,10 +948,10 @@ class AnswerSheetGenerator {
       ));
     }
 
-    // Right edge timing marks (skip corners)
+    // Right edge timing marks (skip corners) — hug content block, not page
     for (double y = startY; y < endY; y += markSpacing) {
       marks.add(pw.Positioned(
-        right: edgeOffset,
+        left: usedRight - edgeOffset - markSize,
         top: y,
         child: pw.Container(
           width: markSize,
@@ -692,18 +968,18 @@ class AnswerSheetGenerator {
 
   /// Row reference marks on left edge at each answer row Y position
   /// These help the scanner validate row alignment independently
-  static List<pw.Widget> _buildRowMarks(int totalQuestions) {
-    final template = OmrTemplateSpec.forItemCount(totalQuestions);
-    final rowPositions = OmrRowMarks.getRowMarkPositions(template);
+  static List<pw.Widget> _buildRowMarks(OmrLayoutProfile profile) {
+    final g = profile.geometry;
     final marks = <pw.Widget>[];
 
-    for (final y in rowPositions) {
+    for (var row = 0; row < profile.grid.rows; row++) {
+      final y = profile.rowCenterY(row);
       marks.add(pw.Positioned(
-        left: OmrRowMarks.markX,
-        top: y - (OmrRowMarks.markSize / 2),
+        left: g.rowMarkX,
+        top: y - (g.rowMarkSize / 2),
         child: pw.Container(
-          width: OmrRowMarks.markSize,
-          height: OmrRowMarks.markSize,
+          width: g.rowMarkSize,
+          height: g.rowMarkSize,
           color: PdfColors.black,
         ),
       ));
@@ -728,11 +1004,16 @@ class AnswerSheetGenerator {
   }
 
   /// Batch header with student info
-  static pw.Widget _headerSectionBatch(Subject subject,
-      SubjectSheetQrPayload qrPayload, Student student, String sectionName) {
+  static pw.Widget _headerSectionBatch(
+      Subject subject,
+      SubjectSheetQrPayload qrPayload,
+      Student student,
+      String sectionName,
+      OmrSheetGeometry g) {
     return _buildHeader(
       subject: subject,
       qrPayload: qrPayload,
+      g: g,
       subtitleLine1: _fitHeaderText('STUDENT: ${student.name}', maxChars: 42),
       subtitleLine2: _fitHeaderText(
         'OMR: ${student.omrId}   SECTION: $sectionName',
@@ -742,9 +1023,9 @@ class AnswerSheetGenerator {
   }
 
   /// Blank-sheet header: name write-in + section info (OMR ID stays empty below).
-  /// Text stays inside [OmrPageConstants.headerHeight] — do not grow this box.
+  /// Text stays inside [OmrSheetGeometry.headerHeight] — do not grow this box.
   static pw.Widget _headerSection(
-      Subject subject, SubjectSheetQrPayload qrPayload) {
+      Subject subject, SubjectSheetQrPayload qrPayload, OmrSheetGeometry g) {
     final sectionLabel =
         (qrPayload.sectionName == null || qrPayload.sectionName!.trim().isEmpty)
             ? 'ALL'
@@ -755,6 +1036,7 @@ class AnswerSheetGenerator {
     return _buildHeader(
       subject: subject,
       qrPayload: qrPayload,
+      g: g,
       subtitleLine1: _fitHeaderText(
         'SECTION: $sectionLabel$examDate   ITEMS: ${subject.totalQuestions}',
         maxChars: 42,
@@ -769,37 +1051,58 @@ class AnswerSheetGenerator {
   static pw.Widget _buildHeader({
     required Subject subject,
     required SubjectSheetQrPayload qrPayload,
+    required OmrSheetGeometry g,
     required String subtitleLine1,
     required String subtitleLine2,
     String instructionLine =
         'Fill one bubble per question. Use a dark pencil (HB or 2B).',
   }) {
+    final scale = g.layoutScale;
+    final titleFontSize = (16 * scale).clamp(11.0, 18.0);
+    final metaFontSize = (8.2 * scale).clamp(7.0, 8.2);
+    final hintFontSize = (7.2 * scale).clamp(6.2, 7.2);
+    final textMaxWidth = (g.answerGridWidth - g.qrCodeSize - 10)
+        .clamp(80.0, g.answerGridWidth);
+
     return pw.Row(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
-        pw.Expanded(
+        pw.SizedBox(
+          width: textMaxWidth,
           child: pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              pw.Text(_fitHeaderText(subject.displayName, maxChars: 28),
-                  style: pw.TextStyle(
-                      fontSize: 18, fontWeight: pw.FontWeight.bold)),
-              pw.SizedBox(height: 4),
-              pw.Text(subtitleLine1, style: const pw.TextStyle(fontSize: 8.2)),
-              pw.SizedBox(height: 2),
-              pw.Text(subtitleLine2, style: const pw.TextStyle(fontSize: 8.2)),
+              pw.Text(
+                _fitHeaderText(subject.displayName, maxChars: 28),
+                style: pw.TextStyle(
+                  fontSize: titleFontSize,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.SizedBox(height: (4 * scale).clamp(2.0, 4.0)),
+              pw.Text(
+                subtitleLine1,
+                style: pw.TextStyle(fontSize: metaFontSize),
+              ),
               pw.SizedBox(height: 2),
               pw.Text(
-                instructionLine,
-                style: const pw.TextStyle(fontSize: 7.2, color: _mutedInk),
+                subtitleLine2,
+                style: pw.TextStyle(fontSize: metaFontSize),
               ),
+              if (scale >= 0.55) ...[
+                pw.SizedBox(height: 2),
+                pw.Text(
+                  instructionLine,
+                  style: pw.TextStyle(fontSize: hintFontSize, color: _mutedInk),
+                ),
+              ],
             ],
           ),
         ),
-        pw.SizedBox(width: 12),
+        pw.SizedBox(width: (10 * scale).clamp(6.0, 12.0)),
         pw.Container(
-          width: OmrPageConstants.qrCodeSize,
-          height: OmrPageConstants.qrCodeSize,
+          width: g.qrCodeSize,
+          height: g.qrCodeSize,
           padding: const pw.EdgeInsets.all(3),
           decoration: pw.BoxDecoration(
             border: pw.Border.all(width: 0.6, color: _panelBorder),
@@ -819,33 +1122,38 @@ class AnswerSheetGenerator {
   }
 
   /// Pre-filled OMR for batch
-  static pw.Widget _idSectionPreFilled(String omrId) {
+  static pw.Widget _idSectionPreFilled(String omrId, OmrSheetGeometry g) {
     final digits = omrId.padLeft(4, '0').split('').map(int.parse).toList();
     return _idSectionBase(
+      g: g,
       fillResolver: (columnIndex, digit) => digits[columnIndex] == digit,
     );
   }
 
-  static pw.Widget _idSection() {
+  static pw.Widget _idSection(OmrSheetGeometry g) {
     return _idSectionBase(
+      g: g,
       fillResolver: (_, __) => false,
     );
   }
 
   static pw.Widget _idSectionBase({
+    required OmrSheetGeometry g,
     required bool Function(int columnIndex, int digit) fillResolver,
   }) {
-    const relativeFirstColumnX =
-        OmrPageConstants.omrIdFirstColumnX - OmrPageConstants.marginLeft;
-    const relativeFirstRowY =
-        OmrPageConstants.omrIdFirstRowY - OmrPageConstants.omrIdTop;
-    const titleTop = 3.0;
-    const digitLabelWidth = 8.0;
-    const digitLabelOffset = 21.0;
+    final relativeFirstColumnX = g.omrIdFirstColumnX - g.marginLeft;
+    final relativeFirstRowY = g.omrIdFirstRowY - g.omrIdTop;
+    const omrIdTitleBand = 14.0;
+    final scale = g.layoutScale;
+    final titleFontSize = (9 * scale).clamp(7.0, 9.0);
+    final digitFontSize = (5.8 * scale).clamp(5.0, 5.8);
+    final digitLabelWidth = (8 * scale).clamp(6.0, 8.0);
+    final digitLabelOffset =
+        (g.omrIdBubbleDiameter / 2) + (10 * scale).clamp(7.0, 10.0);
 
     return pw.Container(
       width: double.infinity,
-      height: OmrPageConstants.omrIdHeight,
+      height: g.omrIdHeight,
       decoration: pw.BoxDecoration(
         border: pw.Border.all(
           width: _panelBorderWidth,
@@ -857,54 +1165,55 @@ class AnswerSheetGenerator {
           pw.Positioned(
             left: 0,
             right: 0,
-            top: titleTop,
-            child: pw.Center(
-              child: pw.Text(
-                'OMR ID (4 DIGITS)',
-                style: pw.TextStyle(
-                  fontWeight: pw.FontWeight.bold,
-                  fontSize: 9,
+            top: 2,
+            child: pw.SizedBox(
+              height: omrIdTitleBand - 2,
+              child: pw.Center(
+                child: pw.Text(
+                  'OMR ID (4 DIGITS)',
+                  style: pw.TextStyle(
+                    fontWeight: pw.FontWeight.bold,
+                    fontSize: titleFontSize,
+                  ),
                 ),
               ),
             ),
           ),
           ...List.generate(OmrPageConstants.omrIdColumns, (columnIndex) {
             final columnCenterX = relativeFirstColumnX +
-                (columnIndex * OmrPageConstants.omrIdColumnSpacing);
+                (columnIndex * g.omrIdColumnSpacing);
 
             return pw.Stack(
               children: [
                 ...List.generate(OmrPageConstants.omrIdRows, (digit) {
-                  final bubbleCenterY = relativeFirstRowY +
-                      (digit * OmrPageConstants.omrIdRowSpacing);
+                  final bubbleCenterY =
+                      relativeFirstRowY + (digit * g.omrIdRowSpacing);
 
                   return pw.Positioned(
                     left: columnCenterX - digitLabelOffset,
-                    top: bubbleCenterY - 3.2,
+                    top: bubbleCenterY - (digitFontSize / 2),
                     child: pw.SizedBox(
                       width: digitLabelWidth,
                       child: pw.Align(
                         alignment: pw.Alignment.centerRight,
                         child: pw.Text(
                           '$digit',
-                          style: const pw.TextStyle(fontSize: 5.8),
+                          style: pw.TextStyle(fontSize: digitFontSize),
                         ),
                       ),
                     ),
                   );
                 }),
                 ...List.generate(OmrPageConstants.omrIdRows, (digit) {
-                  final bubbleCenterY = relativeFirstRowY +
-                      (digit * OmrPageConstants.omrIdRowSpacing);
+                  final bubbleCenterY =
+                      relativeFirstRowY + (digit * g.omrIdRowSpacing);
 
                   return pw.Positioned(
-                    left: columnCenterX -
-                        (OmrPageConstants.omrIdBubbleDiameter / 2),
-                    top: bubbleCenterY -
-                        (OmrPageConstants.omrIdBubbleDiameter / 2),
+                    left: columnCenterX - (g.omrIdBubbleDiameter / 2),
+                    top: bubbleCenterY - (g.omrIdBubbleDiameter / 2),
                     child: pw.Container(
-                      width: OmrPageConstants.omrIdBubbleDiameter,
-                      height: OmrPageConstants.omrIdBubbleDiameter,
+                      width: g.omrIdBubbleDiameter,
+                      height: g.omrIdBubbleDiameter,
                       decoration: pw.BoxDecoration(
                         shape: pw.BoxShape.circle,
                         color: fillResolver(columnIndex, digit)
@@ -926,10 +1235,10 @@ class AnswerSheetGenerator {
     );
   }
 
-  static pw.Widget _bubble() {
+  static pw.Widget _bubble([double diameter = 11.5]) {
     return pw.Container(
-      width: 11.5,
-      height: 11.5,
+      width: diameter,
+      height: diameter,
       decoration: pw.BoxDecoration(
         shape: pw.BoxShape.circle,
         color: PdfColors.white,
@@ -946,7 +1255,7 @@ class AnswerSheetGenerator {
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
           pw.Text(
-            'Lay flat, good lighting, dark pencil. Edge marks are for scanning — do not mark them.',
+            'Lay flat, good lighting, dark pencil. Edge marks are for scanning - do not mark them.',
             style: const pw.TextStyle(fontSize: 5.8, color: _mutedInk),
           ),
         ],
@@ -954,18 +1263,18 @@ class AnswerSheetGenerator {
     );
   }
 
-  static List<pw.Widget> _buildCalibrationMarks() {
-    const bubbleTop = OmrPageConstants.calibrationY -
-        (OmrPageConstants.answerBubbleDiameter / 2);
+  static List<pw.Widget> _buildCalibrationMarks(OmrSheetGeometry g) {
+    // Keep answerBubbleDiameter for filled/empty so preset sheets match prior PDFs.
+    final diameter = g.answerBubbleDiameter;
+    final bubbleTop = g.calibrationY - (diameter / 2);
 
     return [
       pw.Positioned(
-        left: OmrPageConstants.calibrationFilledX -
-            (OmrPageConstants.answerBubbleDiameter / 2),
+        left: g.calibrationFilledX - (diameter / 2),
         top: bubbleTop,
         child: pw.Container(
-          width: OmrPageConstants.answerBubbleDiameter,
-          height: OmrPageConstants.answerBubbleDiameter,
+          width: diameter,
+          height: diameter,
           decoration: pw.BoxDecoration(
             shape: pw.BoxShape.circle,
             color: PdfColors.black,
@@ -977,10 +1286,9 @@ class AnswerSheetGenerator {
         ),
       ),
       pw.Positioned(
-        left: OmrPageConstants.calibrationEmptyX -
-            (OmrPageConstants.answerBubbleDiameter / 2),
+        left: g.calibrationEmptyX - (diameter / 2),
         top: bubbleTop,
-        child: _bubble(),
+        child: _bubble(diameter),
       ),
     ];
   }

@@ -79,6 +79,28 @@ class TeacherRegistrationResult {
   final String? message;
 }
 
+class TeacherSignInResult {
+  const TeacherSignInResult({
+    this.account,
+    this.needsMfa = false,
+    this.needsMfaEnrollment = false,
+    this.mfaTicket,
+    this.message,
+    this.captchaRequired = false,
+    this.captchaSiteKey,
+  });
+
+  final CloudTeacherAccount? account;
+  final bool needsMfa;
+  final bool needsMfaEnrollment;
+  final String? mfaTicket;
+  final String? message;
+  final bool captchaRequired;
+  final String? captchaSiteKey;
+
+  bool get isComplete => account != null;
+}
+
 class CloudAuthService {
   CloudAuthService._();
 
@@ -276,9 +298,10 @@ class CloudAuthService {
     );
   }
 
-  Future<CloudTeacherAccount> signInTeacher({
+  Future<TeacherSignInResult> signInTeacher({
     required String email,
     required String password,
+    String? captchaToken,
   }) async {
     _ensureApiReady();
     final normalizedEmail = email.trim().toLowerCase();
@@ -290,9 +313,27 @@ class CloudAuthService {
           'email': normalizedEmail,
           'password': password,
           'device_name': 'mobile',
+          if (captchaToken != null && captchaToken.isNotEmpty)
+            'captcha_token': captchaToken,
         },
         auth: false,
       );
+
+      if (response['mfa_required'] == true) {
+        return TeacherSignInResult(
+          needsMfa: true,
+          mfaTicket: response['mfa_ticket']?.toString(),
+          message: response['message']?.toString(),
+        );
+      }
+
+      if (response['mfa_enrollment_required'] == true) {
+        return TeacherSignInResult(
+          needsMfaEnrollment: true,
+          mfaTicket: response['mfa_ticket']?.toString(),
+          message: response['message']?.toString(),
+        );
+      }
 
       final account = await _accountFromAuthResponse(response);
       if (account == null) {
@@ -313,10 +354,84 @@ class CloudAuthService {
         );
       }
 
+      return TeacherSignInResult(account: account);
+    } catch (error) {
+      if (error is ApiException &&
+          (error.captchaRequired || error.statusCode == 429)) {
+        return TeacherSignInResult(
+          captchaRequired: error.captchaRequired,
+          captchaSiteKey: error.captchaSiteKey,
+          message: _friendlyApiMessage(error),
+        );
+      }
+      throw CloudAuthException(_friendlyError(error));
+    }
+  }
+
+  Future<CloudTeacherAccount> completeMfaSignIn({
+    required String mfaTicket,
+    required String code,
+  }) async {
+    _ensureApiReady();
+    try {
+      final response = await ApiService.postJson(
+        '/login/mfa',
+        <String, dynamic>{
+          'mfa_ticket': mfaTicket,
+          'code': code.trim(),
+          'device_name': 'mobile',
+        },
+        auth: false,
+      );
+
+      final account = await _accountFromAuthResponse(response);
+      if (account == null || !account.isApproved) {
+        throw const CloudAuthException('Sign in failed after the security code.');
+      }
       return account;
     } catch (error) {
       throw CloudAuthException(_friendlyError(error));
     }
+  }
+
+  Future<Map<String, String>> beginMfaEnrollmentDuringLogin({
+    required String mfaTicket,
+  }) async {
+    _ensureApiReady();
+    final response = await ApiService.postJson(
+      '/login/mfa/setup',
+      <String, dynamic>{'mfa_ticket': mfaTicket},
+      auth: false,
+    );
+    final secret = response['secret']?.toString();
+    final url = response['otpauth_url']?.toString();
+    if (secret == null || url == null) {
+      throw const CloudAuthException(
+        'Could not start two-factor setup. Sign in again.',
+      );
+    }
+    return {'secret': secret, 'otpauth_url': url};
+  }
+
+  Future<CloudTeacherAccount> completeMfaEnrollmentDuringLogin({
+    required String mfaTicket,
+    required String code,
+  }) async {
+    _ensureApiReady();
+    final response = await ApiService.postJson(
+      '/login/mfa/enroll',
+      <String, dynamic>{
+        'mfa_ticket': mfaTicket,
+        'code': code.trim(),
+        'device_name': 'mobile',
+      },
+      auth: false,
+    );
+    final account = await _accountFromAuthResponse(response);
+    if (account == null) {
+      throw const CloudAuthException('Setup did not finish. Try again.');
+    }
+    return account;
   }
 
   Future<void> applyTokenFromEmailVerification(String token) async {
@@ -500,6 +615,12 @@ class CloudAuthService {
     }
     if (normalized.contains('rate limit') || normalized.contains('too many')) {
       return 'Too many attempts. Wait a minute, then try again.';
+    }
+    if (normalized.contains('security check') || normalized.contains('captcha')) {
+      return 'Complete the security check on the web portal, then try again.';
+    }
+    if (normalized.contains('locked') || error.statusCode == 429) {
+      return error.message;
     }
     return error.message;
   }

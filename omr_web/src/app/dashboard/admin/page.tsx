@@ -126,17 +126,30 @@ export default async function AdminDashboardPage() {
             </p>
           </div>
           {viewerIsSuperAdmin ? (
-            <div>
-              <Link
-                href="/dashboard/admin/departments"
-                className="inline-flex rounded-xl border border-emerald-700 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-50"
-              >
-                Department admins
-              </Link>
-              <p className="mt-2 text-xs text-slate-500">
-                Assign who can approve instructors in each department.
-              </p>
-            </div>
+            <>
+              <div>
+                <Link
+                  href="/dashboard/admin/departments"
+                  className="inline-flex rounded-xl border border-emerald-700 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-50"
+                >
+                  Department admins
+                </Link>
+                <p className="mt-2 text-xs text-slate-500">
+                  Assign who can approve instructors in each department.
+                </p>
+              </div>
+              <div>
+                <Link
+                  href="/dashboard/admin/security"
+                  className="inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+                >
+                  Sign-in activity
+                </Link>
+                <p className="mt-2 text-xs text-slate-500">
+                  Review failed logins, lockouts, and two-factor events.
+                </p>
+              </div>
+            </>
           ) : null}
         </div>
         {teachers.length === 0 ? (

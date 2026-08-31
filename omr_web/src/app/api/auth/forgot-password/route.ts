@@ -22,7 +22,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as { email?: string };
+    const body = (await request.json()) as { email?: string; captcha_token?: string };
     const email = body.email?.trim().toLowerCase() ?? "";
     if (!email) {
       return NextResponse.json({ error: "Email is required." }, { status: 400 });
@@ -34,7 +34,10 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({
+        email,
+        captcha_token: body.captcha_token,
+      }),
     });
 
     const payload = (await response.json()) as ForgotResponse;

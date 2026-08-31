@@ -36,7 +36,7 @@ public final class OpenCvIosPlugin: NSObject, FlutterPlugin {
         result(FlutterError(code: "INVALID_INPUT", message: "No image data", details: nil))
         return
       }
-      runExclusive(data: data, totalQuestions: 50, result: result)
+      runExclusive(data: data, totalQuestions: 50, sessionLayout: nil, result: result)
     case "processWithConfig":
       guard let args = call.arguments as? [String: Any] else {
         result(FlutterError(code: "INVALID_INPUT", message: "Invalid arguments", details: nil))
@@ -49,7 +49,8 @@ public final class OpenCvIosPlugin: NSObject, FlutterPlugin {
         return
       }
       let total = args["totalQuestions"] as? Int ?? 50
-      runExclusive(data: data, totalQuestions: total, result: result)
+      let sessionLayout = args["sessionLayout"] as? [String: Any]
+      runExclusive(data: data, totalQuestions: total, sessionLayout: sessionLayout, result: result)
     case "detectSheet":
       let d = (call.arguments as? FlutterStandardTypedData)?.data ?? call.arguments as? Data
       guard let data = d else {
@@ -75,7 +76,12 @@ public final class OpenCvIosPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  private func runExclusive(data: Data, totalQuestions: Int, result: @escaping FlutterResult) {
+  private func runExclusive(
+    data: Data,
+    totalQuestions: Int,
+    sessionLayout: [String: Any]?,
+    result: @escaping FlutterResult
+  ) {
     if data.count > Self.maxBytes {
       result(FlutterError(code: "IMAGE_TOO_LARGE", message: "Image exceeds size limit", details: nil))
       return
@@ -90,7 +96,11 @@ public final class OpenCvIosPlugin: NSObject, FlutterPlugin {
     }
     isBusy = true
     queue.async { [weak self] in
-      let json = OmrNativeBridge.process(withImageBytes: data, totalQuestions: totalQuestions)
+      let json = OmrNativeBridge.process(
+        withImageBytes: data,
+        totalQuestions: totalQuestions,
+        sessionLayout: sessionLayout
+      )
       DispatchQueue.main.async {
         self?.isBusy = false
         if let json {

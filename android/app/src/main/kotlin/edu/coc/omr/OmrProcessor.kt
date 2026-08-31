@@ -174,8 +174,54 @@ class OmrProcessor(
         val gridBottom: Double,
         val rowHeight: Double,
         val columnWidth: Double,
-        val bubbleSpacingX: Double
-    )
+        val bubbleSpacingX: Double,
+        val optionsCount: Int = ANSWER_OPTIONS,
+        val pageWidth: Double = OUTPUT_WIDTH.toDouble(),
+        val pageHeight: Double = OUTPUT_HEIGHT.toDouble(),
+        val contentBlockWidth: Double = OUTPUT_WIDTH.toDouble(),
+        val contentBlockHeight: Double = OUTPUT_HEIGHT.toDouble(),
+        val answerGridLeft: Double = ANSWER_GRID_LEFT,
+        val answerColumnInset: Double = ANSWER_COLUMN_INSET,
+        val answerNumberBubbleGap: Double = ANSWER_NUMBER_BUBBLE_GAP,
+        val questionNumberWidth: Double = QUESTION_NUMBER_WIDTH,
+        /** True when subject.useCustomLayout — never infer from question count. */
+        val isCustom: Boolean = false,
+        val layoutMode: String = "preset",
+        val layoutShape: String = "lengthwise_full",
+        /**
+         * When true, registration marks use frozen portrait constants (preset 30–100).
+         * Custom sheets always send false and drive marks from session fields below.
+         */
+        val useFrozenRegistrationMarks: Boolean = true,
+        val cornerMarkerSize: Double = CORNER_MARKER_SIZE,
+        val cornerMarkerOffset: Double = CORNER_OFFSET,
+        val timingMarkSize: Double = TIMING_MARK_SIZE,
+        val timingMarkSpacing: Double = TIMING_MARK_SPACING,
+        val timingMarkEdgeOffset: Double = TIMING_MARK_EDGE_OFFSET,
+        val timingMarkStartX: Double = 60.0,
+        val timingMarkEndX: Double = 535.0,
+        val timingMarkStartY: Double = 60.0,
+        val timingMarkEndY: Double = 780.0,
+        val rowMarkX: Double = ROW_MARK_X,
+        val rowMarkSize: Double = ROW_MARK_SIZE,
+        val omrIdFirstColumnX: Double = OMR_ID_FIRST_COLUMN_X,
+        val omrIdFirstRowY: Double = OMR_ID_FIRST_ROW_Y,
+        val omrIdColumnSpacing: Double = OMR_ID_COLUMN_SPACING,
+        val omrIdRowSpacing: Double = OMR_ID_ROW_SPACING,
+        val calibrationY: Double = CALIBRATION_Y,
+        val calibrationFilledX: Double = CALIBRATION_FILLED_X,
+        val calibrationEmptyX: Double = CALIBRATION_EMPTY_X,
+        val calibrationBubbleSize: Double = CALIBRATION_BUBBLE_SIZE,
+        val qrCodeX: Double = QR_BOX_LEFT,
+        val qrCodeY: Double = QR_BOX_TOP,
+        val qrCodeSize: Double = 80.0,
+    ) {
+        fun warpWidth(): Int =
+            (contentBlockWidth.takeIf { it > 0.0 } ?: pageWidth).roundToInt().coerceAtLeast(100)
+
+        fun warpHeight(): Int =
+            (contentBlockHeight.takeIf { it > 0.0 } ?: pageHeight).roundToInt().coerceAtLeast(100)
+    }
 
     /** Nudge answer sampling when crumpled paper shifts row marks vs the corner warp. */
     data class AnswerGridLock(
@@ -592,11 +638,24 @@ class OmrProcessor(
                 Log.w(TAG, "Corner detection took long - simplifying remaining steps")
             }
             
-            // Step 5: Apply perspective transform
+            // Step 5: Apply perspective transform — warp to content block (half/¼ ≠ full page).
             val warpStartMs = System.currentTimeMillis()
-            warpedMat = applyPerspectiveTransform(grayMat, corners)
+            val outW = sessionLayout?.warpWidth() ?: OUTPUT_WIDTH
+            val outH = sessionLayout?.warpHeight() ?: OUTPUT_HEIGHT
+            warpedMat = applyPerspectiveTransform(
+                grayMat,
+                corners,
+                outW,
+                outH,
+                cornerSize = sessionLayout?.cornerMarkerSize ?: CORNER_MARKER_SIZE,
+                cornerOffset = sessionLayout?.cornerMarkerOffset ?: CORNER_OFFSET,
+            )
             debugInfo["warpedSize"] = "${warpedMat.cols()}x${warpedMat.rows()}"
             debugInfo["warpMs"] = System.currentTimeMillis() - warpStartMs
+            debugInfo["outputPageSize"] = "${outW}x${outH}"
+            debugInfo["contentBlockWarp"] = sessionLayout?.let {
+                "${it.contentBlockWidth}x${it.contentBlockHeight}"
+            } ?: "default"
             stageOk("Perspective Warp Successful (${warpedMat.cols()}x${warpedMat.rows()})")
             
             // Step 5.5: Decode the QR from the ORIGINAL frame before releasing it.
@@ -606,7 +665,7 @@ class OmrProcessor(
             val sourceQrData = if (quality == ProcessingQuality.FAST && sessionLayout == null) {
                 null
             } else {
-                decodeQrFromSourceFrame(grayMat, corners, debugInfo)
+                decodeQrFromSourceFrame(grayMat, corners, debugInfo, sessionLayout)
             }
             debugInfo["sourceQrMs"] = System.currentTimeMillis() - sourceQrStartMs
             debugInfo["sourceQrDetected"] = sourceQrData != null
@@ -618,7 +677,7 @@ class OmrProcessor(
             // Step 6: Validate alignment using timing marks.
             // Never fake this score — low-memory FAST mode previously skipped checks and
             // graded misaligned warps, which produced empty/wrong answer maps.
-            val timingMarkScore = validateTimingMarks(warpedMat, debugInfo)
+            val timingMarkScore = validateTimingMarks(warpedMat, debugInfo, sessionLayout)
             debugInfo["timingMarkScore"] = timingMarkScore
             val timingFound = (debugInfo["timingMarksFound"] as? Number)?.toInt() ?: 0
             val timingExpected = (debugInfo["timingMarksExpected"] as? Number)?.toInt() ?: 0
@@ -659,21 +718,47 @@ class OmrProcessor(
             val qrIdentity = classifyQrIdentity(qrData, debugInfo)
             debugInfo["sheetQrIdentity"] = qrIdentity
             
-            // Step 7.5: Layout from session, QR v2, or fallback
-            val layout = sessionLayout
-                ?: parseQrLayout(qrData)
-                ?: calculateFallbackLayout(totalQuestions)
+            // Step 7.5: Layout from session, QR v2, or fallback.
+            // Custom sheets MUST use session geometry — never guess from question count
+            // (a custom 30-Q sheet is not frozen template "30").
+            val layout = when {
+                sessionLayout != null -> sessionLayout
+                else -> {
+                    val fromQr = parseQrLayout(qrData)
+                    if (fromQr != null) {
+                        fromQr
+                    } else {
+                        calculateFallbackLayout(totalQuestions)
+                    }
+                }
+            }
+            if (sessionLayout == null && layout.isCustom) {
+                // Should not happen — custom always comes from session.
+                return stageFail(
+                    "Custom Layout Required",
+                    "This is a custom sheet. Open Scan from the correct subject so the app locks the custom layout (do not rely on question count alone).",
+                )
+            }
             debugInfo["layoutTemplate"] = layout.templateId
+            debugInfo["layoutIsCustom"] = layout.isCustom
+            debugInfo["layoutMode"] = layout.layoutMode
+            debugInfo["layoutShape"] = layout.layoutShape
             debugInfo["layoutFromQr"] = sessionLayout == null && layout.templateId != "LEGACY"
             debugInfo["layoutCols"] = layout.columns
             debugInfo["layoutRows"] = layout.rows
             debugInfo["layoutGridTop"] = layout.gridTop
             debugInfo["layoutRowHeight"] = layout.rowHeight
-            Log.d(TAG, "Using layout: template=${layout.templateId}, cols=${layout.columns}, rows=${layout.rows}")
-            stageOk("Layout Loaded (${layout.templateId}, ${layout.columns}x${layout.rows})")
+            Log.d(
+                TAG,
+                "Using layout: template=${layout.templateId}, mode=${layout.layoutMode}, " +
+                    "isCustom=${layout.isCustom}, cols=${layout.columns}, rows=${layout.rows}",
+            )
+            stageOk(
+                "Layout Loaded (${layout.layoutMode}:${layout.templateId}, ${layout.columns}x${layout.rows})",
+            )
             
             // Step 8: Auto-calibrate fill threshold using calibration marks in footer
-            val calibration = calibrateFillThreshold(warpedMat, debugInfo)
+            val calibration = calibrateFillThreshold(warpedMat, debugInfo, layout)
             var fillThreshold = if (calibration.isCalibrated) calibration.fillThreshold else DEFAULT_FILL_THRESHOLD
             if (wasDarkCapture) {
                 fillThreshold = (fillThreshold + DARK_FILL_THRESHOLD_BOOST).coerceAtMost(0.55)
@@ -792,7 +877,7 @@ class OmrProcessor(
             debugInfo["emptyGuardStrict"] = emptyGuardStrict
 
             // Step 10: Detect OMR ID with validation
-            val omrIdResult = detectOmrIdWithValidation(thresholdMat, warpedMat, fillThreshold, debugInfo)
+            val omrIdResult = detectOmrIdWithValidation(thresholdMat, warpedMat, fillThreshold, debugInfo, layout)
             if (omrIdResult != null) {
                 debugInfo["omrId"] = omrIdResult.id
                 debugInfo["omrIdConfidence"] = omrIdResult.confidence
@@ -1982,8 +2067,15 @@ class OmrProcessor(
     /**
      * Apply perspective transform to get a properly aligned image
      */
-    private fun applyPerspectiveTransform(srcMat: Mat, corners: DetectedCorners): Mat {
-        val markerCenterOffset = CORNER_OFFSET + (CORNER_MARKER_SIZE / 2.0)
+    private fun applyPerspectiveTransform(
+        srcMat: Mat,
+        corners: DetectedCorners,
+        outputWidth: Int = OUTPUT_WIDTH,
+        outputHeight: Int = OUTPUT_HEIGHT,
+        cornerSize: Double = CORNER_MARKER_SIZE,
+        cornerOffset: Double = CORNER_OFFSET,
+    ): Mat {
+        val markerCenterOffset = cornerOffset + (cornerSize / 2.0)
         val srcPoints = MatOfPoint2f(
             corners.topLeft,
             corners.topRight,
@@ -1993,15 +2085,15 @@ class OmrProcessor(
         
         val dstPoints = MatOfPoint2f(
             Point(markerCenterOffset, markerCenterOffset),
-            Point(OUTPUT_WIDTH - markerCenterOffset, markerCenterOffset),
-            Point(OUTPUT_WIDTH - markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
-            Point(markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset)
+            Point(outputWidth - markerCenterOffset, markerCenterOffset),
+            Point(outputWidth - markerCenterOffset, outputHeight - markerCenterOffset),
+            Point(markerCenterOffset, outputHeight - markerCenterOffset)
         )
         
         val transformMatrix = Imgproc.getPerspectiveTransform(srcPoints, dstPoints)
         val outputMat = Mat()
         Imgproc.warpPerspective(srcMat, outputMat, transformMatrix, 
-            Size(OUTPUT_WIDTH.toDouble(), OUTPUT_HEIGHT.toDouble()))
+            Size(outputWidth.toDouble(), outputHeight.toDouble()))
         
         transformMatrix.release()
         srcPoints.release()
@@ -2011,11 +2103,30 @@ class OmrProcessor(
     }
     
     /**
-     * Validate alignment by checking for timing marks along edges
+     * Validate alignment by checking for timing marks along edges.
+     * Custom half/¼/landscape use session ranges; preset keeps frozen A4 constants.
      */
-    private fun validateTimingMarks(warpedMat: Mat, debugInfo: MutableMap<String, Any>): Double {
+    private fun validateTimingMarks(
+        warpedMat: Mat,
+        debugInfo: MutableMap<String, Any>,
+        layout: QrLayoutMetadata? = null,
+    ): Double {
         var foundMarks = 0
         var expectedMarks = 0
+        
+        val frozen = layout == null || layout.useFrozenRegistrationMarks
+        val startX = if (frozen) 60.0 else layout!!.timingMarkStartX
+        val endX = if (frozen) 535.0 else layout!!.timingMarkEndX
+        val startY = if (frozen) 60.0 else layout!!.timingMarkStartY
+        val endY = if (frozen) 780.0 else layout!!.timingMarkEndY
+        val spacing = if (frozen) TIMING_MARK_SPACING else layout!!.timingMarkSpacing
+        val edge = if (frozen) TIMING_MARK_EDGE_OFFSET else layout!!.timingMarkEdgeOffset
+        val markSize = if (frozen) TIMING_MARK_SIZE else layout!!.timingMarkSize
+        val warpW = warpedMat.cols().toDouble()
+        val warpH = warpedMat.rows().toDouble()
+
+        debugInfo["timingGeomFrozen"] = frozen
+        debugInfo["timingRange"] = "$startX..$endX / $startY..$endY @ $spacing"
         
         // Adaptive threshold (same approach as bubble detection) is robust to the
         // uneven lighting that a single global Otsu cutoff mishandles at the edges.
@@ -2036,57 +2147,59 @@ class OmrProcessor(
         dilateKernel.release()
         
         // Check top edge timing marks
-        var x = 60.0
-        while (x < 535) {
+        var x = startX
+        while (x < endX) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, x, TIMING_MARK_EDGE_OFFSET, alongX = true)) {
+            if (checkTimingMark(binary, warpedMat, x, edge, alongX = true, markSize = markSize)) {
                 foundMarks++
             }
-            x += TIMING_MARK_SPACING
+            x += spacing
         }
         
         // Check bottom edge timing marks
-        x = 60.0
-        while (x < 535) {
+        x = startX
+        while (x < endX) {
             expectedMarks++
             if (checkTimingMark(
                     binary,
                     warpedMat,
                     x,
-                    OUTPUT_HEIGHT - TIMING_MARK_EDGE_OFFSET,
+                    warpH - edge,
                     alongX = true,
+                    markSize = markSize,
                 )
             ) {
                 foundMarks++
             }
-            x += TIMING_MARK_SPACING
+            x += spacing
         }
         
         // Check left edge timing marks
-        var y = 60.0
-        while (y < 780) {
+        var y = startY
+        while (y < endY) {
             expectedMarks++
-            if (checkTimingMark(binary, warpedMat, TIMING_MARK_EDGE_OFFSET, y, alongX = false)) {
+            if (checkTimingMark(binary, warpedMat, edge, y, alongX = false, markSize = markSize)) {
                 foundMarks++
             }
-            y += TIMING_MARK_SPACING
+            y += spacing
         }
         
         // Check right edge timing marks
-        y = 60.0
-        while (y < 780) {
+        y = startY
+        while (y < endY) {
             expectedMarks++
             if (checkTimingMark(
                     binary,
                     warpedMat,
-                    OUTPUT_WIDTH - TIMING_MARK_EDGE_OFFSET,
+                    warpW - edge,
                     y,
                     alongX = false,
+                    markSize = markSize,
                 )
             ) {
                 foundMarks++
             }
-            y += TIMING_MARK_SPACING
+            y += spacing
         }
         
         binary.release()
@@ -2107,19 +2220,26 @@ class OmrProcessor(
         x: Double,
         y: Double,
         alongX: Boolean,
+        markSize: Double = TIMING_MARK_SIZE,
     ): Boolean {
         for (delta in intArrayOf(0, -2, 2, -4, 4)) {
             val sx = if (alongX) x + delta else x
             val sy = if (alongX) y else y + delta
-            if (checkTimingMarkOnce(binary, gray, sx, sy)) {
+            if (checkTimingMarkOnce(binary, gray, sx, sy, markSize)) {
                 return true
             }
         }
         return false
     }
 
-    private fun checkTimingMarkOnce(binary: Mat, gray: Mat, x: Double, y: Double): Boolean {
-        val radius = (TIMING_MARK_SIZE / 2 + 3).toInt()
+    private fun checkTimingMarkOnce(
+        binary: Mat,
+        gray: Mat,
+        x: Double,
+        y: Double,
+        markSize: Double = TIMING_MARK_SIZE,
+    ): Boolean {
+        val radius = (markSize / 2 + 3).toInt().coerceAtLeast(3)
         val cx = x.toInt().coerceIn(radius, binary.cols() - radius - 1)
         val cy = y.toInt().coerceIn(radius, binary.rows() - radius - 1)
         
@@ -2153,10 +2273,20 @@ class OmrProcessor(
         srcGray: Mat,
         corners: DetectedCorners,
         debugInfo: MutableMap<String, Any>,
+        layout: QrLayoutMetadata? = null,
     ): String? {
-        val markerCenterOffset = CORNER_OFFSET + (CORNER_MARKER_SIZE / 2.0)
-        val boxWidth = QR_BOX_RIGHT - QR_BOX_LEFT
-        val boxHeight = QR_BOX_BOTTOM - QR_BOX_TOP
+        val cornerSize = layout?.cornerMarkerSize ?: CORNER_MARKER_SIZE
+        val cornerOffset = layout?.cornerMarkerOffset ?: CORNER_OFFSET
+        val markerCenterOffset = cornerOffset + (cornerSize / 2.0)
+        val pageW = layout?.warpWidth()?.toDouble() ?: OUTPUT_WIDTH.toDouble()
+        val pageH = layout?.warpHeight()?.toDouble() ?: OUTPUT_HEIGHT.toDouble()
+        val qrLeft = layout?.qrCodeX ?: QR_BOX_LEFT
+        val qrTop = layout?.qrCodeY ?: QR_BOX_TOP
+        val qrSize = layout?.qrCodeSize ?: 80.0
+        val qrRight = qrLeft + qrSize + 12.0
+        val qrBottom = qrTop + qrSize + 12.0
+        val boxWidth = qrRight - qrLeft
+        val boxHeight = qrBottom - qrTop
 
         for (scale in QR_SOURCE_CROP_SCALES) {
             val outWidth = (boxWidth * scale).toInt()
@@ -2178,14 +2308,14 @@ class OmrProcessor(
                 )
                 // Page point -> magnified QR-box pixel.
                 fun dst(x: Double, y: Double) = Point(
-                    x * scale - QR_BOX_LEFT * scale,
-                    y * scale - QR_BOX_TOP * scale,
+                    x * scale - qrLeft * scale,
+                    y * scale - qrTop * scale,
                 )
                 dstPoints = MatOfPoint2f(
                     dst(markerCenterOffset, markerCenterOffset),
-                    dst(OUTPUT_WIDTH - markerCenterOffset, markerCenterOffset),
-                    dst(OUTPUT_WIDTH - markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
-                    dst(markerCenterOffset, OUTPUT_HEIGHT - markerCenterOffset),
+                    dst(pageW - markerCenterOffset, markerCenterOffset),
+                    dst(pageW - markerCenterOffset, pageH - markerCenterOffset),
+                    dst(markerCenterOffset, pageH - markerCenterOffset),
                 )
 
                 transform = Imgproc.getPerspectiveTransform(srcPoints, dstPoints)
@@ -2356,8 +2486,16 @@ class OmrProcessor(
     }
     
     /**
-     * Parse layout metadata from QR payload v2
-     * Returns null if QR data is v1 (no layout) or parsing fails
+     * Parse locked session layout from Dart [ScannerSessionLayout.toNativeMap].
+     * Used by MainActivity — must forward every geometry field so custom sheets
+     * get the same engine treatment as frozen 30–100, driven by their layout.
+     */
+    fun parseSessionLayoutFromMap(raw: Map<*, *>?): QrLayoutMetadata? =
+        parseSessionLayout(raw)
+
+    /**
+     * Parse layout metadata from session map / QR payload v2.
+     * Returns null if data is incomplete or parsing fails.
      */
     private fun parseSessionLayout(raw: Map<*, *>?): QrLayoutMetadata? {
         if (raw == null || raw.isEmpty()) return null
@@ -2398,6 +2536,66 @@ class OmrProcessor(
             rowHeight = rowHeight,
             columnWidth = columnWidth.takeIf { it > 0.0 } ?: (ANSWER_GRID_WIDTH / columns),
             bubbleSpacingX = bubbleSpacingX.takeIf { it > 0.0 } ?: 17.0,
+            optionsCount = readInt("optionsCount").takeIf { it in 2..ANSWER_OPTIONS } ?: ANSWER_OPTIONS,
+            pageWidth = readDouble("pageWidth").takeIf { it > 0.0 } ?: OUTPUT_WIDTH.toDouble(),
+            pageHeight = readDouble("pageHeight").takeIf { it > 0.0 } ?: OUTPUT_HEIGHT.toDouble(),
+            contentBlockWidth = readDouble("contentBlockWidth").takeIf { it > 0.0 }
+                ?: readDouble("pageWidth").takeIf { it > 0.0 }
+                ?: OUTPUT_WIDTH.toDouble(),
+            contentBlockHeight = readDouble("contentBlockHeight").takeIf { it > 0.0 }
+                ?: readDouble("pageHeight").takeIf { it > 0.0 }
+                ?: OUTPUT_HEIGHT.toDouble(),
+            answerGridLeft = readDouble("answerGridLeft").takeIf { it >= 0.0 } ?: ANSWER_GRID_LEFT,
+            answerColumnInset = readDouble("answerColumnInset").takeIf { it > 0.0 } ?: ANSWER_COLUMN_INSET,
+            answerNumberBubbleGap = readDouble("answerNumberBubbleGap").takeIf { it > 0.0 } ?: ANSWER_NUMBER_BUBBLE_GAP,
+            questionNumberWidth = readDouble("questionNumberWidth").takeIf { it > 0.0 } ?: QUESTION_NUMBER_WIDTH,
+            isCustom = when (val v = raw["isCustom"]) {
+                is Boolean -> v
+                is Number -> v.toInt() != 0
+                else -> raw["layoutMode"]?.toString() == "custom"
+            },
+            layoutMode = raw["layoutMode"]?.toString()?.trim().orEmpty().ifEmpty {
+                if (raw["isCustom"] == true) "custom" else "preset"
+            },
+            layoutShape = raw["layoutShape"]?.toString()?.trim().orEmpty().ifEmpty { "lengthwise_full" },
+            useFrozenRegistrationMarks = when (val v = raw["useFrozenRegistrationMarks"]) {
+                is Boolean -> v
+                is Number -> v.toInt() != 0
+                null -> !when (val c = raw["isCustom"]) {
+                    is Boolean -> c
+                    is Number -> c.toInt() != 0
+                    else -> raw["layoutMode"]?.toString() == "custom"
+                }
+                else -> true
+            },
+            cornerMarkerSize = readDouble("cornerMarkerSize").takeIf { it > 0.0 } ?: CORNER_MARKER_SIZE,
+            cornerMarkerOffset = readDouble("cornerMarkerOffset").takeIf { it > 0.0 } ?: CORNER_OFFSET,
+            timingMarkSize = readDouble("timingMarkSize").takeIf { it > 0.0 } ?: TIMING_MARK_SIZE,
+            timingMarkSpacing = readDouble("timingMarkSpacing").takeIf { it > 0.0 } ?: TIMING_MARK_SPACING,
+            timingMarkEdgeOffset = readDouble("timingMarkEdgeOffset").takeIf { it > 0.0 }
+                ?: TIMING_MARK_EDGE_OFFSET,
+            timingMarkStartX = readDouble("timingMarkStartX").takeIf { it > 0.0 } ?: 60.0,
+            timingMarkEndX = readDouble("timingMarkEndX").takeIf { it > 0.0 } ?: 535.0,
+            timingMarkStartY = readDouble("timingMarkStartY").takeIf { it > 0.0 } ?: 60.0,
+            timingMarkEndY = readDouble("timingMarkEndY").takeIf { it > 0.0 } ?: 780.0,
+            rowMarkX = readDouble("rowMarkX").takeIf { it > 0.0 } ?: ROW_MARK_X,
+            rowMarkSize = readDouble("rowMarkSize").takeIf { it > 0.0 } ?: ROW_MARK_SIZE,
+            omrIdFirstColumnX = readDouble("omrIdFirstColumnX").takeIf { it > 0.0 }
+                ?: OMR_ID_FIRST_COLUMN_X,
+            omrIdFirstRowY = readDouble("omrIdFirstRowY").takeIf { it > 0.0 } ?: OMR_ID_FIRST_ROW_Y,
+            omrIdColumnSpacing = readDouble("omrIdColumnSpacing").takeIf { it > 0.0 }
+                ?: OMR_ID_COLUMN_SPACING,
+            omrIdRowSpacing = readDouble("omrIdRowSpacing").takeIf { it > 0.0 } ?: OMR_ID_ROW_SPACING,
+            calibrationY = readDouble("calibrationY").takeIf { it > 0.0 } ?: CALIBRATION_Y,
+            calibrationFilledX = readDouble("calibrationFilledX").takeIf { it > 0.0 }
+                ?: CALIBRATION_FILLED_X,
+            calibrationEmptyX = readDouble("calibrationEmptyX").takeIf { it > 0.0 }
+                ?: CALIBRATION_EMPTY_X,
+            calibrationBubbleSize = readDouble("calibrationBubbleSize").takeIf { it > 0.0 }
+                ?: CALIBRATION_BUBBLE_SIZE,
+            qrCodeX = readDouble("qrCodeX").takeIf { it >= 0.0 } ?: QR_BOX_LEFT,
+            qrCodeY = readDouble("qrCodeY").takeIf { it >= 0.0 } ?: QR_BOX_TOP,
+            qrCodeSize = readDouble("qrCodeSize").takeIf { it > 0.0 } ?: 80.0,
         )
     }
 
@@ -2532,17 +2730,18 @@ class OmrProcessor(
         try {
             var detectedMarks = 0
             val expectedMarks = layout.rows
+            val markX = if (layout.useFrozenRegistrationMarks) ROW_MARK_X else layout.rowMarkX
+            val markSize = if (layout.useFrozenRegistrationMarks) ROW_MARK_SIZE else layout.rowMarkSize
             
             for (rowIndex in 0 until layout.rows) {
                 // Calculate expected Y position for this row mark
                 val rowCenterY = layout.gridTop + (rowIndex * layout.rowHeight) + (layout.rowHeight / 2)
                 
                 // Sample the row mark position (small square on left edge)
-                val markX = ROW_MARK_X
                 val markY = rowCenterY
                 
                 // Sample a small region around the expected mark position
-                val sampleSize = (ROW_MARK_SIZE * 2).toInt()
+                val sampleSize = (markSize * 2).toInt().coerceAtLeast(4)
                 val x = (markX - sampleSize / 2).toInt().coerceIn(0, warpedMat.cols() - sampleSize)
                 val y = (markY - sampleSize / 2).toInt().coerceIn(0, warpedMat.rows() - sampleSize)
                 
@@ -2561,6 +2760,7 @@ class OmrProcessor(
             val score = detectedMarks.toDouble() / expectedMarks
             debugInfo["rowMarksDetected"] = detectedMarks
             debugInfo["rowMarksExpected"] = expectedMarks
+            debugInfo["rowMarkX"] = markX
             Log.d(TAG, "Row mark validation: $detectedMarks/$expectedMarks detected (score=$score)")
             
             return score
@@ -2582,15 +2782,17 @@ class OmrProcessor(
         layout: QrLayoutMetadata,
         debugInfo: MutableMap<String, Any>,
     ): AnswerGridLock {
+        val markX = if (layout.useFrozenRegistrationMarks) ROW_MARK_X else layout.rowMarkX
         val samples = mutableListOf<Pair<Double, Double>>() // expectedY → foundY
         for (rowIndex in 0 until layout.rows) {
             val expectedY =
                 layout.gridTop + (rowIndex * layout.rowHeight) + (layout.rowHeight / 2.0)
             val foundY = findDarkMarkY(
                 warpedMat,
-                ROW_MARK_X,
+                markX,
                 expectedY,
                 GRID_LOCK_SEARCH_RADIUS_PX,
+                markSize = if (layout.useFrozenRegistrationMarks) ROW_MARK_SIZE else layout.rowMarkSize,
             ) ?: continue
             samples.add(expectedY to foundY)
         }
@@ -2645,8 +2847,9 @@ class OmrProcessor(
         markX: Double,
         expectedY: Double,
         searchRadius: Int,
+        markSize: Double = ROW_MARK_SIZE,
     ): Double? {
-        val sample = maxOf(2, (ROW_MARK_SIZE).toInt())
+        val sample = maxOf(2, markSize.toInt())
         val half = sample / 2
         val cx = markX.toInt().coerceIn(half, grayMat.cols() - half - 1)
         var bestY = expectedY
@@ -2670,27 +2873,37 @@ class OmrProcessor(
      * Calibrate fill threshold using the calibration marks in the footer
      * Uses fixed positions from OmrPageConstants
      */
-    private fun calibrateFillThreshold(warpedMat: Mat, debugInfo: MutableMap<String, Any>): GridCalibration {
+    private fun calibrateFillThreshold(
+        warpedMat: Mat,
+        debugInfo: MutableMap<String, Any>,
+        layout: QrLayoutMetadata? = null,
+    ): GridCalibration {
         try {
-            // Use fixed calibration mark positions from OmrPageConstants
+            val frozen = layout == null || layout.useFrozenRegistrationMarks
+            val filledX = if (frozen) CALIBRATION_FILLED_X else layout!!.calibrationFilledX
+            val emptyX = if (frozen) CALIBRATION_EMPTY_X else layout!!.calibrationEmptyX
+            val calY = if (frozen) CALIBRATION_Y else layout!!.calibrationY
+            val calSize = if (frozen) CALIBRATION_BUBBLE_SIZE else layout!!.calibrationBubbleSize
+
             val filledFill = sampleBubbleFill(
                 warpedMat,
-                CALIBRATION_FILLED_X,
-                CALIBRATION_Y,
-                CALIBRATION_BUBBLE_SIZE,
+                filledX,
+                calY,
+                calSize,
             )
             val emptyFill = sampleBubbleFill(
                 warpedMat,
-                CALIBRATION_EMPTY_X,
-                CALIBRATION_Y,
-                CALIBRATION_BUBBLE_SIZE,
+                emptyX,
+                calY,
+                calSize,
             )
             
             debugInfo["calibrationFilledSample"] = filledFill
             debugInfo["calibrationEmptySample"] = emptyFill
-            debugInfo["calibrationFilledX"] = CALIBRATION_FILLED_X
-            debugInfo["calibrationEmptyX"] = CALIBRATION_EMPTY_X
-            debugInfo["calibrationY"] = CALIBRATION_Y
+            debugInfo["calibrationFilledX"] = filledX
+            debugInfo["calibrationEmptyX"] = emptyX
+            debugInfo["calibrationY"] = calY
+            debugInfo["calibrationFrozen"] = frozen
             
             // If we got good samples, calculate threshold.
             // Midpoint between solid black and empty paper sits too high for light pencil;
@@ -2742,13 +2955,24 @@ class OmrProcessor(
     /**
      * Detect OMR ID with validation
      */
-    private fun detectOmrIdWithValidation(thresholdMat: Mat, grayMat: Mat, fillThreshold: Double,
-                                           debugInfo: MutableMap<String, Any>): OmrIdReadResult? {
-        // Use fixed OMR ID positions from OmrPageConstants
-        debugInfo["omrIdFirstColumnX"] = OMR_ID_FIRST_COLUMN_X
-        debugInfo["omrIdFirstRowY"] = OMR_ID_FIRST_ROW_Y
-        debugInfo["omrIdColumnSpacing"] = OMR_ID_COLUMN_SPACING
-        debugInfo["omrIdRowSpacing"] = OMR_ID_ROW_SPACING
+    private fun detectOmrIdWithValidation(
+        thresholdMat: Mat,
+        grayMat: Mat,
+        fillThreshold: Double,
+        debugInfo: MutableMap<String, Any>,
+        layout: QrLayoutMetadata? = null,
+    ): OmrIdReadResult? {
+        val frozen = layout == null || layout.useFrozenRegistrationMarks
+        val firstColX = if (frozen) OMR_ID_FIRST_COLUMN_X else layout!!.omrIdFirstColumnX
+        val firstRowY = if (frozen) OMR_ID_FIRST_ROW_Y else layout!!.omrIdFirstRowY
+        val colSpacing = if (frozen) OMR_ID_COLUMN_SPACING else layout!!.omrIdColumnSpacing
+        val rowSpacing = if (frozen) OMR_ID_ROW_SPACING else layout!!.omrIdRowSpacing
+
+        debugInfo["omrIdFirstColumnX"] = firstColX
+        debugInfo["omrIdFirstRowY"] = firstRowY
+        debugInfo["omrIdColumnSpacing"] = colSpacing
+        debugInfo["omrIdRowSpacing"] = rowSpacing
+        debugInfo["omrIdFrozen"] = frozen
         
         // Pencil fills often land below the solid-black calibration ceiling (0.42).
         // Use a slightly lower cut for OMR ID only — answer bubbles keep fillThreshold.
@@ -2764,16 +2988,14 @@ class OmrProcessor(
         var ambiguousCount = 0
         
         for (col in 0 until OMR_ID_COLUMNS) {
-            // Fixed column positions from OmrPageConstants
-            val columnX = OMR_ID_FIRST_COLUMN_X + col * OMR_ID_COLUMN_SPACING
+            val columnX = firstColX + col * colSpacing
             var bestDigit = -1
             var bestFill = 0.0
             var secondBestFill = 0.0
             
             // Scan all 10 digit positions
             for (digit in 0 until OMR_ID_ROWS) {
-                // Fixed row positions from OmrPageConstants
-                val bubbleY = OMR_ID_FIRST_ROW_Y + digit * OMR_ID_ROW_SPACING
+                val bubbleY = firstRowY + digit * rowSpacing
                 // OMR ID rows are only ~12pt apart — use tiny refine (±1) so we do not
                 // pull fill from the neighboring digit bubble.
                 val result = analyzeBubbleWithRefine(
@@ -2977,7 +3199,8 @@ class OmrProcessor(
         
         val answers = mutableMapOf<Int, String>()
         val confidences = mutableListOf<Double>()
-        val options = listOf("A", "B", "C", "D", "E")
+        val optionCount = layout.optionsCount.coerceIn(2, ANSWER_OPTIONS)
+        val options = listOf("A", "B", "C", "D", "E").take(optionCount)
         val ambiguousQuestions = mutableListOf<Int>()
         
         var multipleSelections = 0
@@ -2994,6 +3217,7 @@ class OmrProcessor(
             if (emptyGuardStrict) MIN_WINNER_SEPARATION_STRICT else MIN_WINNER_SEPARATION
         debugInfo["effectiveFillThreshold"] = effectiveFillThreshold
         debugInfo["minWinnerSeparation"] = minWinnerSeparation
+        debugInfo["optionsCount"] = optionCount
         
         // Use fixed positions from layout metadata.
         // gridTop is the actual first-row grid origin on the printed sheet.
@@ -3005,7 +3229,7 @@ class OmrProcessor(
         val rows = layout.rows
         
         Log.d(TAG, "Detecting answers with layout: contentTop=$contentTop, rowHeight=$rowHeight, " +
-                "colWidth=$columnWidth, bubbleSpacing=$bubbleSpacingX, cols=$columns, rows=$rows")
+                "colWidth=$columnWidth, bubbleSpacing=$bubbleSpacingX, cols=$columns, rows=$rows, options=$optionCount")
         
         for (questionNum in 1..totalQuestions) {
             // Calculate position using template's fixed layout
@@ -3015,23 +3239,25 @@ class OmrProcessor(
             if (col >= columns) break
             
             // Fixed column center X (using template's column width)
-            val columnCenterX = ANSWER_GRID_LEFT + (col * columnWidth) + (columnWidth / 2)
+            val gridLeft = layout.answerGridLeft
+            val columnInset = layout.answerColumnInset
+            val numberGap = layout.answerNumberBubbleGap
+            val qNumWidth = layout.questionNumberWidth
+            val columnCenterX = gridLeft + (col * columnWidth) + (columnWidth / 2)
             
             // Fixed row center Y using the shared template grid origin.
             val rowCenterY = contentTop + (row * rowHeight) + (rowHeight / 2)
             
             // Bubble positions using fixed spacing from template
-            val bubbleAreaWidth = bubbleSpacingX * (ANSWER_OPTIONS - 1)
-            val usableWidth = columnWidth - (ANSWER_COLUMN_INSET * 2)
-            val rowContentWidth = QUESTION_NUMBER_WIDTH +
-                    ANSWER_NUMBER_BUBBLE_GAP +
-                    bubbleAreaWidth
-            val rowContentLeft = (ANSWER_GRID_LEFT + (col * columnWidth)) +
-                    ANSWER_COLUMN_INSET +
+            val bubbleAreaWidth = bubbleSpacingX * (optionCount - 1)
+            val usableWidth = columnWidth - (columnInset * 2)
+            val rowContentWidth = qNumWidth + numberGap + bubbleAreaWidth
+            val rowContentLeft = (gridLeft + (col * columnWidth)) +
+                    columnInset +
                     ((usableWidth - rowContentWidth) / 2)
             val bubbleAreaLeft = rowContentLeft +
-                    QUESTION_NUMBER_WIDTH +
-                    ANSWER_NUMBER_BUBBLE_GAP
+                    qNumWidth +
+                    numberGap
             
             var bestOption = ""
             var bestFill = 0.0
@@ -3273,6 +3499,8 @@ class OmrProcessor(
             val red = Scalar(40.0, 40.0, 220.0)
             val cyan = Scalar(220.0, 180.0, 40.0)
             val options = listOf("A", "B", "C", "D", "E")
+            val optionCount = layout.optionsCount.coerceIn(2, ANSWER_OPTIONS)
+            val activeOptions = options.take(optionCount)
             val maxQ = minOf(layout.columns * layout.rows, 100)
 
             for (questionNum in 1..maxQ) {
@@ -3280,14 +3508,14 @@ class OmrProcessor(
                 val row = (questionNum - 1) % layout.rows
                 if (col >= layout.columns) break
                 val rowCenterY = layout.gridTop + (row * layout.rowHeight) + (layout.rowHeight / 2)
-                val bubbleAreaWidth = layout.bubbleSpacingX * (ANSWER_OPTIONS - 1)
+                val bubbleAreaWidth = layout.bubbleSpacingX * (optionCount - 1)
                 val usableWidth = layout.columnWidth - (ANSWER_COLUMN_INSET * 2)
                 val rowContentWidth = QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP + bubbleAreaWidth
                 val rowContentLeft = (ANSWER_GRID_LEFT + (col * layout.columnWidth)) +
                     ANSWER_COLUMN_INSET + ((usableWidth - rowContentWidth) / 2)
                 val bubbleAreaLeft = rowContentLeft + QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP
                 val chosen = answers[questionNum]
-                for ((optIdx, option) in options.withIndex()) {
+                for ((optIdx, option) in activeOptions.withIndex()) {
                     val bubbleX = bubbleAreaLeft + (optIdx * layout.bubbleSpacingX)
                     val colorScalar = when {
                         chosen == option -> green
