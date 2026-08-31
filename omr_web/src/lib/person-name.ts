@@ -68,6 +68,19 @@ export function normalizePersonName(input: string): string {
   return normalized.join(" ");
 }
 
+/** Combine separate fields (form: last name, then first name) into stored "First Last" form. */
+export function normalizePersonNameFromParts(
+  firstName: string,
+  lastName: string,
+): string {
+  const given = firstName.trim();
+  const family = lastName.trim();
+  if (!given || !family) {
+    return "";
+  }
+  return normalizePersonName(`${given} ${family}`);
+}
+
 function titleWord(word: string): string {
   if (!word) {
     return word;

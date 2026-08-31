@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizePersonName } from "@/lib/person-name";
+import { normalizePersonName, normalizePersonNameFromParts } from "@/lib/person-name";
 
 describe("normalizePersonName", () => {
   it("title-cases plain names", () => {
@@ -16,5 +16,17 @@ describe("normalizePersonName", () => {
 
   it("lowercases name particles", () => {
     expect(normalizePersonName("MARIA DE LA CRUZ")).toBe("Maria de la Cruz");
+  });
+});
+
+describe("normalizePersonNameFromParts", () => {
+  it("combines first and last into normalized full name", () => {
+    expect(normalizePersonNameFromParts("maria", "santos")).toBe("Maria Santos");
+    expect(normalizePersonNameFromParts("ALEXANDER", "BALABA")).toBe("Alexander Balaba");
+  });
+
+  it("returns empty when either part is missing", () => {
+    expect(normalizePersonNameFromParts("", "Santos")).toBe("");
+    expect(normalizePersonNameFromParts("Maria", "  ")).toBe("");
   });
 });

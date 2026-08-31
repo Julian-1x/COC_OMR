@@ -7,7 +7,7 @@ import {
 import { tryGetApiBaseUrl } from "@/lib/api/env";
 import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
 import { COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
-import { normalizePersonName } from "@/lib/person-name";
+import { normalizePersonName, normalizePersonNameFromParts } from "@/lib/person-name";
 
 type AuthResponse = {
   token?: string;
@@ -108,6 +108,8 @@ export async function POST(request: Request) {
       email?: string;
       password?: string;
       name?: string;
+      first_name?: string;
+      last_name?: string;
       school?: string;
       department?: string;
       captcha_token?: string;
@@ -132,11 +134,17 @@ export async function POST(request: Request) {
     };
 
     if (mode === "register") {
-      const name = normalizePersonName(body.name?.trim() ?? "");
+      const name =
+        body.first_name !== undefined || body.last_name !== undefined
+          ? normalizePersonNameFromParts(
+              body.first_name?.trim() ?? "",
+              body.last_name?.trim() ?? "",
+            )
+          : normalizePersonName(body.name?.trim() ?? "");
       const department = body.department?.trim().toUpperCase() ?? "";
       if (!name) {
         return NextResponse.json(
-          { error: "Enter your full name (first name, then last name)." },
+          { error: "Enter your last name and first name." },
           { status: 400 },
         );
       }

@@ -27,7 +27,8 @@ function LoginForm() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [firstName, setFirstName] = useState("");
   const [department, setDepartment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -336,6 +337,9 @@ function LoginForm() {
         if (passwordError) {
           throw new Error(passwordError);
         }
+        if (!lastName.trim() || !firstName.trim()) {
+          throw new Error("Enter your last name and first name.");
+        }
       }
 
       const response = await fetch("/auth/login", {
@@ -345,7 +349,8 @@ function LoginForm() {
           mode: awaitingMfa ? "login" : mode,
           email,
           password,
-          name,
+          last_name: mode === "register" ? lastName : undefined,
+          first_name: mode === "register" ? firstName : undefined,
           school: COC_SCHOOL_NAME,
           department: mode === "register" ? department : undefined,
           captcha_token: captchaToken ?? undefined,
@@ -510,11 +515,26 @@ function LoginForm() {
           {mode === "register" ? (
             <>
               <div className="mb-3">
-                <Label htmlFor="name">Full name</Label>
-                <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
+                <Label htmlFor="lastName">Last name</Label>
+                <Input
+                  id="lastName"
+                  autoComplete="family-name"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="mb-3">
+                <Label htmlFor="firstName">First name</Label>
+                <Input
+                  id="firstName"
+                  autoComplete="given-name"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  required
+                />
                 <p className="mt-1 text-xs text-slate-500">
-                  First name then last name (e.g. Maria Santos). We fix ALL CAPS and Last, First
-                  automatically.
+                  We store names as First Last (e.g. Maria Santos) and fix ALL CAPS automatically.
                 </p>
               </div>
               <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
