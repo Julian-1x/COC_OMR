@@ -112,6 +112,7 @@ class CloudAuthService {
     required String password,
     required String department,
     String school = CocSchool.name,
+    String? captchaToken,
   }) async {
     _ensureApiReady();
     final trimmedName = PersonName.normalize(name);
@@ -140,6 +141,8 @@ class CloudAuthService {
           'full_name': trimmedName,
           'school': trimmedSchool,
           'department': normalizedDepartment,
+          if (captchaToken != null && captchaToken.isNotEmpty)
+            'captcha_token': captchaToken,
         },
         auth: false,
       );
@@ -195,13 +198,20 @@ class CloudAuthService {
 
   /// Ask the server to email a password-reset link. Always resolves without
   /// revealing whether the email exists (the API responds generically).
-  Future<void> requestPasswordReset({required String email}) async {
+  Future<void> requestPasswordReset({
+    required String email,
+    String? captchaToken,
+  }) async {
     _ensureApiReady();
     final normalizedEmail = email.trim().toLowerCase();
     try {
       await ApiService.postJson(
         '/forgot-password',
-        <String, dynamic>{'email': normalizedEmail},
+        <String, dynamic>{
+          'email': normalizedEmail,
+          if (captchaToken != null && captchaToken.isNotEmpty)
+            'captcha_token': captchaToken,
+        },
         auth: false,
       );
     } catch (error) {

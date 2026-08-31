@@ -15,6 +15,7 @@ import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
 import 'package:omr_app/services/scanner_engine.dart';
+import 'package:omr_app/services/security_config_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/widgets/app_pin_input.dart';
@@ -22,6 +23,7 @@ import 'package:omr_app/widgets/app_primary_button.dart';
 import 'package:omr_app/utils/password_rules.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/auth_shell.dart';
+import 'package:omr_app/widgets/turnstile_captcha_field.dart';
 
 enum _AuthMode { login, register }
 
@@ -68,6 +70,10 @@ class _LoginPageState extends State<LoginPage> {
   bool _resettingForgottenPin = false;
   String? _pendingConfirmationEmail;
   bool _isDeviceOnline = true;
+  SecurityConfig _securityConfig = SecurityConfig.disabled;
+  String? _captchaToken;
+  String? _captchaSiteKeyOverride;
+  bool _loginCaptchaRequired = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   StreamSubscription<Uri>? _authLinkSub;
   final AppLinks _appLinks = AppLinks();
@@ -81,7 +87,57 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _bootstrapAuth() async {
     await _restoreSession();
+    await _loadSecurityConfig();
     await _initAuthDeepLinks();
+  }
+
+  Future<void> _loadSecurityConfig() async {
+    if (!ApiService.isConfigured) {
+      return;
+    }
+    final config = await SecurityConfigService.instance.fetch();
+    if (mounted) {
+      setState(() => _securityConfig = config);
+    }
+  }
+
+  String? get _activeCaptchaSiteKey =>
+      _captchaSiteKeyOverride ?? _securityConfig.captchaSiteKey;
+
+  bool get _needsCaptchaOnForm {
+    final siteKey = _activeCaptchaSiteKey;
+    if (siteKey == null || siteKey.isEmpty) {
+      return false;
+    }
+    if (_mode == _AuthMode.register) {
+      return _securityConfig.captchaEnabled;
+    }
+    return _loginCaptchaRequired;
+  }
+
+  void _resetCaptchaChallenge() {
+    _captchaToken = null;
+    _loginCaptchaRequired = false;
+    _captchaSiteKeyOverride = null;
+  }
+
+  Widget? _buildCaptchaField() {
+    final siteKey = _activeCaptchaSiteKey;
+    if (!_needsCaptchaOnForm || siteKey == null || siteKey.isEmpty) {
+      return null;
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.md),
+      child: TurnstileCaptchaField(
+        siteKey: siteKey,
+        onToken: (token) {
+          if (!mounted) {
+            return;
+          }
+          setState(() => _captchaToken = token);
+        },
+      ),
+    );
   }
 
   @override
@@ -402,6 +458,15 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
+    if (_needsCaptchaOnForm &&
+        (_captchaToken == null || _captchaToken!.trim().isEmpty)) {
+      _showMessage(
+        'Complete the security check, then try again.',
+        isError: true,
+      );
+      return;
+    }
+
     setState(() => _isSubmitting = true);
     try {
       if (isRegister) {
@@ -411,6 +476,7 @@ class _LoginPageState extends State<LoginPage> {
           password: password,
           school: CocSchool.name,
           department: _selectedDepartment!,
+          captchaToken: _captchaToken,
         );
 
         if (!mounted) {
@@ -464,6 +530,7 @@ class _LoginPageState extends State<LoginPage> {
       final signIn = await _auth.signInTeacher(
         email: email,
         password: password,
+        captchaToken: _captchaToken,
       );
 
       if (!mounted) {
@@ -471,10 +538,16 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       if (signIn.captchaRequired) {
-        setState(() => _isSubmitting = false);
+        setState(() {
+          _isSubmitting = false;
+          _loginCaptchaRequired = true;
+          _captchaSiteKeyOverride =
+              signIn.captchaSiteKey ?? _securityConfig.captchaSiteKey;
+          _captchaToken = null;
+        });
         _showMessage(
           signIn.message ??
-              'Too many sign-in attempts. Use the web portal to complete the security check, then try again.',
+              'Complete the security check below, then try signing in again.',
           isError: true,
         );
         return;
@@ -1392,6 +1465,7 @@ class _LoginPageState extends State<LoginPage> {
               ),
             ),
           ],
+          if (_buildCaptchaField() case final captcha?) captcha,
           const SizedBox(height: AppSpacing.xl),
           AppPrimaryButton(
             label: _resettingForgottenPin
@@ -1426,6 +1500,12 @@ class _LoginPageState extends State<LoginPage> {
     final resetEmailController =
         TextEditingController(text: _emailController.text.trim());
     var isSending = false;
+    String? sheetCaptchaToken;
+    final captchaSiteKey = _securityConfig.captchaSiteKey;
+    final needsCaptcha =
+        _securityConfig.captchaEnabled &&
+        captchaSiteKey != null &&
+        captchaSiteKey.isNotEmpty;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -1439,10 +1519,22 @@ class _LoginPageState extends State<LoginPage> {
                 _showMessage('Enter a valid email address.', isError: true);
                 return;
               }
+              if (needsCaptcha &&
+                  (sheetCaptchaToken == null ||
+                      sheetCaptchaToken!.trim().isEmpty)) {
+                _showMessage(
+                  'Complete the security check, then try again.',
+                  isError: true,
+                );
+                return;
+              }
               final navigator = Navigator.of(sheetContext);
               setSheetState(() => isSending = true);
               try {
-                await _auth.requestPasswordReset(email: email);
+                await _auth.requestPasswordReset(
+                  email: email,
+                  captchaToken: sheetCaptchaToken,
+                );
                 if (!mounted) return;
                 navigator.pop();
                 _showMessage(
@@ -1495,6 +1587,15 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     onSubmitted: (_) => isSending ? null : submitReset(),
                   ),
+                  if (needsCaptcha) ...[
+                    const SizedBox(height: AppSpacing.md),
+                    TurnstileCaptchaField(
+                      siteKey: captchaSiteKey,
+                      onToken: (token) {
+                        sheetCaptchaToken = token;
+                      },
+                    ),
+                  ],
                   const SizedBox(height: AppSpacing.lg),
                   AppPrimaryButton(
                     label: 'Send reset link',
@@ -1638,7 +1739,10 @@ class _LoginPageState extends State<LoginPage> {
             label: 'Login',
             icon: Icons.login_rounded,
             selected: _mode == _AuthMode.login,
-            onTap: () => setState(() => _mode = _AuthMode.login),
+            onTap: () => setState(() {
+              _mode = _AuthMode.login;
+              _resetCaptchaChallenge();
+            }),
           ),
         ),
         const SizedBox(width: AppSpacing.sm),
@@ -1647,7 +1751,10 @@ class _LoginPageState extends State<LoginPage> {
             label: 'Register',
             icon: Icons.person_add_alt_1_rounded,
             selected: _mode == _AuthMode.register,
-            onTap: () => setState(() => _mode = _AuthMode.register),
+            onTap: () => setState(() {
+              _mode = _AuthMode.register;
+              _resetCaptchaChallenge();
+            }),
           ),
         ),
       ],
