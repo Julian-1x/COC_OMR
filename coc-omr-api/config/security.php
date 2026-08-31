@@ -44,7 +44,7 @@ return [
         'issuer' => env('MFA_ISSUER', 'COC OMR'),
         // Admins must enroll before receiving a session token.
         'required_roles' => ['super_admin', 'dept_admin'],
-        'challenge_ttl_minutes' => 5,
+        'challenge_ttl_minutes' => (int) env('MFA_CHALLENGE_TTL_MINUTES', 15),
     ],
 
 ];

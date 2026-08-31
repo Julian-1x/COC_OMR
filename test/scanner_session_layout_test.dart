@@ -62,6 +62,16 @@ void main() {
   });
 
   test('half-page custom is unlocked and warps to content block', () {
+    final fit = OmrLayoutProfile.tryCompute(
+      itemCount: 10,
+      optionsCount: 5,
+      form: const OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.half,
+      ),
+    );
+    expect(fit.isOk, isTrue);
+
     final subject = Subject(
       id: 'SUB-HALF',
       name: 'Half quiz',
@@ -70,8 +80,8 @@ void main() {
       useCustomLayout: true,
       optionsCount: 5,
       layoutShape: 'lengthwise_half',
-      customGridColumns: 2,
-      customGridRows: 5,
+      customGridColumns: fit.profile!.grid.columns,
+      customGridRows: fit.profile!.grid.rows,
     );
     expect(
       ScannerSessionLayout.examReadyScanErrorForSubject(subject),
@@ -119,7 +129,17 @@ void main() {
     );
   });
 
-  test('portrait full custom is exam-ready', () {
+  test('portrait full custom is exam-ready when grid is saved', () {
+    final fit = OmrLayoutProfile.tryCompute(
+      itemCount: 15,
+      optionsCount: 5,
+      form: const OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      ),
+    );
+    expect(fit.isOk, isTrue);
+
     final subject = Subject(
       id: 'SUB-FULL',
       name: 'Full custom',
@@ -128,6 +148,8 @@ void main() {
       useCustomLayout: true,
       optionsCount: 5,
       layoutShape: 'lengthwise_full',
+      customGridColumns: fit.profile!.grid.columns,
+      customGridRows: fit.profile!.grid.rows,
     );
     expect(
       ScannerSessionLayout.examReadyScanErrorForSubject(subject),

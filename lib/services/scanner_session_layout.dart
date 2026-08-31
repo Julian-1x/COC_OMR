@@ -79,9 +79,55 @@ class ScannerSessionLayout {
   }
 
   /// Null when OK to print/scan; otherwise a teacher-facing block reason.
-  ///
-  /// All six custom forms are unlocked when session geometry drives native.
   static String? examReadyScanErrorForSubject(Subject subject) {
+    if (!subject.useCustomLayout) {
+      return null;
+    }
+
+    if (subject.customGridColumns == null ||
+        subject.customGridRows == null ||
+        subject.customGridColumns! < 1 ||
+        subject.customGridRows! < 1) {
+      return 'This custom sheet is missing its layout grid. '
+          'Open Print Sheets and pick the custom layout again before '
+          'printing or scanning.';
+    }
+
+    final fit = OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: subject.customGridColumns!,
+      rows: subject.customGridRows!,
+      optionsCount: subject.optionsCount,
+      form: subject.layoutForm,
+    );
+    if (!fit.isOk) {
+      return fit.errorMessage ??
+          'This custom sheet layout is no longer scannable. '
+              'Pick a different layout or question count.';
+    }
+
+    final profile = fit.profile!;
+    if (profile.itemCount < subject.totalQuestions) {
+      return 'This custom sheet fits ${profile.itemCount} questions, but '
+          'the answer key has ${subject.totalQuestions}. '
+          'Update the layout or question count before printing or scanning.';
+    }
+
+    final gridCapacity =
+        subject.customGridColumns! * subject.customGridRows!;
+    if (subject.totalQuestions > gridCapacity) {
+      return 'This layout grid holds $gridCapacity questions, but '
+          'the answer key has ${subject.totalQuestions}.';
+    }
+
+    if (profile.grid.rowHeight < OmrLayoutProfile.minRowHeight) {
+      return 'Rows on this sheet are too small to scan reliably. '
+          'Pick a larger page size or fewer questions.';
+    }
+    if (profile.grid.bubbleSpacingX < OmrLayoutProfile.minBubbleSpacingX) {
+      return 'Bubbles on this sheet are too close together to scan reliably. '
+          'Pick a larger page size or fewer answer choices.';
+    }
+
     return null;
   }
 

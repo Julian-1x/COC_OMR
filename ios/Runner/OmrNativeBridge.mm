@@ -107,6 +107,11 @@ struct QrLayout {
   double calibrationFilledX = kCalFillX;
   double calibrationEmptyX = kCalEmptyX;
   double calibrationBubbleSize = 10.0;
+  double answerBubbleDiameter = kBubbleD;
+  double omrIdBubbleDiameter = kBubbleD;
+  double qrCodeX = 470.0;
+  double qrCodeY = 20.0;
+  double qrCodeSize = 80.0;
 };
 
 Corners *assignCorners(std::vector<cv::Point2f> &cand, double w, double h) {
@@ -208,8 +213,9 @@ QrLayout *parseQrLayout(NSString *qr) {
   return L;
 }
 
-double sampleBubbleFillGray(const cv::Mat &g, double cx, double cy) {
-  int r = (int)(kBubbleD / 2 + 2);
+double sampleBubbleFillGray(const cv::Mat &g, double cx, double cy,
+                            double diameter = kBubbleD) {
+  int r = (int)(diameter / 2 + 2);
   int x = std::max(0, std::min((int)(cx - r), g.cols - r * 2));
   int y = std::max(0, std::min((int)(cy - r), g.rows - r * 2));
   cv::Rect roi(x, y, r * 2, r * 2);
@@ -223,8 +229,9 @@ struct BubbleAn {
   double area = 0;
 };
 
-BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double cy) {
-  int rad = (int)(kBubbleD / 2 + 1);
+BubbleAn analyzeBubble(const cv::Mat &th, const cv::Mat &gray, double cx, double cy,
+                       double diameter = kBubbleD) {
+  int rad = (int)(diameter / 2 + 1);
   int x = std::max(0, std::min((int)(cx - rad), th.cols - rad * 2 - 1));
   int y = std::max(0, std::min((int)(cy - rad), th.rows - rad * 2 - 1));
   int size = std::min(rad * 2, std::min(th.cols - x, th.rows - y));
@@ -606,6 +613,13 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
       layout->calibrationFilledX = readD(@"calibrationFilledX", kCalFillX);
       layout->calibrationEmptyX = readD(@"calibrationEmptyX", kCalEmptyX);
       layout->calibrationBubbleSize = readD(@"calibrationBubbleSize", 10.0);
+      layout->answerBubbleDiameter = readD(@"answerBubbleDiameter", kBubbleD);
+      layout->omrIdBubbleDiameter = readD(@"omrIdBubbleDiameter", kBubbleD);
+      double qrX = [sessionLayout[@"qrCodeX"] doubleValue];
+      layout->qrCodeX = qrX >= 0 ? qrX : 470.0;
+      double qrY = [sessionLayout[@"qrCodeY"] doubleValue];
+      layout->qrCodeY = qrY >= 0 ? qrY : 20.0;
+      layout->qrCodeSize = readD(@"qrCodeSize", 80.0);
       cornerSize = layout->cornerMarkerSize;
       cornerOffset = layout->cornerMarkerOffset;
       warpW = (int)llround(layout->contentBlockWidth);
@@ -657,8 +671,8 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   double calFillX = layout->useFrozenRegistrationMarks ? kCalFillX : layout->calibrationFilledX;
   double calEmptyX = layout->useFrozenRegistrationMarks ? kCalEmptyX : layout->calibrationEmptyX;
   double calY = layout->useFrozenRegistrationMarks ? kCalY : layout->calibrationY;
-  double ff = sampleBubbleFillGray(warped, calFillX, calY);
-  double ef = sampleBubbleFillGray(warped, calEmptyX, calY);
+  double ff = sampleBubbleFillGray(warped, calFillX, calY, layout->calibrationBubbleSize);
+  double ef = sampleBubbleFillGray(warped, calEmptyX, calY, layout->calibrationBubbleSize);
   debug[@"calibrationFilledSample"] = @(ff);
   debug[@"calibrationEmptySample"] = @(ef);
   bool calibrated = ff > ef + 0.10;
@@ -680,7 +694,7 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     double bestF = 0, secondF = 0;
     for (int d = 0; d < kOmrRows; d++) {
       double y = omrFirstY + d * omrRowSpc;
-      BubbleAn a = analyzeBubble(th, warped, colX, y);
+      BubbleAn a = analyzeBubble(th, warped, colX, y, layout->omrIdBubbleDiameter);
       if (a.fill > bestF) { secondF = bestF; bestF = a.fill; bestD = d; }
       else if (a.fill > secondF) secondF = a.fill;
     }
@@ -732,7 +746,7 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     int filledCnt = 0;
     for (int oi = 0; oi < optionCount; oi++) {
       double bx = bubbleLeft + oi * layout->bubbleSpacingX;
-      BubbleAn a = analyzeBubble(th, warped, bx, rowY);
+      BubbleAn a = analyzeBubble(th, warped, bx, rowY, layout->answerBubbleDiameter);
       bool marked = a.fill > fillTh && a.area >= kMinAnswerAreaCoverage;
       if (marked) filledCnt++;
       if (a.fill > bestF) {

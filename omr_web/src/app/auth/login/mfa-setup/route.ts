@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { tryGetApiBaseUrl } from "@/lib/api/env";
-import { fetchAuthUpstream } from "@/lib/api/wake-api";
+import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
 
 type SetupResponse = {
   secret?: string;
@@ -31,14 +31,20 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Sign-in expired. Enter your password again." }, { status: 400 });
     }
 
-    const response = await fetchAuthUpstream(`${baseUrl}/api/login/mfa/setup`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+    await wakeSchoolApi(baseUrl, { attempts: 3, delayMs: 2000, probeTimeoutMs: 30_000 });
+
+    const response = await fetchAuthUpstream(
+      `${baseUrl}/api/login/mfa/setup`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ mfa_ticket: mfaTicket }),
       },
-      body: JSON.stringify({ mfa_ticket: mfaTicket }),
-    });
+      { attempts: 4, timeoutMs: 90_000 },
+    );
 
     const payload = (await response.json()) as SetupResponse;
     if (!response.ok || !payload.secret) {

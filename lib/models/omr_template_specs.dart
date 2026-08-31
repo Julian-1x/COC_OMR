@@ -924,6 +924,9 @@ class OmrSheetGeometry {
         'calibrationFilledX': calibrationFilledX,
         'calibrationEmptyX': calibrationEmptyX,
         'calibrationBubbleSize': calibrationBubbleSize,
+        'qrCodeX': qrCodeX,
+        'qrCodeY': qrCodeY,
+        'qrCodeSize': qrCodeSize,
       };
 }
 
@@ -1237,6 +1240,8 @@ class OmrLayoutProfile {
     }
   }
 
+  static const List<OmrLayoutForm> allCustomForms = _allCustomForms;
+
   static const List<OmrLayoutForm> _allCustomForms = [
     OmrLayoutForm(
       orientation: OmrLayoutOrientation.lengthwise,
@@ -1438,9 +1443,25 @@ class OmrLayoutProfile {
       );
     }
 
+    return _packItemsForForm(
+      items: items,
+      opts: opts,
+      form: resolvedForm,
+      geometry: geometry,
+      maxFitHint: maxFit,
+    );
+  }
+
+  static OmrLayoutFitResult _packItemsForForm({
+    required int items,
+    required int opts,
+    required OmrLayoutForm form,
+    required OmrSheetGeometry geometry,
+    required int maxFitHint,
+  }) {
     // Lengthwise prefers denser columns; Crosswise prefers fewer, wider columns.
     final columnOrder =
-        resolvedForm.orientation == OmrLayoutOrientation.crosswise
+        form.orientation == OmrLayoutOrientation.crosswise
             ? const [3, 4, 5, 2, 1]
             : const [5, 4, 3, 2, 1];
 
@@ -1466,7 +1487,7 @@ class OmrLayoutProfile {
           : preferredMaxBubbleSpacingX;
 
       final templateId =
-          'custom_${items}_o${opts}_${resolvedForm.id}_${columns}x$rows';
+          'custom_${items}_o${opts}_${form.id}_${columns}x$rows';
       final grid = OmrTemplateSpec(
         templateId: templateId,
         maxItems: items,
@@ -1483,7 +1504,7 @@ class OmrLayoutProfile {
           grid: grid,
           optionsCount: opts,
           isCustom: true,
-          form: resolvedForm,
+          form: form,
           itemCount: items,
           geometry: geometry,
         ),
@@ -1491,14 +1512,78 @@ class OmrLayoutProfile {
     }
 
     return OmrLayoutFitResult.fail(
-      'A ${resolvedForm.pageFill.teacherLabel.toLowerCase()} '
-      '${resolvedForm.orientation.teacherLabel.toLowerCase()} sheet '
-      'with $opts choices can fit at most $maxFit questions. '
+      'A ${form.pageFill.teacherLabel.toLowerCase()} '
+      '${form.orientation.teacherLabel.toLowerCase()} sheet '
+      'with $opts choices can fit at most $maxFitHint questions. '
       'You asked for $items — use Full page, fewer questions, or fewer choices.',
     );
   }
 
-  /// Evalbee-style fixed grid: teacher picks columns × rows explicitly.
+  /// Raw geometric upper bound before the column solver walk-down.
+  static int _geometricMaxFitItems({
+    required OmrLayoutForm form,
+    required int optionsCount,
+  }) {
+    final opts = optionsCount.clamp(2, 5);
+    final geometry = OmrSheetGeometry.forForm(form);
+    final gridHeight = geometry.answerGridContentHeight;
+    final gridWidth = geometry.answerGridWidth;
+    if (gridHeight < minRowHeight || gridWidth < 80) {
+      return 0;
+    }
+
+    final columnOrder = form.orientation == OmrLayoutOrientation.crosswise
+        ? const [3, 4, 5, 2, 1]
+        : const [5, 4, 3, 2, 1];
+
+    var best = 0;
+    for (final columns in columnOrder) {
+      final columnWidth = gridWidth / columns;
+      final maxSpacing = _maxBubbleSpacing(
+        columnWidth,
+        opts,
+        geometry: geometry,
+      );
+      if (maxSpacing < minBubbleSpacingX) continue;
+
+      final maxRows = (gridHeight / minRowHeight).floor();
+      if (maxRows < 1) continue;
+      final capacity = columns * maxRows;
+      if (capacity > best) {
+        best = capacity;
+      }
+    }
+
+    if (best > maxCustomItems) {
+      best = maxCustomItems;
+    }
+    final safety = safetyCapForForm(form);
+    if (best > safety) {
+      best = safety;
+    }
+    return best;
+  }
+
+  static OmrLayoutFitResult _tryComputeWithoutRecursion({
+    required int itemCount,
+    required int optionsCount,
+    required OmrLayoutForm form,
+  }) {
+    final opts = optionsCount.clamp(2, 5);
+    final geometry = OmrSheetGeometry.forForm(form);
+    if (geometry.answerGridContentHeight < minRowHeight * 2 ||
+        geometry.answerGridWidth < 80) {
+      return const OmrLayoutFitResult.fail('too small');
+    }
+    return _packItemsForForm(
+      items: itemCount,
+      opts: opts,
+      form: form,
+      geometry: geometry,
+      maxFitHint: itemCount,
+    );
+  }
+
   static OmrLayoutFitResult tryComputeExplicitGrid({
     required int columns,
     required int rows,
@@ -1606,44 +1691,22 @@ class OmrLayoutProfile {
     required OmrLayoutForm form,
     required int optionsCount,
   }) {
+    var capped = _geometricMaxFitItems(
+      form: form,
+      optionsCount: optionsCount,
+    );
     final opts = optionsCount.clamp(2, 5);
-    final geometry = OmrSheetGeometry.forForm(form);
-    final gridHeight = geometry.answerGridContentHeight;
-    final gridWidth = geometry.answerGridWidth;
-    if (gridHeight < minRowHeight || gridWidth < 80) {
-      return 0;
-    }
-
-    final columnOrder = form.orientation == OmrLayoutOrientation.crosswise
-        ? const [3, 4, 5, 2, 1]
-        : const [5, 4, 3, 2, 1];
-
-    var best = 0;
-    for (final columns in columnOrder) {
-      final columnWidth = gridWidth / columns;
-      final maxSpacing = _maxBubbleSpacing(
-        columnWidth,
-        opts,
-        geometry: geometry,
-      );
-      if (maxSpacing < minBubbleSpacingX) continue;
-
-      final maxRows = (gridHeight / minRowHeight).floor();
-      if (maxRows < 1) continue;
-      final capacity = columns * maxRows;
-      if (capacity > best) {
-        best = capacity;
+    while (capped >= minCustomItems) {
+      if (_tryComputeWithoutRecursion(
+        itemCount: capped,
+        optionsCount: opts,
+        form: form,
+      ).isOk) {
+        return capped;
       }
+      capped--;
     }
-
-    if (best > maxCustomItems) {
-      best = maxCustomItems;
-    }
-    final safety = safetyCapForForm(form);
-    if (best > safety) {
-      return safety;
-    }
-    return best;
+    return 0;
   }
 
   /// Teacher-facing capacity line for the answer-key UI.

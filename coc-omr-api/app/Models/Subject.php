@@ -29,6 +29,9 @@ class Subject extends Model
         'use_custom_layout',
         'options_count',
         'layout_shape',
+        'custom_layout_id',
+        'custom_grid_columns',
+        'custom_grid_rows',
         'sync_status',
     ];
 

@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:math' show min;
+import 'dart:typed_data';
 
 import 'package:barcode/barcode.dart';
 import 'package:flutter/material.dart';
+import 'package:meta/meta.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/services/api_service.dart';
@@ -137,7 +139,17 @@ class AnswerSheetGenerator {
       throw Exception(examReadyError);
     }
     final profile = subject.layoutProfile;
-    if (profile.itemCount != subject.totalQuestions) {
+    if (subject.customGridColumns != null && subject.customGridRows != null) {
+      final gridCapacity =
+          subject.customGridColumns! * subject.customGridRows!;
+      if (subject.totalQuestions > gridCapacity) {
+        throw Exception(
+          'Custom sheet question count (${subject.totalQuestions}) exceeds '
+          'the saved layout grid ($gridCapacity). '
+          'Pick the layout again under Print Sheets before printing.',
+        );
+      }
+    } else if (profile.itemCount < subject.totalQuestions) {
       throw Exception(
         'Custom sheet question count does not match a scannable layout. '
         'Pick the layout again under Print Sheets before printing.',
@@ -308,6 +320,35 @@ class AnswerSheetGenerator {
     await LocalDataStore.instance.persistCountersNow();
   }
 
+  /// One-page PDF for unit tests — does not open the print dialog.
+  @visibleForTesting
+  static Future<Uint8List> buildSamplePdfBytes(Subject subject) async {
+    _ensureCustomLayoutPrintable(subject);
+    final pdf = pw.Document();
+    final profile = subject.layoutProfile;
+    final totalQuestions =
+        subject.totalQuestions > 0 ? subject.totalQuestions : 50;
+    final qrPayload = _buildSheetQrPayload(subject);
+
+    _appendTiledPages(
+      pdf: pdf,
+      profile: profile,
+      tileMultiUp: false,
+      sheetBodies: [
+        _buildAbsoluteLayout(
+          subject,
+          qrPayload,
+          totalQuestions,
+          profile.grid,
+          profile.geometry,
+          optionsCount: profile.optionsCount,
+        ),
+      ],
+    );
+
+    return Uint8List.fromList(await pdf.save());
+  }
+
   /// Batch generate class set (1 sheet per student, pre-filled OMR)
   static Future<void> batchGenerate({
     required Subject subject,
@@ -392,17 +433,21 @@ class AnswerSheetGenerator {
         pw.Page(
           pageFormat: pageFormat,
           margin: const pw.EdgeInsets.all(0),
-          build: (context) => pw.Stack(
-            children: [
-              if (tiling != null) ..._buildTileCutGuides(tiling, g),
-              for (var slot = 0; slot < chunk.length; slot++)
-                _positionedSheetTile(
-                  profile: profile,
-                  dx: tiling?.tileOffsetX(slot, g) ?? 0,
-                  dy: tiling?.tileOffsetY(slot, g) ?? 0,
-                  body: chunk[slot],
-                ),
-            ],
+          build: (context) => pw.SizedBox(
+            width: pageFormat.width,
+            height: pageFormat.height,
+            child: pw.Stack(
+              children: [
+                if (tiling != null) ..._buildTileCutGuides(tiling, g),
+                for (var slot = 0; slot < chunk.length; slot++)
+                  _positionedSheetTile(
+                    profile: profile,
+                    dx: tiling?.tileOffsetX(slot, g) ?? 0,
+                    dy: tiling?.tileOffsetY(slot, g) ?? 0,
+                    body: chunk[slot],
+                  ),
+              ],
+            ),
           ),
         ),
       );
@@ -418,11 +463,15 @@ class AnswerSheetGenerator {
     return pw.Positioned(
       left: dx,
       top: dy,
-      child: pw.Stack(
-        children: [
-          _cornerMarkers(profile),
-          ...body,
-        ],
+      child: pw.SizedBox(
+        width: profile.geometry.contentBlockWidth,
+        height: profile.geometry.contentBlockHeight,
+        child: pw.Stack(
+          children: [
+            _cornerMarkers(profile),
+            ...body,
+          ],
+        ),
       ),
     );
   }
@@ -561,34 +610,38 @@ class AnswerSheetGenerator {
     final usedTop = block[1];
     final usedRight = block[2];
     final usedBottom = block[3];
-    return pw.Stack(
-      children: [
-        // Four corner markers at content-block corners (not full page for half/quarter)
-        pw.Positioned(
-          left: usedLeft + offset,
-          top: usedTop + offset,
-          child: _cornerBox(size),
-        ),
-        pw.Positioned(
-          left: usedRight - offset - size,
-          top: usedTop + offset,
-          child: _cornerBox(size),
-        ),
-        pw.Positioned(
-          left: usedLeft + offset,
-          top: usedBottom - offset - size,
-          child: _cornerBox(size),
-        ),
-        pw.Positioned(
-          left: usedRight - offset - size,
-          top: usedBottom - offset - size,
-          child: _cornerBox(size),
-        ),
-        // Scanner registration marks — positions come from layout geometry.
-        ..._buildTimingMarks(g),
-        // Row reference marks for answer grid alignment validation
-        ..._buildRowMarks(profile),
-      ],
+    return pw.SizedBox(
+      width: g.contentBlockWidth,
+      height: g.contentBlockHeight,
+      child: pw.Stack(
+        children: [
+          // Four corner markers at content-block corners (not full page for half/quarter)
+          pw.Positioned(
+            left: usedLeft + offset,
+            top: usedTop + offset,
+            child: _cornerBox(size),
+          ),
+          pw.Positioned(
+            left: usedRight - offset - size,
+            top: usedTop + offset,
+            child: _cornerBox(size),
+          ),
+          pw.Positioned(
+            left: usedLeft + offset,
+            top: usedBottom - offset - size,
+            child: _cornerBox(size),
+          ),
+          pw.Positioned(
+            left: usedRight - offset - size,
+            top: usedBottom - offset - size,
+            child: _cornerBox(size),
+          ),
+          // Scanner registration marks — positions come from layout geometry.
+          ..._buildTimingMarks(g),
+          // Row reference marks for answer grid alignment validation
+          ..._buildRowMarks(profile),
+        ],
+      ),
     );
   }
 

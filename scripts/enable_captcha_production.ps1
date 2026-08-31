@@ -20,7 +20,7 @@ $apiUrl = "https://coc-omr-api.onrender.com"
 $webUrl = "https://omrweb.vercel.app"
 
 Write-Host ""
-Write-Host "=== COC OMR — enable CAPTCHA (Cloudflare Turnstile) ===" -ForegroundColor Cyan
+Write-Host "=== COC OMR - enable CAPTCHA (Cloudflare Turnstile) ===" -ForegroundColor Cyan
 Write-Host ""
 
 if (-not $SiteKey) {
@@ -42,7 +42,7 @@ if ($SiteKey.Length -lt 10 -or $SecretKey.Length -lt 10) {
 }
 
 Write-Host ""
-Write-Host "1) Updating omr_web/.env.local ..." -ForegroundColor Green
+Write-Host "Step 1: Updating omr_web/.env.local ..." -ForegroundColor Green
 $lines = @()
 if (Test-Path $envLocal) {
   $lines = Get-Content $envLocal
@@ -54,7 +54,7 @@ $lines += "NEXT_PUBLIC_CAPTCHA_SITE_KEY=$SiteKey"
 Set-Content -Path $envLocal -Value $lines -Encoding UTF8
 
 if (-not $SkipVercelDeploy) {
-  Write-Host "2) Setting Vercel production env + redeploying web ..." -ForegroundColor Green
+  Write-Host "Step 2: Setting Vercel production env + redeploying web ..." -ForegroundColor Green
   $vercelArgs = @("vercel@latest")
   Push-Location $web
   try {
@@ -68,11 +68,11 @@ if (-not $SkipVercelDeploy) {
     Pop-Location
   }
 } else {
-  Write-Host "2) Skipped Vercel deploy (-SkipVercelDeploy)" -ForegroundColor Yellow
+  Write-Host "Step 2: Skipped Vercel deploy (-SkipVercelDeploy)" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "3) Render API — paste these in coc-omr-api -> Environment -> Save:" -ForegroundColor Yellow
+Write-Host "Step 3: Render API - paste these in coc-omr-api Environment, then Save:" -ForegroundColor Yellow
 Write-Host ""
 @(
   @{ Key = "CAPTCHA_ENABLED"; Value = "true" },
@@ -84,7 +84,7 @@ Write-Host "After Save, wait until Render shows Live." -ForegroundColor Cyan
 Start-Process "https://dashboard.render.com"
 
 Write-Host ""
-Write-Host "4) Waiting for API to report captcha_enabled=true ..." -ForegroundColor Green
+Write-Host "Step 4: Waiting for API to report captcha_enabled=true ..." -ForegroundColor Green
 $deadline = (Get-Date).AddMinutes(10)
 $live = $false
 while ((Get-Date) -lt $deadline) {
@@ -110,7 +110,7 @@ if (-not $live) {
 }
 
 Write-Host ""
-Write-Host "5) Build new APK (mobile Turnstile support):" -ForegroundColor Green
+Write-Host "Step 5: Build new APK (mobile Turnstile support):" -ForegroundColor Green
 Write-Host "  .\scripts\build_release.ps1"
 Write-Host ""
 Write-Host "Smoke test:" -ForegroundColor Cyan

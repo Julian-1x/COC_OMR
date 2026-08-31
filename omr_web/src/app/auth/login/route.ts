@@ -204,16 +204,21 @@ export async function POST(request: Request) {
     }
 
     if (mode === "login" && body.mfa_ticket && body.mfa_code) {
+      await wakeSchoolApi(baseUrl, { attempts: 4, delayMs: 2500, probeTimeoutMs: 30_000 });
       const mfaPath = body.mfa_enrollment ? "/api/login/mfa/enroll" : "/api/login/mfa";
-      const mfaResponse = await fetchAuthUpstream(`${baseUrl}${mfaPath}`, {
-        method: "POST",
-        headers: jsonHeaders,
-        body: JSON.stringify({
-          mfa_ticket: body.mfa_ticket,
-          code: body.mfa_code,
-          device_name: "web",
-        }),
-      });
+      const mfaResponse = await fetchAuthUpstream(
+        `${baseUrl}${mfaPath}`,
+        {
+          method: "POST",
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            mfa_ticket: body.mfa_ticket,
+            code: body.mfa_code,
+            device_name: "web",
+          }),
+        },
+        { attempts: 4, timeoutMs: 90_000 },
+      );
       const { payload: mfaPayload, rawBody: mfaRaw } = await readUpstream(mfaResponse);
       if (!mfaResponse.ok || !mfaPayload?.token) {
         return NextResponse.json(

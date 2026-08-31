@@ -44,6 +44,14 @@ class MfaService
      */
     public function beginEnrollment(User $user): array
     {
+        $existing = $this->decryptSecret($user);
+        if ($existing !== null && $user->two_factor_confirmed_at === null) {
+            return [
+                'secret' => $existing,
+                'otpauth_url' => $this->totp->provisioningUri($user->email, $existing),
+            ];
+        }
+
         $secret = $this->totp->generateSecret();
 
         $user->forceFill([
@@ -64,9 +72,10 @@ class MfaService
     public function confirmEnrollment(User $user, string $code): array
     {
         $secret = $this->decryptSecret($user);
-        if ($secret === null || ! $this->totp->verify($secret, $code)) {
+        // Wider window during first-time setup — slow hosts and clock skew are common.
+        if ($secret === null || ! $this->totp->verify($secret, $code, 3)) {
             throw ValidationException::withMessages([
-                'code' => ['That code did not match. Open your authenticator app and try the latest 6-digit code.'],
+                'code' => ['That code did not match. Wait for a fresh 6-digit code in your authenticator app, then try again.'],
             ]);
         }
 
@@ -101,10 +110,21 @@ class MfaService
     public function issueChallengeTicket(User $user): string
     {
         $ticket = Str::random(64);
-        $ttl = (int) config('security.mfa.challenge_ttl_minutes', 5);
-        Cache::put($this->ticketKey($ticket), $user->id, now()->addMinutes($ttl));
+        $this->storeTicket($ticket, $user->id);
 
         return $ticket;
+    }
+
+    public function refreshTicket(string $ticket): bool
+    {
+        $userId = $this->userIdForTicket($ticket);
+        if ($userId === null) {
+            return false;
+        }
+
+        $this->storeTicket($ticket, $userId);
+
+        return true;
     }
 
     public function userIdForTicket(string $ticket): ?string
@@ -120,7 +140,7 @@ class MfaService
     public function verifyCodeOrRecovery(User $user, string $code): bool
     {
         $secret = $this->decryptSecret($user);
-        if ($secret !== null && $this->totp->verify($secret, $code)) {
+        if ($secret !== null && $this->totp->verify($secret, $code, 3)) {
             return true;
         }
 
@@ -180,6 +200,12 @@ class MfaService
         }
 
         return $codes;
+    }
+
+    private function storeTicket(string $ticket, string $userId): void
+    {
+        $ttl = (int) config('security.mfa.challenge_ttl_minutes', 15);
+        Cache::put($this->ticketKey($ticket), $userId, now()->addMinutes($ttl));
     }
 
     private function ticketKey(string $ticket): string

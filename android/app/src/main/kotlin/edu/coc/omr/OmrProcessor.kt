@@ -212,6 +212,8 @@ class OmrProcessor(
         val calibrationFilledX: Double = CALIBRATION_FILLED_X,
         val calibrationEmptyX: Double = CALIBRATION_EMPTY_X,
         val calibrationBubbleSize: Double = CALIBRATION_BUBBLE_SIZE,
+        val answerBubbleDiameter: Double = BUBBLE_DIAMETER,
+        val omrIdBubbleDiameter: Double = BUBBLE_DIAMETER,
         val qrCodeX: Double = QR_BOX_LEFT,
         val qrCodeY: Double = QR_BOX_TOP,
         val qrCodeSize: Double = 80.0,
@@ -2593,6 +2595,10 @@ class OmrProcessor(
                 ?: CALIBRATION_EMPTY_X,
             calibrationBubbleSize = readDouble("calibrationBubbleSize").takeIf { it > 0.0 }
                 ?: CALIBRATION_BUBBLE_SIZE,
+            answerBubbleDiameter = readDouble("answerBubbleDiameter").takeIf { it > 0.0 }
+                ?: BUBBLE_DIAMETER,
+            omrIdBubbleDiameter = readDouble("omrIdBubbleDiameter").takeIf { it > 0.0 }
+                ?: BUBBLE_DIAMETER,
             qrCodeX = readDouble("qrCodeX").takeIf { it >= 0.0 } ?: QR_BOX_LEFT,
             qrCodeY = readDouble("qrCodeY").takeIf { it >= 0.0 } ?: QR_BOX_TOP,
             qrCodeSize = readDouble("qrCodeSize").takeIf { it > 0.0 } ?: 80.0,
@@ -3002,6 +3008,7 @@ class OmrProcessor(
                     thresholdMat, grayMat, columnX, bubbleY, fillThreshold,
                     refineRadius = 1,
                     minAreaCoverage = MIN_OMR_ID_AREA_COVERAGE,
+                    bubbleDiameter = layout?.omrIdBubbleDiameter ?: BUBBLE_DIAMETER,
                 )
                 
                 if (result.fillPercentage > bestFill) {
@@ -3275,6 +3282,7 @@ class OmrProcessor(
                     effectiveFillThreshold,
                     refineRadius = refineRadius,
                     minAreaCoverage = MIN_ANSWER_AREA_COVERAGE,
+                    bubbleDiameter = layout.answerBubbleDiameter,
                 )
                 optionMarked.add(result.filled)
                 if (result.fillPercentage > maxOptionFill) {
@@ -3357,6 +3365,7 @@ class OmrProcessor(
         fillThreshold: Double,
         refineRadius: Int = BUBBLE_REFINE_RADIUS_PX,
         minAreaCoverage: Double = MIN_ANSWER_AREA_COVERAGE,
+        bubbleDiameter: Double = BUBBLE_DIAMETER,
     ): BubbleResult {
         val (rx, ry) = darkCentroidOffset(grayMat, centerX, centerY, refineRadius)
         return analyzeBubblePrecise(
@@ -3366,6 +3375,7 @@ class OmrProcessor(
             centerY + ry,
             fillThreshold,
             minAreaCoverage = minAreaCoverage,
+            bubbleDiameter = bubbleDiameter,
         )
     }
 
@@ -3414,8 +3424,9 @@ class OmrProcessor(
         centerY: Double,
         fillThreshold: Double = DEFAULT_FILL_THRESHOLD,
         minAreaCoverage: Double = MIN_ANSWER_AREA_COVERAGE,
+        bubbleDiameter: Double = BUBBLE_DIAMETER,
     ): BubbleResult {
-        val radius = (BUBBLE_DIAMETER / 2 + 1).toInt()
+        val radius = (bubbleDiameter / 2 + 1).toInt()
         
         // Ensure within bounds
         val x = (centerX - radius).toInt().coerceIn(0, thresholdMat.cols() - radius * 2 - 1)

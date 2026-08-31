@@ -145,20 +145,28 @@ class ApiService {
 
   static const Duration _requestTimeout = Duration(seconds: 15);
   static const Duration _authRequestTimeout = Duration(seconds: 45);
+  static const Duration _mfaRequestTimeout = Duration(seconds: 90);
 
   static bool _isAuthBootstrapPath(String path) =>
-      path == '/login' || path == '/register';
+      path == '/login' ||
+      path == '/register' ||
+      path.startsWith('/login/mfa');
 
   static bool _isRetryableStatus(int status) =>
       status == 502 || status == 503 || status == 504;
 
-  /// Wakes free-tier cloud hosts (Render) before login/register.
+  /// Wakes free-tier cloud hosts (Render) before login/register/MFA.
   static Future<void> _wakeSchoolApi() async {
-    try {
-      final uri = Uri.parse('$_normalizedBaseUrl/up');
-      await http.get(uri).timeout(const Duration(seconds: 25));
-    } catch (_) {
-      // Best effort — first probe often starts the wake cycle.
+    final uri = Uri.parse('$_normalizedBaseUrl/up');
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        await http.get(uri).timeout(const Duration(seconds: 25));
+        return;
+      } catch (_) {
+        if (attempt + 1 < 3) {
+          await Future<void>.delayed(const Duration(milliseconds: 2000));
+        }
+      }
     }
   }
 
@@ -175,9 +183,13 @@ class ApiService {
       await _wakeSchoolApi();
     }
 
-    final timeout =
-        isAuthBootstrap ? _authRequestTimeout : _requestTimeout;
-    final maxAttempts = isAuthBootstrap ? 3 : 1;
+    final isMfaPath = !auth && path.startsWith('/login/mfa');
+    final timeout = isMfaPath
+        ? _mfaRequestTimeout
+        : isAuthBootstrap
+            ? _authRequestTimeout
+            : _requestTimeout;
+    final maxAttempts = isAuthBootstrap ? 4 : 1;
     ApiException? lastError;
 
     for (var attempt = 0; attempt < maxAttempts; attempt++) {

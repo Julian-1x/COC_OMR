@@ -17,6 +17,7 @@ import {
 import { COC_DEPARTMENTS, COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
 import { TurnstileField } from "@/components/auth/turnstile-field";
+import QRCode from "qrcode";
 
 const CAPTCHA_SITE_KEY =
   process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY?.trim() ?? "";
@@ -41,6 +42,9 @@ function LoginForm() {
   const [mfaTicket, setMfaTicket] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaSetupSecret, setMfaSetupSecret] = useState<string | null>(null);
+  const [mfaOtpAuthUrl, setMfaOtpAuthUrl] = useState<string | null>(null);
+  const [mfaQrDataUrl, setMfaQrDataUrl] = useState<string | null>(null);
+  const [mfaSetupView, setMfaSetupView] = useState<"qr" | "secret">("qr");
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaSiteKey, setCaptchaSiteKey] = useState(CAPTCHA_SITE_KEY);
   const [slowServerHint, setSlowServerHint] = useState(false);
@@ -300,6 +304,7 @@ function LoginForm() {
         }
         if (!cancelled) {
           setMfaSetupSecret(payload.secret);
+          setMfaOtpAuthUrl(payload.otpauthUrl ?? null);
         }
       } catch (err) {
         if (!cancelled) {
@@ -315,16 +320,45 @@ function LoginForm() {
     };
   }, [awaitingMfaEnrollment, mfaTicket]);
 
+  useEffect(() => {
+    if (!mfaOtpAuthUrl) {
+      setMfaQrDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    QRCode.toDataURL(mfaOtpAuthUrl, { width: 220, margin: 2 })
+      .then((url) => {
+        if (!cancelled) {
+          setMfaQrDataUrl(url);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setMfaQrDataUrl(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mfaOtpAuthUrl]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setNotice(null);
     setLoading(true);
+    setSlowServerHint(awaitingMfa);
 
     try {
       if (!isApiConfigured()) {
         throw new Error(
           "API URL missing. Check omr_web/.env.local and restart npm run dev.",
+        );
+      }
+
+      if (awaitingMfaEnrollment && !mfaSetupSecret) {
+        throw new Error(
+          "Setup key is still loading. Wait until it appears, add it to your authenticator app, then enter the code.",
         );
       }
 
@@ -378,6 +412,9 @@ function LoginForm() {
         setAwaitingMfaEnrollment(payload.mfaEnrollmentRequired === true);
         setMfaTicket(payload.mfaTicket);
         setMfaSetupSecret(null);
+        setMfaOtpAuthUrl(null);
+        setMfaQrDataUrl(null);
+        setMfaSetupView("qr");
         setNotice(
           payload.message ??
             (payload.mfaEnrollmentRequired
@@ -462,16 +499,32 @@ function LoginForm() {
         lower.includes("failed to fetch") ||
         lower.includes("not valid json") ||
         lower.includes("unexpected token") ||
-        lower.includes("school server is not responding")
+        lower.includes("school server is not responding") ||
+        lower.includes("school server is waking up") ||
+        lower.includes("aborted") ||
+        lower.includes("timeout")
       ) {
         setError(
-          "Could not reach the school server. Confirm the API is running, then try again.",
+          awaitingMfa
+            ? "The school server is waking up. Wait for a fresh authenticator code, then tap Finish two-factor setup again."
+            : "Could not reach the school server. Confirm the API is running, then try again.",
         );
+      } else if (awaitingMfa && lower.includes("did not match")) {
+        setError(
+          "That code did not match. Wait for the next 6-digit code in your authenticator app, then try again.",
+        );
+      } else if (awaitingMfa && lower.includes("expired")) {
+        setError("This step expired. Sign in with your password again to restart two-factor setup.");
+        setAwaitingMfa(false);
+        setAwaitingMfaEnrollment(false);
+        setMfaTicket(null);
+        setMfaCode("");
       } else {
         setError(message);
       }
     } finally {
       setLoading(false);
+      setSlowServerHint(false);
     }
   }
 
@@ -608,14 +661,73 @@ function LoginForm() {
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-950">
                   <p className="font-bold">Set up an authenticator app</p>
                   <p className="mt-1">
-                    Add this key to Google Authenticator, Microsoft Authenticator, or a similar app,
-                    then enter the 6-digit code.
+                    {mfaSetupView === "qr"
+                      ? "Scan the QR code with Google Authenticator or Microsoft Authenticator, then enter the 6-digit code below."
+                      : "Copy the setup key into your authenticator app (Enter a setup key), then enter the 6-digit code below."}
                   </p>
                   {mfaSetupSecret ? (
-                    <p className="mt-2 break-all font-mono text-xs font-bold">{mfaSetupSecret}</p>
+                    <div className="mt-3 flex gap-2 rounded-xl bg-emerald-100/80 p-1">
+                      {(
+                        [
+                          ["qr", "Scan QR code"],
+                          ["secret", "Setup key"],
+                        ] as const
+                      ).map(([view, label]) => (
+                        <button
+                          key={view}
+                          type="button"
+                          onClick={() => setMfaSetupView(view)}
+                          className={`flex-1 rounded-lg py-2 text-xs font-bold ${
+                            mfaSetupView === view
+                              ? "bg-white text-emerald-800 shadow"
+                              : "text-emerald-700"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {mfaSetupView === "qr" ? (
+                    mfaQrDataUrl ? (
+                      <div className="mt-3 flex justify-center">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={mfaQrDataUrl}
+                          alt="Scan to add COC OMR to your authenticator app"
+                          width={220}
+                          height={220}
+                          className="rounded-lg border border-emerald-200 bg-white p-2"
+                        />
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-emerald-800">
+                        {mfaOtpAuthUrl ? "Preparing QR code…" : "Preparing your setup key…"}
+                      </p>
+                    )
+                  ) : mfaSetupSecret ? (
+                    <div className="mt-3 rounded-lg border border-emerald-200 bg-white px-3 py-3">
+                      <p className="text-xs font-semibold text-emerald-800">Setup key</p>
+                      <p className="mt-2 break-all font-mono text-sm font-bold">{mfaSetupSecret}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(mfaSetupSecret);
+                          setNotice("Setup key copied. Paste it in your authenticator app.");
+                          setError(null);
+                        }}
+                        className="mt-2 text-xs font-bold text-emerald-700 hover:underline"
+                      >
+                        Copy setup key
+                      </button>
+                    </div>
                   ) : (
                     <p className="mt-2 text-xs text-emerald-800">Preparing your setup key…</p>
                   )}
+                  <p className="mt-2 text-xs text-emerald-800">
+                    Codes change every 30 seconds. If the server was slow to load, wait for a
+                    fresh code before submitting.
+                  </p>
                 </div>
               ) : null}
               <div>
@@ -675,11 +787,17 @@ function LoginForm() {
             <p className="mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p>
           ) : null}
 
-          <Button type="submit" className="w-full" disabled={loading || resendLoading}>
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={loading || resendLoading || (awaitingMfaEnrollment && !mfaSetupSecret)}
+          >
             {loading
-              ? slowServerHint
-                ? "Connecting to server…"
-                : "Please wait…"
+              ? awaitingMfa
+                ? "Verifying code — server may take up to a minute…"
+                : slowServerHint
+                  ? "Connecting to server…"
+                  : "Please wait…"
               : mode === "register"
                 ? "Create account"
                 : awaitingMfa

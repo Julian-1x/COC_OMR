@@ -84,7 +84,24 @@ class CustomSheetLayout {
   }
 
   /// Null when this layout is allowed for print + scan grading.
-  String? get examReadyScanError => null;
+  String? get examReadyScanError {
+    final fit = inputMode == CustomSheetLayoutInputMode.byGrid
+        ? OmrLayoutProfile.tryComputeExplicitGrid(
+            columns: gridColumns,
+            rows: gridRows,
+            optionsCount: optionsCount,
+            form: layoutForm,
+          )
+        : OmrLayoutProfile.tryCompute(
+            itemCount: totalQuestions,
+            optionsCount: optionsCount,
+            form: layoutForm,
+          );
+    if (!fit.isOk) {
+      return fit.errorMessage ?? 'This layout is no longer scannable.';
+    }
+    return null;
+  }
 
   /// Returns null when layout is valid for the subject.
   String? validateForSubject(Subject subject) {

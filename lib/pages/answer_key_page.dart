@@ -34,12 +34,20 @@ class AnswerKeyEditorResult {
   final SubjectDeletionSummary? deletionSummary;
 }
 
+/// Locks the answer-key editor to standard 30–100 or custom saved layouts.
+enum AnswerKeySheetMode {
+  standard,
+  custom,
+}
+
 class AnswerKeyPage extends StatefulWidget {
   final Subject? subjectToEdit; // For editing existing subject
   final Subject? templateSubject; // For cloning to a new subject
   final String? initialSection;
   /// When editing from a per-section row, the section the teacher tapped.
   final String? editSectionFocus;
+  /// When set, hides the standard/custom toggle and locks the editor path.
+  final AnswerKeySheetMode? sheetMode;
 
   const AnswerKeyPage({
     super.key,
@@ -47,6 +55,7 @@ class AnswerKeyPage extends StatefulWidget {
     this.templateSubject,
     this.initialSection,
     this.editSectionFocus,
+    this.sheetMode,
   });
 
   @override
@@ -99,6 +108,32 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   int _questionCount = 50;
   int _editorStep = 0;
   bool _isEditing = false;
+  bool get _sheetModeLocked => widget.sheetMode != null;
+
+  AnswerKeySheetMode get _effectiveSheetMode {
+    if (widget.sheetMode != null) {
+      return widget.sheetMode!;
+    }
+    if (_isEditing && widget.subjectToEdit!.useCustomLayout) {
+      return AnswerKeySheetMode.custom;
+    }
+    if (_useSavedCustomSheet) {
+      return AnswerKeySheetMode.custom;
+    }
+    return AnswerKeySheetMode.standard;
+  }
+
+  String get _pageTitle {
+    if (_isEditing) {
+      return _effectiveSheetMode == AnswerKeySheetMode.custom
+          ? 'Edit custom answer key'
+          : 'Edit answer key';
+    }
+    return _effectiveSheetMode == AnswerKeySheetMode.custom
+        ? 'Custom answer key'
+        : 'Answer key · Standard';
+  }
+
   /// New keys: standard 30–100 vs a saved custom sheet from the library.
   bool _useSavedCustomSheet = false;
   String? _selectedCustomLayoutId;
@@ -528,7 +563,12 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       await Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) => AnswerKeyPage(subjectToEdit: duplicate),
+          builder: (context) => AnswerKeyPage(
+            subjectToEdit: duplicate,
+            sheetMode: duplicate.useCustomLayout
+                ? AnswerKeySheetMode.custom
+                : AnswerKeySheetMode.standard,
+          ),
         ),
       );
     }
@@ -539,6 +579,11 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   @override
   void initState() {
     super.initState();
+    if (widget.sheetMode == AnswerKeySheetMode.custom) {
+      _useSavedCustomSheet = true;
+    } else if (widget.sheetMode == AnswerKeySheetMode.standard) {
+      _useSavedCustomSheet = false;
+    }
     if (widget.subjectToEdit != null) {
       _isEditing = true;
       _nameController.text = widget.subjectToEdit!.name;
@@ -647,6 +692,9 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   }
 
   void _switchToStandardSheet() {
+    if (_sheetModeLocked) {
+      return;
+    }
     setState(() {
       _useSavedCustomSheet = false;
       _selectedCustomLayoutId = null;
@@ -659,6 +707,9 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   }
 
   void _switchToCustomSheetMode() {
+    if (_sheetModeLocked) {
+      return;
+    }
     setState(() {
       _useSavedCustomSheet = true;
       if (_selectedCustomLayout == null && _sortedCustomLayouts.isNotEmpty) {
@@ -1360,11 +1411,11 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                 child: const Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("â€¢ Compact: ABCDEBACDE...",
+                    Text('- Compact: ABCDEBACDE...',
                         style: TextStyle(fontSize: 13)),
-                    Text("â€¢ CSV: 1,A\\n2,B\\n3,C...",
+                    Text('- CSV: 1,A\\n2,B\\n3,C...',
                         style: TextStyle(fontSize: 13)),
-                    Text("â€¢ Multi-answer: 1,A,B\\n2,C",
+                    Text('- Multi-answer: 1,A,B\\n2,C',
                         style: TextStyle(fontSize: 13)),
                   ],
                 ),
@@ -1430,7 +1481,6 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       // Find closest supported count
       final closest = _supportedQuestionCounts.reduce((a, b) =>
           (a - importedCount).abs() < (b - importedCount).abs() ? a : b);
-      final closestTemplate = OmrTemplateSpec.forItemCount(closest);
 
       showDialog(
         context: context,
@@ -1450,7 +1500,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  "Sheet layout: ${closestTemplate.columns} columns Ã— ${closestTemplate.rows} rows",
+                  'Uses the $closest-question answer sheet.',
                   style: const TextStyle(fontSize: 13),
                 ),
               ),
@@ -1501,19 +1551,18 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "Layout will change:",
+                      'Answer sheet will change:',
                       style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: AppColors.brandGreenDark),
                     ),
                     const SizedBox(height: 4),
+                    Text('Was: $_questionCount questions per printed sheet'),
                     Text(
-                        "â€¢ Current: ${currentTemplate.columns}Ã—${currentTemplate.rows} ($_questionCount items)"),
-                    Text(
-                        "â€¢ New: ${template.columns}Ã—${template.rows} ($importedCount items)"),
+                        'Will be: $importedCount questions per printed sheet'),
                     const SizedBox(height: 8),
                     const Text(
-                      "You'll need to reprint answer sheets.",
+                      'After import, print new answer sheets for students.',
                       style:
                           TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
                     ),
@@ -1544,8 +1593,6 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
   void _applyImportedAnswers(
       Map<int, List<String>> answers, int questionCount) {
-    final template = OmrTemplateSpec.forItemCount(questionCount);
-
     setState(() {
       _questionCount = questionCount;
       _correctAnswers.clear();
@@ -1564,7 +1611,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           children: [
             Text("Imported ${_correctAnswers.length} answers"),
             Text(
-              "Layout: ${template.columns}Ã—${template.rows} grid ($questionCount items)",
+              '$questionCount questions per printed sheet',
               style: const TextStyle(fontSize: 12),
             ),
           ],
@@ -1797,7 +1844,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                 leading: const Icon(Icons.bookmark),
                 title: Text(template.name),
                 subtitle: Text(
-                  "${template.totalQuestions} questions${template.description != null ? ' â€¢ ${template.description}' : ''}",
+                  "${template.totalQuestions} questions${template.description != null ? ' - ${template.description}' : ''}",
                 ),
                 trailing: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1920,10 +1967,23 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (answersToLose > 0) ...[
-              Text(
-                "âš ï¸ This will remove $answersToLose answer(s) for questions "
-                "${newCount + 1}-$_questionCount.",
-                style: const TextStyle(color: AppColors.warningAccent),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    color: AppColors.warningAccent,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'This removes $answersToLose answer(s) for questions '
+                      '${newCount + 1}-$_questionCount.',
+                      style: const TextStyle(color: AppColors.warningAccent),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
             ],
@@ -1940,11 +2000,11 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.grid_view,
+                        Icon(Icons.description_outlined,
                             color: AppColors.brandGreenDark, size: 18),
                         const SizedBox(width: 8),
                         Text(
-                          "Sheet Layout Change",
+                          'Answer sheet will change',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: AppColors.brandGreenDark,
@@ -1954,16 +2014,16 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      "â€¢ Current: ${oldTemplate.columns} columns Ã— ${oldTemplate.rows} rows",
+                      'Was: $_questionCount questions per printed sheet',
                       style: const TextStyle(fontSize: 13),
                     ),
                     Text(
-                      "â€¢ New: ${newTemplate.columns} columns Ã— ${newTemplate.rows} rows",
+                      'Will be: $newCount questions per printed sheet',
                       style: const TextStyle(fontSize: 13),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      "You'll need to print new answer sheets after changing.",
+                      'After you save, print new answer sheets for students.',
                       style: TextStyle(
                         fontSize: 12,
                         color: AppColors.brandGreenDark,
@@ -1977,8 +2037,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
             ],
             if (_isEditing)
               const Text(
-                "Existing printed sheets for this subject will NOT work "
-                "with the new question count.",
+                'Sheets you already printed for this exam will not scan '
+                'with the new question count.',
                 style: TextStyle(fontSize: 13),
               ),
           ],
@@ -2007,23 +2067,21 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       _questionCount = newCount;
     });
 
-    final template = OmrTemplateSpec.forItemCount(newCount);
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("Changed to $newCount questions"),
+            Text('Changed to $newCount questions'),
             if (layoutChanged)
-              Text(
-                "Layout: ${template.columns}Ã—${template.rows} grid",
-                style: const TextStyle(fontSize: 12),
+              const Text(
+                'Print new answer sheets before giving them to students.',
+                style: TextStyle(fontSize: 12),
               ),
             if (_isEditing)
               const Text(
-                "Remember to save and reprint sheets!",
+                'Save this answer key, then reprint sheets.',
                 style: TextStyle(fontSize: 12),
               ),
           ],
@@ -2205,7 +2263,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       child: Scaffold(
         backgroundColor: _editorCanvas,
         appBar: AppBar(
-          title: Text(_isEditing ? "Edit Answer Key" : "Create Answer Key"),
+          title: Text(_pageTitle),
           actions: [
             IconButton(
               icon: const Icon(Icons.tune_rounded),
@@ -2673,37 +2731,41 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         ),
         const SizedBox(height: 12),
         _buildStepCard(
-          title: 'Sheet size',
-          subtitle: _useSavedCustomSheet
+          title: _effectiveSheetMode == AnswerKeySheetMode.custom
+              ? 'Custom sheet layout'
+              : 'Sheet size',
+          subtitle: _effectiveSheetMode == AnswerKeySheetMode.custom
               ? 'Question count and choices come from your saved custom sheet.'
               : 'Standard exam sheets only (30–100). These sizes are fixed and proven for scanning.',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SegmentedButton<bool>(
-                segments: const [
-                  ButtonSegment<bool>(
-                    value: false,
-                    label: Text('Standard 30–100'),
-                    icon: Icon(Icons.fact_check_outlined, size: 18),
-                  ),
-                  ButtonSegment<bool>(
-                    value: true,
-                    label: Text('Saved custom'),
-                    icon: Icon(Icons.dashboard_customize_outlined, size: 18),
-                  ),
-                ],
-                selected: {_useSavedCustomSheet},
-                onSelectionChanged: (value) {
-                  if (value.first) {
-                    _switchToCustomSheetMode();
-                  } else {
-                    _switchToStandardSheet();
-                  }
-                },
-              ),
-              const SizedBox(height: 12),
-              if (!_useSavedCustomSheet) ...[
+              if (!_sheetModeLocked) ...[
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment<bool>(
+                      value: false,
+                      label: Text('Standard 30–100'),
+                      icon: Icon(Icons.fact_check_outlined, size: 18),
+                    ),
+                    ButtonSegment<bool>(
+                      value: true,
+                      label: Text('Saved custom'),
+                      icon: Icon(Icons.dashboard_customize_outlined, size: 18),
+                    ),
+                  ],
+                  selected: {_useSavedCustomSheet},
+                  onSelectionChanged: (value) {
+                    if (value.first) {
+                      _switchToCustomSheetMode();
+                    } else {
+                      _switchToStandardSheet();
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (_effectiveSheetMode == AnswerKeySheetMode.standard) ...[
                 if (_supportedQuestionCounts.contains(_questionCount))
                   DropdownButtonFormField<int>(
                     key: ValueKey('standard-$_questionCount'),

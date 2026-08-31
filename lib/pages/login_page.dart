@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:omr_app/constants/coc_school.dart';
 import 'package:omr_app/pages/dashboard_page.dart';
 import 'package:omr_app/pages/welcome_onboarding_page.dart';
@@ -23,6 +24,7 @@ import 'package:omr_app/widgets/app_primary_button.dart';
 import 'package:omr_app/utils/password_rules.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/auth_shell.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:omr_app/widgets/turnstile_captcha_field.dart';
 
 enum _AuthMode { login, register }
@@ -57,6 +59,8 @@ class _LoginPageState extends State<LoginPage> {
   _LoginStage _stage = _LoginStage.onlineAuth;
   String? _mfaTicket;
   String? _mfaSetupSecret;
+  String? _mfaOtpAuthUrl;
+  bool _mfaSetupManualKey = false;
   bool _isLoading = true;
   bool _isSubmitting = false;
   bool _obscurePassword = true;
@@ -563,10 +567,12 @@ class _LoginPageState extends State<LoginPage> {
           _isSubmitting = false;
           _mfaTicket = ticket;
           _mfaSetupSecret = setup['secret'];
+          _mfaOtpAuthUrl = setup['otpauth_url'];
+          _mfaSetupManualKey = false;
           _stage = _LoginStage.mfaEnrollment;
         });
         _showMessage(
-          'Set up two-factor sign-in. Add the secret to Google Authenticator, then enter the 6-digit code.',
+          'Scan the QR code with Google Authenticator, then enter the 6-digit code.',
           isError: false,
         );
         return;
@@ -1154,6 +1160,7 @@ class _LoginPageState extends State<LoginPage> {
         _mfaCodeController.clear();
         _mfaTicket = null;
         _mfaSetupSecret = null;
+        _mfaOtpAuthUrl = null;
         _stage = _LoginStage.onlineAuth;
       });
       await _routeAfterOnlineAuth(account, isNewRegistration: false);
@@ -1168,7 +1175,8 @@ class _LoginPageState extends State<LoginPage> {
   Widget _buildMfaChallengePanel() {
     return AuthShell(
       title: 'Two-factor code',
-      subtitle: 'Enter the 6-digit code from your authenticator app.',
+      subtitle:
+          'Enter the 6-digit code from your authenticator app. Wait for a fresh code if the server was slow.',
       badge: AuthBadgeType.online,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1210,22 +1218,116 @@ class _LoginPageState extends State<LoginPage> {
 
   Widget _buildMfaEnrollmentPanel() {
     final secret = _mfaSetupSecret ?? '';
+    final otpAuthUrl = _mfaOtpAuthUrl ?? '';
+    final ready = secret.isNotEmpty && otpAuthUrl.isNotEmpty;
     return AuthShell(
       title: 'Set up two-factor',
-      subtitle:
-          'School admins must use an authenticator app. Add this key, then enter the code.',
+      subtitle: _mfaSetupManualKey
+          ? 'Copy the setup key into Google Authenticator, then enter the code.'
+          : 'Scan the QR code with Google Authenticator, then enter the code.',
       badge: AuthBadgeType.online,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (secret.isNotEmpty)
-            SelectableText(
-              secret,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.w700,
+          if (ready) ...[
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment<bool>(
+                  value: false,
+                  label: Text('Scan QR code'),
+                  icon: Icon(Icons.qr_code_2_outlined, size: 18),
+                ),
+                ButtonSegment<bool>(
+                  value: true,
+                  label: Text('Setup key'),
+                  icon: Icon(Icons.vpn_key_outlined, size: 18),
+                ),
+              ],
+              selected: {_mfaSetupManualKey},
+              onSelectionChanged: (value) {
+                setState(() => _mfaSetupManualKey = value.first);
+              },
+            ),
+            const SizedBox(height: AppSpacing.md),
+          ],
+          if (!ready && secret.isNotEmpty)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else if (!_mfaSetupManualKey && otpAuthUrl.isNotEmpty)
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.brandBorder),
+                ),
+                child: QrImageView(
+                  data: otpAuthUrl,
+                  size: 200,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+            )
+          else if (_mfaSetupManualKey && secret.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.brandBorder),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'Setup key',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.brandMuted,
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  SelectableText(
+                    secret,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: secret));
+                        _showMessage(
+                          'Setup key copied. Paste it in Google Authenticator → Enter a setup key.',
+                          isError: false,
+                        );
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copy setup key'),
+                    ),
+                  ),
+                ],
               ),
             ),
+          ],
+          const SizedBox(height: AppSpacing.sm),
+          const Text(
+            'Codes change every 30 seconds. If the server was slow, wait for a '
+            'fresh code before tapping Finish setup.',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppColors.brandMuted,
+              height: 1.35,
+            ),
+          ),
           const SizedBox(height: AppSpacing.md),
           TextField(
             controller: _mfaCodeController,

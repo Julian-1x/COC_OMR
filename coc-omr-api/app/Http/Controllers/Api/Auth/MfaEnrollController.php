@@ -90,6 +90,8 @@ class MfaEnrollController extends Controller
             ]);
         }
 
+        $this->mfa->refreshTicket($validated['mfa_ticket']);
+
         $payload = $this->mfa->beginEnrollment($user);
 
         return response()->json([
@@ -124,9 +126,12 @@ class MfaEnrollController extends Controller
             ]);
         }
 
+        $this->mfa->refreshTicket($validated['mfa_ticket']);
+
         if ($user->two_factor_secret === null) {
-            $this->mfa->beginEnrollment($user);
-            $user->refresh();
+            throw ValidationException::withMessages([
+                'code' => ['Setup did not finish loading. Wait until the setup key appears, then try again.'],
+            ]);
         }
 
         $recoveryCodes = $this->mfa->confirmEnrollment($user, $validated['code']);

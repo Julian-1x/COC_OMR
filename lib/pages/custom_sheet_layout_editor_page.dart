@@ -21,14 +21,19 @@ class _CustomSheetLayoutEditorPageState
     extends State<CustomSheetLayoutEditorPage> {
   static const _allAnswerChoices = ['A', 'B', 'C', 'D', 'E'];
 
+  final _scrollController = ScrollController();
+  final _nameFieldKey = GlobalKey();
+  final _questionFieldKey = GlobalKey();
+  final _layoutSectionKey = GlobalKey();
+  final _nameFocusNode = FocusNode();
+  final _questionFocusNode = FocusNode();
   final _nameController = TextEditingController();
   final _questionController = TextEditingController(text: '15');
   int _optionsCount = OmrPageConstants.answerOptionsCount;
   String? _selectedLayoutId;
-  bool _advancedGrid = false;
-  int _gridColumns = 2;
-  int _gridRows = 3;
-  String? _errorMessage;
+  String? _nameError;
+  String? _questionError;
+  String? _layoutError;
   bool _saving = false;
 
   @override
@@ -40,18 +45,37 @@ class _CustomSheetLayoutEditorPageState
       _questionController.text = '${existing.totalQuestions}';
       _optionsCount = existing.optionsCount;
       _selectedLayoutId = existing.layoutForm.id;
-      _advancedGrid = existing.inputMode == CustomSheetLayoutInputMode.byGrid;
-      _gridColumns = existing.gridColumns;
-      _gridRows = existing.gridRows;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshValidation());
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
+    _nameFocusNode.dispose();
+    _questionFocusNode.dispose();
     _nameController.dispose();
     _questionController.dispose();
     super.dispose();
+  }
+
+  Future<void> _scrollToField(GlobalKey key, {FocusNode? focus}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) {
+      return;
+    }
+    final target = key.currentContext;
+    if (target != null) {
+      await Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+        alignment: 0.08,
+      );
+    }
+    if (focus != null && mounted) {
+      focus.requestFocus();
+    }
   }
 
   int get _questionCount =>
@@ -102,26 +126,6 @@ class _CustomSheetLayoutEditorPageState
         '${OmrLayoutProfile.maxCustomItems} questions.',
       );
     }
-    if (_advancedGrid) {
-      if (_gridColumns * _gridRows != _questionCount) {
-        return OmrLayoutFitResult.fail(
-          'Manual grid must be $_gridColumns×$_gridRows = '
-          '${_gridColumns * _gridRows} questions, but you entered '
-          '$_questionCount. Adjust the grid or question count.',
-        );
-      }
-      final form = _selectedSuggestion?.form ??
-          const OmrLayoutForm(
-            orientation: OmrLayoutOrientation.lengthwise,
-            pageFill: OmrLayoutPageFill.full,
-          );
-      return OmrLayoutProfile.tryComputeExplicitGrid(
-        columns: _gridColumns,
-        rows: _gridRows,
-        optionsCount: _optionsCount,
-        form: form,
-      );
-    }
     final suggestion = _selectedSuggestion;
     if (suggestion == null) {
       return const OmrLayoutFitResult.fail('Pick a sheet layout to continue.');
@@ -146,32 +150,107 @@ class _CustomSheetLayoutEditorPageState
     _syncSelectedLayout();
     final fit = _currentFit;
     setState(() {
+      _layoutError = null;
       if (!_questionCountValid) {
-        _errorMessage =
+        _questionError =
             'Enter ${OmrLayoutProfile.minCustomItems}–'
             '${OmrLayoutProfile.maxCustomItems} questions.';
-      } else if (_suggestions.isEmpty) {
-        _errorMessage =
+      } else {
+        _questionError = null;
+      }
+      if (_suggestions.isEmpty && _questionCountValid) {
+        _layoutError =
             'No scannable layout fits $_questionCount questions with '
             '${_allAnswerChoices.take(_optionsCount).join('-')} choices. '
             'Try fewer questions, fewer choices, or a standard 30–100 sheet.';
-      } else {
-        _errorMessage = fit.isOk ? null : fit.errorMessage;
+      } else if (!fit.isOk) {
+        _layoutError = fit.errorMessage;
       }
     });
   }
 
-  Future<void> _save() async {
+  Future<bool> _validateForSubmit() async {
+    if (!mounted) {
+      return false;
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    FocusScope.of(context).unfocus();
+
     final name = _nameController.text.trim();
+    String? nameError;
+    String? questionError;
+    String? layoutError;
+
     if (name.isEmpty) {
-      setState(() => _errorMessage = 'Add a layout name.');
+      nameError = 'Add a layout name.';
+    }
+    if (!_questionCountValid) {
+      questionError =
+          'Enter ${OmrLayoutProfile.minCustomItems}–'
+          '${OmrLayoutProfile.maxCustomItems} questions.';
+    } else if (_suggestions.isEmpty) {
+      layoutError =
+          'No scannable layout fits these settings. Try fewer questions or choices.';
+    } else {
+      final fit = _currentFit;
+      if (!fit.isOk) {
+        layoutError = fit.errorMessage ?? 'Pick a sheet layout to continue.';
+      } else if (_selectedSuggestion == null) {
+        layoutError = 'Pick a sheet layout to continue.';
+      }
+    }
+
+    setState(() {
+      _nameError = nameError;
+      _questionError = questionError;
+      _layoutError = layoutError;
+    });
+
+    if (nameError != null) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Add a layout name at the top.'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 4),
+        ),
+      );
+      await _scrollToField(_nameFieldKey, focus: _nameFocusNode);
+      return false;
+    }
+    if (questionError != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(questionError),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      await _scrollToField(_questionFieldKey, focus: _questionFocusNode);
+      return false;
+    }
+    if (layoutError != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(layoutError),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      await _scrollToField(_layoutSectionKey);
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _save() async {
+    if (!await _validateForSubmit()) {
       return;
     }
     final fit = _currentFit;
-    if (!fit.isOk) {
-      setState(() => _errorMessage = fit.errorMessage);
-      return;
-    }
+    final name = _nameController.text.trim();
 
     setState(() => _saving = true);
     try {
@@ -184,9 +263,7 @@ class _CustomSheetLayoutEditorPageState
         layoutShape: fit.profile!.form.id,
         gridColumns: fit.profile!.grid.columns,
         gridRows: fit.profile!.grid.rows,
-        inputMode: _advancedGrid
-            ? CustomSheetLayoutInputMode.byGrid
-            : CustomSheetLayoutInputMode.byQuestions,
+        inputMode: CustomSheetLayoutInputMode.byQuestions,
         createdAt: widget.existing?.createdAt ?? DateTime.now(),
         lastUsedAt: widget.existing?.lastUsedAt,
       );
@@ -203,11 +280,14 @@ class _CustomSheetLayoutEditorPageState
   }
 
   Future<void> _printSample() async {
-    final fit = _currentFit;
-    if (!fit.isOk || fit.profile == null) {
-      setState(() => _errorMessage = fit.errorMessage);
+    if (!await _validateForSubmit()) {
       return;
     }
+    if (!mounted) {
+      return;
+    }
+    final printContext = context;
+    final fit = _currentFit;
     final subject = Subject(
       name: 'Sample Exam',
       answerKey: const <int, dynamic>{},
@@ -223,11 +303,11 @@ class _CustomSheetLayoutEditorPageState
         subject: subject,
         sectionName: 'SAMPLE',
         copies: 1,
-        printContext: context,
+        printContext: printContext,
       );
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        ScaffoldMessenger.of(printContext).showSnackBar(
           const SnackBar(
             content: Text('Could not generate sample sheet.'),
             backgroundColor: AppColors.error,
@@ -286,10 +366,7 @@ class _CustomSheetLayoutEditorPageState
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: () {
-            setState(() {
-              _selectedLayoutId = suggestion.id;
-              _advancedGrid = false;
-            });
+            setState(() => _selectedLayoutId = suggestion.id);
             _refreshValidation();
           },
           child: Container(
@@ -423,13 +500,26 @@ class _CustomSheetLayoutEditorPageState
         ],
       ),
       body: ListView(
+        controller: _scrollController,
         padding: const EdgeInsets.all(16),
         children: [
-          TextField(
-            controller: _nameController,
-            decoration: const InputDecoration(
-              labelText: 'Layout name',
-              hintText: 'e.g. Weekly quiz, Exit ticket 10',
+          KeyedSubtree(
+            key: _nameFieldKey,
+            child: TextField(
+              controller: _nameController,
+              focusNode: _nameFocusNode,
+              textInputAction: TextInputAction.next,
+              decoration: InputDecoration(
+                labelText: 'Layout name',
+                hintText: 'e.g. Weekly quiz, Exit ticket 10',
+                errorText: _nameError,
+                errorMaxLines: 2,
+              ),
+              onChanged: (_) {
+                if (_nameError != null) {
+                  setState(() => _nameError = null);
+                }
+              },
             ),
           ),
           const SizedBox(height: 20),
@@ -443,16 +533,22 @@ class _CustomSheetLayoutEditorPageState
             style: TextStyle(fontSize: 12, color: AppColors.brandMuted),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _questionController,
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              labelText: 'Questions on sheet',
-              helperText:
-                  '${OmrLayoutProfile.minCustomItems}–'
-                  '${OmrLayoutProfile.maxCustomItems} questions',
+          KeyedSubtree(
+            key: _questionFieldKey,
+            child: TextField(
+              controller: _questionController,
+              focusNode: _questionFocusNode,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Questions on sheet',
+                helperText:
+                    '${OmrLayoutProfile.minCustomItems}–'
+                    '${OmrLayoutProfile.maxCustomItems} questions',
+                errorText: _questionError,
+                errorMaxLines: 3,
+              ),
+              onChanged: (_) => _refreshValidation(),
             ),
-            onChanged: (_) => _refreshValidation(),
           ),
           _standardSheetBanner(),
           const SizedBox(height: 16),
@@ -483,124 +579,80 @@ class _CustomSheetLayoutEditorPageState
             }).toList(),
           ),
           const SizedBox(height: 20),
-          const Text(
-            'Step 3 · Pick a sheet layout',
-            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Only scannable options are shown. Pick one — the grid is chosen '
-            'for you.',
-            style: TextStyle(fontSize: 12, color: AppColors.brandMuted),
-          ),
-          const SizedBox(height: 10),
-          if (suggestions.isEmpty && _questionCountValid) ...[
-            Text(
-              _errorMessage ?? 'No layout fits these settings.',
-              style: const TextStyle(
-                color: AppColors.error,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ] else ...[
-            for (final tier in OmrLayoutSuggestionTier.values)
-              if (grouped[tier]?.isNotEmpty ?? false) ...[
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6, top: 4),
-                  child: Text(
-                    tier.pickerLabel,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                      color: AppColors.brandMuted,
-                    ),
-                  ),
+          KeyedSubtree(
+            key: _layoutSectionKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Step 3 · Pick a sheet layout',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
-                ...grouped[tier]!.map(_layoutCard),
-              ],
-            _blockedSection(),
-          ],
-          const SizedBox(height: 8),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text(
-              'Advanced · manual grid',
-              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            subtitle: const Text(
-              'For experienced users. Still blocked if bubbles are too tight.',
-              style: TextStyle(fontSize: 12),
-            ),
-            initiallyExpanded: _advancedGrid,
-            onExpansionChanged: (expanded) {
-              setState(() => _advancedGrid = expanded);
-              _refreshValidation();
-            },
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<int>(
-                      initialValue: _gridColumns,
-                      decoration: const InputDecoration(labelText: 'Columns'),
-                      items: List.generate(
-                        10,
-                        (i) => DropdownMenuItem(
-                          value: i + 1,
-                          child: Text('${i + 1}'),
-                        ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Only scannable options are shown. Pick one — the grid is chosen '
+                  'for you.',
+                  style: TextStyle(fontSize: 12, color: AppColors.brandMuted),
+                ),
+                if (_layoutError != null) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.error.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: AppColors.error.withValues(alpha: 0.45),
                       ),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() => _gridColumns = value);
-                        _refreshValidation();
-                      },
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: DropdownButtonFormField<int>(
-                      initialValue: _gridRows,
-                      decoration: const InputDecoration(labelText: 'Rows'),
-                      items: List.generate(
-                        20,
-                        (i) => DropdownMenuItem(
-                          value: i + 1,
-                          child: Text('${i + 1}'),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.error_outline_rounded,
+                          color: AppColors.error,
+                          size: 20,
                         ),
-                      ),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() => _gridRows = value);
-                        _refreshValidation();
-                      },
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _layoutError!,
+                            style: const TextStyle(
+                              color: AppColors.error,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '$_gridColumns × $_gridRows = ${_gridColumns * _gridRows} '
-                'questions',
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.brandMuted,
-                ),
-              ),
-              if (_advancedGrid &&
-                  _gridColumns * _gridRows != _questionCount) ...[
-                const SizedBox(height: 8),
-                Text(
-                  'Manual grid must match $_questionCount questions '
-                  '(${_gridColumns * _gridRows} now).',
-                  style: const TextStyle(
-                    color: AppColors.error,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12,
-                  ),
-                ),
+                const SizedBox(height: 10),
+                if (suggestions.isEmpty && _questionCountValid)
+                  const SizedBox.shrink()
+                else ...[
+                  for (final tier in OmrLayoutSuggestionTier.values)
+                    if (grouped[tier]?.isNotEmpty ?? false) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6, top: 4),
+                        child: Text(
+                          tier.pickerLabel,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                            color: AppColors.brandMuted,
+                          ),
+                        ),
+                      ),
+                      ...grouped[tier]!.map(_layoutCard),
+                    ],
+                  _blockedSection(),
+                ],
               ],
-            ],
+            ),
           ),
           const SizedBox(height: 16),
           if (profile != null) ...[
@@ -614,18 +666,10 @@ class _CustomSheetLayoutEditorPageState
               ),
             ),
           ],
-          if (_errorMessage != null && suggestions.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(
-              _errorMessage!,
-              style: const TextStyle(
-                color: AppColors.error,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
         ],
       ),
     );
   }
 }
+
+

@@ -323,6 +323,9 @@ class CloudSyncService {
       useCustomLayout: row['use_custom_layout'] == true,
       optionsCount: row['options_count'] as int? ?? 5,
       layoutShape: row['layout_shape']?.toString() ?? 'lengthwise_full',
+      customLayoutId: row['custom_layout_id']?.toString(),
+      customGridColumns: row['custom_grid_columns'] as int?,
+      customGridRows: row['custom_grid_rows'] as int?,
       ownerTeacherId: row['owner_teacher_id']?.toString(),
       cloudId: row['id']?.toString(),
       syncStatus: SyncStatus.synced,
@@ -486,6 +489,9 @@ class CloudSyncService {
       'use_custom_layout': subject.useCustomLayout,
       'options_count': subject.optionsCount,
       'layout_shape': subject.layoutShape,
+      'custom_layout_id': subject.customLayoutId,
+      'custom_grid_columns': subject.customGridColumns,
+      'custom_grid_rows': subject.customGridRows,
       'updated_at': subject.updatedAt.toIso8601String(),
     };
     final response = await ApiService.postJson('/sync/subjects', row);

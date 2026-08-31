@@ -42,6 +42,8 @@ class MfaChallengeController extends Controller
             ]);
         }
 
+        $this->mfa->refreshTicket($validated['mfa_ticket']);
+
         if (! $this->mfa->verifyCodeOrRecovery($user, $validated['code'])) {
             $this->events->record('mfa_failed', $user->email, $user, $request);
 

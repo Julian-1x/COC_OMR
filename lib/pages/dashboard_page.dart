@@ -465,9 +465,21 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   String _subjectLabel(Subject subject) => subject.displayName;
 
   List<_SubjectGroup> get _subjectGroups {
+    return _subjectGroupsForSheetMode(null);
+  }
+
+  bool get _hasCustomSheetLayouts => globalCustomSheetLayouts.isNotEmpty;
+
+  List<_SubjectGroup> _subjectGroupsForSheetMode(AnswerKeySheetMode? mode) {
     final grouped = <String, List<Subject>>{};
 
     for (final subject in globalSubjects) {
+      if (mode == AnswerKeySheetMode.standard && subject.useCustomLayout) {
+        continue;
+      }
+      if (mode == AnswerKeySheetMode.custom && !subject.useCustomLayout) {
+        continue;
+      }
       final key = _normalizeSubjectName(subject.name);
       grouped.putIfAbsent(key, () => <Subject>[]).add(subject);
     }
@@ -670,12 +682,20 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
   List<_DashboardAction> get _examSetupToolActions => [
         _DashboardAction(
-          label: 'Answer Keys',
-          subtitle: '${globalSubjects.length} saved',
+          label: 'Answer Keys · Standard',
+          subtitle: '30–100 question exams',
           icon: Icons.menu_book_rounded,
           color: AppColors.brandGreen,
-          onTap: _openAnswerKeys,
+          onTap: () => _openAnswerKeys(AnswerKeySheetMode.standard),
         ),
+        if (_hasCustomSheetLayouts)
+          _DashboardAction(
+            label: 'Answer Keys · Custom',
+            subtitle: 'Quizzes on saved sheet layouts',
+            icon: Icons.dashboard_customize_rounded,
+            color: AppColors.brandGreenDark,
+            onTap: () => _openAnswerKeys(AnswerKeySheetMode.custom),
+          ),
         _DashboardAction(
           label: 'Print Sheets',
           subtitle: 'Generate answer forms',
@@ -740,10 +760,19 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         ),
       ];
 
-  Future<void> _createNewSubject() async {
+  Future<void> _openNewAnswerKey(AnswerKeySheetMode mode) async {
+    if (mode == AnswerKeySheetMode.custom && !_hasCustomSheetLayouts) {
+      _showSnackBar(
+        'Create a custom sheet layout first under Prepare → Custom sheet layouts.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return;
+    }
     final result = await Navigator.push<dynamic>(
       context,
-      MaterialPageRoute(builder: (context) => const AnswerKeyPage()),
+      MaterialPageRoute(
+        builder: (context) => AnswerKeyPage(sheetMode: mode),
+      ),
     );
     if (!mounted) {
       return;
@@ -757,6 +786,47 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         '${result.displayName} created! Ready to print sheets.',
         backgroundColor: AppColors.brandGreen,
       );
+    }
+  }
+
+  Future<void> _promptNewAnswerKeyType() async {
+    if (!_hasCustomSheetLayouts) {
+      await _openNewAnswerKey(AnswerKeySheetMode.standard);
+      return;
+    }
+    final choice = await AppBottomSheet.show<AnswerKeySheetMode>(
+      context: context,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          AppBottomSheet.header(
+            title: 'New answer key',
+            subtitle: 'Pick the sheet type for this exam.',
+          ),
+          ListTile(
+            leading: const Icon(Icons.fact_check_outlined,
+                color: AppColors.brandGreen),
+            title: const Text('Standard exam (30–100)'),
+            subtitle: const Text(
+              'Regular exams — proven sheet sizes for scanning.',
+            ),
+            onTap: () => Navigator.pop(context, AnswerKeySheetMode.standard),
+          ),
+          ListTile(
+            leading: const Icon(Icons.dashboard_customize_outlined,
+                color: AppColors.brandGreenDark),
+            title: const Text('Custom sheet quiz'),
+            subtitle: const Text(
+              'Uses a layout you saved under Custom sheet layouts.',
+            ),
+            onTap: () => Navigator.pop(context, AnswerKeySheetMode.custom),
+          ),
+        ],
+      ),
+    );
+    if (choice != null && mounted) {
+      await _openNewAnswerKey(choice);
     }
   }
 
@@ -1926,7 +1996,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     sectionController.dispose();
   }
 
-  Future<void> _openAnswerKeys() async {
+  Future<void> _openAnswerKeys(AnswerKeySheetMode mode) async {
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
@@ -1938,7 +2008,8 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       builder: (context) => SafeArea(
         child: StatefulBuilder(
           builder: (context, setModalState) {
-            final subjectGroups = _subjectGroups;
+            final subjectGroups = _subjectGroupsForSheetMode(mode);
+            final isCustom = mode == AnswerKeySheetMode.custom;
 
             Future<void> openEditor({
               Subject? subject,
@@ -1950,6 +2021,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   builder: (context) => AnswerKeyPage(
                     subjectToEdit: subject,
                     editSectionFocus: sectionFocus,
+                    sheetMode: mode,
                   ),
                 ),
               );
@@ -2044,18 +2116,23 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     AppBottomSheet.header(
-                      title: 'Answer Keys',
-                      subtitle:
-                          'Review answer keys and the sections each subject is assigned to.',
+                      title: isCustom
+                          ? 'Custom answer keys'
+                          : 'Standard answer keys',
+                      subtitle: isCustom
+                          ? 'Tap a row to view or edit answers on your custom sheet.'
+                          : 'Tap a row to view or edit answers for standard 30–100 exams.',
                       trailing: FilledButton.icon(
                         onPressed: () => openEditor(),
                         icon: const Icon(Icons.add_rounded),
-                        label: const Text('New'),
+                        label: Text(isCustom ? 'New custom' : 'New standard'),
                       ),
                     ),
-                    const Text(
-                      'Need different answers per section? Create one key per section — same subject name is OK.',
-                      style: TextStyle(
+                    Text(
+                      isCustom
+                          ? 'Each key uses a custom sheet layout you saved earlier.'
+                          : 'Need different answers per section? Create one key per section — same subject name is OK.',
+                      style: const TextStyle(
                         color: AppColors.brandMuted,
                         fontSize: 12,
                         height: 1.35,
@@ -2071,27 +2148,33 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                           borderRadius: BorderRadius.circular(22),
                           border: Border.all(color: AppColors.brandBorder),
                         ),
-                        child: const Column(
+                        child: Column(
                           children: [
                             Icon(
-                              Icons.menu_book_rounded,
+                              isCustom
+                                  ? Icons.dashboard_customize_rounded
+                                  : Icons.menu_book_rounded,
                               size: 52,
                               color: AppColors.brandGreen,
                             ),
-                            SizedBox(height: 12),
+                            const SizedBox(height: 12),
                             Text(
-                              'No subjects yet',
-                              style: TextStyle(
+                              isCustom
+                                  ? 'No custom answer keys yet'
+                                  : 'No standard answer keys yet',
+                              style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.w800,
                                 color: AppColors.brandText,
                               ),
                             ),
-                            SizedBox(height: 6),
+                            const SizedBox(height: 6),
                             Text(
-                              'Create your first subject to save its answer key and assign sections.',
+                              isCustom
+                                  ? 'Tap New custom to attach a saved sheet layout and enter answers.'
+                                  : 'Create your first standard exam key (30–100 questions) and assign sections.',
                               textAlign: TextAlign.center,
-                              style: TextStyle(
+                              style: const TextStyle(
                                 color: AppColors.brandMuted,
                                 height: 1.4,
                               ),
@@ -3068,7 +3151,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           action: SnackBarAction(
             label: 'OPEN',
             onPressed: () {
-              _openAnswerKeys();
+              _openAnswerKeys(AnswerKeySheetMode.standard);
             },
           ),
         ),
@@ -4239,7 +4322,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   icon: Icons.edit_note_rounded,
                   label: 'Keys',
                   color: AppColors.brandGreenDark,
-                  onTap: _createNewSubject,
+                  onTap: _promptNewAnswerKeyType,
                   compact: compact,
                 ),
               ),

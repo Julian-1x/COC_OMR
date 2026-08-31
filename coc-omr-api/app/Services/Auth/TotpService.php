@@ -27,7 +27,7 @@ class TotpService
         return "otpauth://totp/{$label}?secret={$encodedSecret}&issuer={$issuer}&digits=6&period=30";
     }
 
-    public function verify(string $secret, string $code, int $window = 1): bool
+    public function verify(string $secret, string $code, int $window = 2): bool
     {
         $normalized = preg_replace('/\s+/', '', $code) ?? '';
         if (! preg_match('/^\d{6,8}$/', $normalized)) {
