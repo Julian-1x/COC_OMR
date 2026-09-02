@@ -1,35 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { EmptyState } from "@/components/dashboard-shell";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { deleteSubject, fetchSubjects } from "@/lib/api/data";
+import { slowApiLoadingMessage, useSlowApiLoad } from "@/lib/api/use-slow-api-load";
 import type { DbSubject } from "@/lib/types/database";
 import { formatPassingLabel } from "@/lib/omr/passing-score";
 
 export default function AnswerKeysPage() {
   const [subjects, setSubjects] = useState<DbSubject[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    setLoading(true);
-    try {
-      const api = createBrowserApiClient();
-      setSubjects(await fetchSubjects(api));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
+  const {
+    loading,
+    error,
+    attempt: loadAttempt,
+    maxAttempts,
+    reload,
+  } = useSlowApiLoad(async () => {
+    const api = createBrowserApiClient();
+    setSubjects(await fetchSubjects(api));
   }, []);
 
   async function remove(localId: string, subjectName: string) {
@@ -42,7 +35,7 @@ export default function AnswerKeysPage() {
     }
     const api = createBrowserApiClient();
     await deleteSubject(api, localId);
-    await load();
+    reload();
   }
 
   return (
@@ -62,9 +55,19 @@ export default function AnswerKeysPage() {
         </Link>
       </div>
 
-      {error ? <p className="mb-3 text-sm font-semibold text-red-600">{error}</p> : null}
+      {error ? (
+        <Card className="mb-3 border-red-200 bg-red-50">
+          <p className="text-sm font-semibold text-red-700">{error}</p>
+          <Button type="button" variant="secondary" className="mt-3" onClick={reload}>
+            Try again
+          </Button>
+        </Card>
+      ) : null}
       {loading ? (
-        <PageSkeleton rows={4} />
+        <div>
+          <PageSkeleton rows={4} />
+          <p className="mt-2 text-xs text-slate-500">{slowApiLoadingMessage(loadAttempt, maxAttempts)}</p>
+        </div>
       ) : subjects.length === 0 ? (
         <EmptyState title="No answer keys" body="Create a subject and assign it to your sections." />
       ) : (

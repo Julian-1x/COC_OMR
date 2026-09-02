@@ -4,6 +4,39 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+export type AutoRetryOptions = {
+  maxAttempts?: number;
+  delayMs?: number;
+  onRetry?: (attempt: number, maxAttempts: number) => void;
+};
+
+/** Retry while Render (or similar) cold-starts — no manual refresh needed. */
+export async function withAutoRetry<T>(
+  fn: () => Promise<T>,
+  options?: AutoRetryOptions,
+): Promise<T> {
+  const maxAttempts = options?.maxAttempts ?? 10;
+  const delayMs = options?.delayMs ?? 4000;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        options?.onRetry?.(attempt, maxAttempts);
+        await delay(delayMs);
+      }
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error("Could not reach the school server. It may still be waking up.");
+}
+
 /** Ping Laravel /up so free-tier hosts (Render) finish waking before auth. */
 export async function wakeSchoolApi(
   apiBase: string,

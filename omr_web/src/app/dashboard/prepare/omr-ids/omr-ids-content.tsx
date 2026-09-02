@@ -2,18 +2,20 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
 import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchStudents } from "@/lib/api/data";
+import { slowApiLoadingMessage, useSlowApiLoad } from "@/lib/api/use-slow-api-load";
 import type { DbStudent } from "@/lib/types/database";
 import { exportOmrIdsCsv, exportOmrIdsPdf } from "@/lib/pdf/exports";
 import { downloadBlob, downloadText } from "@/lib/utils";
 
 export default function OmrIdsPage() {
   const searchParams = useSearchParams();
+  const sectionParam = searchParams.get("section") ?? "";
   const [sections, setSections] = useState<string[]>([]);
   const [students, setStudents] = useState<DbStudent[]>([]);
   const [sectionName, setSectionName] = useState(searchParams.get("section") ?? "");
@@ -22,28 +24,29 @@ export default function OmrIdsPage() {
   const [error, setError] = useState<string | null>(null);
   const [pdfNote, setPdfNote] = useState<string | null>(null);
 
-  const sectionParam = searchParams.get("section") ?? "";
-
-  useEffect(() => {
-    async function load() {
-      const api = createBrowserApiClient();
-      const [sectionRows, studentRows] = await Promise.all([
-        fetchSections(api),
-        fetchStudents(api),
-      ]);
-      const names = sectionRows.map((s) => s.name);
-      setSections(names);
-      setStudents(studentRows);
-      if (sectionParam && names.includes(sectionParam)) {
-        setSectionName(sectionParam);
-      } else {
-        setSectionName((prev) => prev || names[0] || "");
-        if (sectionParam && !names.includes(sectionParam)) {
-          setError(`Section "${sectionParam}" was not found. Choose a section below.`);
-        }
+  const {
+    loading: dataLoading,
+    error: dataError,
+    attempt: loadAttempt,
+    maxAttempts,
+    reload: reloadData,
+  } = useSlowApiLoad(async () => {
+    const api = createBrowserApiClient();
+    const [sectionRows, studentRows] = await Promise.all([
+      fetchSections(api),
+      fetchStudents(api),
+    ]);
+    const names = sectionRows.map((s) => s.name);
+    setSections(names);
+    setStudents(studentRows);
+    if (sectionParam && names.includes(sectionParam)) {
+      setSectionName(sectionParam);
+    } else {
+      setSectionName((prev) => prev || names[0] || "");
+      if (sectionParam && !names.includes(sectionParam)) {
+        setError(`Section "${sectionParam}" was not found. Choose a section below.`);
       }
     }
-    void load();
   }, [sectionParam]);
 
   async function downloadPdf() {
@@ -102,14 +105,39 @@ export default function OmrIdsPage() {
         </p>
       </div>
 
+      {dataLoading ? (
+        <Card className="mb-4 max-w-xl border-slate-200 bg-slate-50">
+          <p className="text-sm font-semibold text-slate-700">Loading sections and students…</p>
+          <p className="mt-1 text-xs text-slate-500">{slowApiLoadingMessage(loadAttempt, maxAttempts)}</p>
+        </Card>
+      ) : null}
+
+      {dataError ? (
+        <Card className="mb-4 max-w-xl border-red-200 bg-red-50">
+          <p className="text-sm font-semibold text-red-700">{dataError}</p>
+          <Button type="button" variant="secondary" className="mt-3" onClick={reloadData}>
+            Try again
+          </Button>
+        </Card>
+      ) : null}
+
       <Card className="mb-4 max-w-xl">
         <Label htmlFor="section">Section</Label>
-        <Select id="section" value={sectionName} onChange={(e) => setSectionName(e.target.value)}>
-          {sections.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
+        <Select
+          id="section"
+          value={sectionName}
+          disabled={dataLoading}
+          onChange={(e) => setSectionName(e.target.value)}
+        >
+          {dataLoading ? (
+            <option value="">Loading sections…</option>
+          ) : (
+            sections.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))
+          )}
         </Select>
         <div className="mt-4 flex gap-2">
           <Button type="button" disabled={loading || !sectionName} onClick={downloadPdf}>

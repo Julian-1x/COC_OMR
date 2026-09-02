@@ -8,8 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
 import { createBrowserApiClient } from "@/lib/api/laravel-client";
 import { fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
-import { getPublicApiBaseUrl } from "@/lib/api/env";
-import { wakeSchoolApi } from "@/lib/api/wake-api";
+import { slowApiLoadingMessage, useSlowApiLoad } from "@/lib/api/use-slow-api-load";
 import type { DbSubject, DbStudent } from "@/lib/types/database";
 import { generateAnswerSheetsPdf } from "@/lib/pdf/answer-sheet";
 import { getQuestionAnswers } from "@/lib/omr/answer-key";
@@ -23,6 +22,8 @@ function formatExamDateLabel(examDate: string | null | undefined): string {
 
 export default function PrintSheetsPage() {
   const searchParams = useSearchParams();
+  const subjectParam = searchParams.get("subject") ?? "";
+  const sectionParam = searchParams.get("section") ?? "";
   const [subjects, setSubjects] = useState<DbSubject[]>([]);
   const [sections, setSections] = useState<string[]>([]);
   const [students, setStudents] = useState<DbStudent[]>([]);
@@ -30,61 +31,43 @@ export default function PrintSheetsPage() {
   const [sectionName, setSectionName] = useState(searchParams.get("section") ?? "");
   const [copyDialogOpen, setCopyDialogOpen] = useState(false);
   const [copyCount, setCopyCount] = useState(1);
-  const [dataLoading, setDataLoading] = useState(true);
-  const [dataError, setDataError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function load() {
-      setDataLoading(true);
-      setDataError(null);
-      try {
-        await wakeSchoolApi(getPublicApiBaseUrl(), {
-          attempts: 3,
-          delayMs: 2000,
-          probeTimeoutMs: 30_000,
-        });
-        const api = createBrowserApiClient();
-        const [subjectRows, sectionRows, studentRows] = await Promise.all([
-          fetchSubjects(api),
-          fetchSections(api),
-          fetchStudents(api),
-        ]);
-        setSubjects(subjectRows);
-        const names = sectionRows.map((s) => s.name);
-        setSections(names);
-        setStudents(studentRows);
-        const subjectParam = searchParams.get("subject") ?? "";
-        const sectionParam = searchParams.get("section") ?? "";
-        if (subjectParam && subjectRows.some((s) => s.local_id === subjectParam)) {
-          setSubjectId(subjectParam);
-        } else if (subjectRows[0]) {
-          setSubjectId((prev) => prev || subjectRows[0].local_id);
-        }
-        if (sectionParam && names.includes(sectionParam)) {
-          setSectionName(sectionParam);
-        } else {
-          setSectionName((prev) => prev || names[0] || "");
-          if (sectionParam && !names.includes(sectionParam)) {
-            setError(`Section "${sectionParam}" was not found. Choose a section below.`);
-          }
-        }
-      } catch (err) {
-        setDataError(
-          err instanceof Error
-            ? err.message
-            : "Could not load subjects and sections. The server may still be waking up — try Refresh.",
-        );
-      } finally {
-        setDataLoading(false);
+  const {
+    loading: dataLoading,
+    error: dataError,
+    attempt: loadAttempt,
+    maxAttempts,
+    reload: reloadData,
+  } = useSlowApiLoad(async () => {
+    const api = createBrowserApiClient();
+    const [subjectRows, sectionRows, studentRows] = await Promise.all([
+      fetchSubjects(api),
+      fetchSections(api),
+      fetchStudents(api),
+    ]);
+    setSubjects(subjectRows);
+    const names = sectionRows.map((s) => s.name);
+    setSections(names);
+    setStudents(studentRows);
+    if (subjectParam && subjectRows.some((s) => s.local_id === subjectParam)) {
+      setSubjectId(subjectParam);
+    } else if (subjectRows[0]) {
+      setSubjectId((prev) => prev || subjectRows[0].local_id);
+    }
+    if (sectionParam && names.includes(sectionParam)) {
+      setSectionName(sectionParam);
+    } else {
+      setSectionName((prev) => prev || names[0] || "");
+      if (sectionParam && !names.includes(sectionParam)) {
+        setError(`Section "${sectionParam}" was not found. Choose a section below.`);
       }
     }
-    void load();
-  }, [searchParams]);
+  }, [subjectParam, sectionParam]);
 
   const subject = subjects.find((s) => s.local_id === subjectId);
   const sectionStudents = students.filter((s) => s.section_name === sectionName);
@@ -225,10 +208,6 @@ export default function PrintSheetsPage() {
     }
   }
 
-  function retryDataLoad() {
-    window.location.reload();
-  }
-
   return (
     <>
       <div className="mb-4">
@@ -246,17 +225,18 @@ export default function PrintSheetsPage() {
       {dataLoading ? (
         <Card className="mb-4 max-w-5xl border-slate-200 bg-slate-50">
           <p className="text-sm font-semibold text-slate-700">Loading subjects and sections…</p>
-          <p className="mt-1 text-xs text-slate-500">
-            The school server may take up to a minute to wake up on first visit.
-          </p>
+          <p className="mt-1 text-xs text-slate-500">{slowApiLoadingMessage(loadAttempt, maxAttempts)}</p>
         </Card>
       ) : null}
 
       {dataError ? (
         <Card className="mb-4 max-w-5xl border-red-200 bg-red-50">
           <p className="text-sm font-semibold text-red-700">{dataError}</p>
-          <Button type="button" variant="secondary" className="mt-3" onClick={retryDataLoad}>
-            Refresh
+          <p className="mt-1 text-xs text-red-600">
+            Automatic retries stopped after {maxAttempts} attempts. Try again when the server is up.
+          </p>
+          <Button type="button" variant="secondary" className="mt-3" onClick={reloadData}>
+            Try again
           </Button>
         </Card>
       ) : null}
