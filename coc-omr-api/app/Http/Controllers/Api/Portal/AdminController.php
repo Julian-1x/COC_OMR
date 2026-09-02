@@ -111,6 +111,9 @@ class AdminController extends Controller
         $teachers = $this->scope->schoolTeachersQuery($admin)
             ->with('user')
             ->where('access_status', CocSchool::ACCESS_PENDING)
+            ->whereHas('user', function ($query) {
+                $query->whereNotNull('email_verified_at');
+            })
             ->orderBy('created_at')
             ->get();
 

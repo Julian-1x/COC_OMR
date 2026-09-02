@@ -80,7 +80,23 @@ export function AccessControlPanel({
           dashboard. {scopeHint}
         </p>
         {pending.length === 0 ? (
-          <p className="mt-3 text-sm text-slate-500">No pending requests.</p>
+          <div className="mt-3 space-y-2 text-sm text-slate-500">
+            <p>No pending requests in your view right now.</p>
+            {!viewerIsSuperAdmin ? (
+              <p>
+                As a <strong>department admin</strong>, you only see instructors who registered under{" "}
+                <strong>{viewerDepartment ?? "your department"}</strong>. If someone registered under
+                another college (COE, CIT, CMA, etc.), ask a <strong>super admin</strong> to approve
+                them.
+              </p>
+            ) : (
+              <p>
+                If someone says they are waiting but you do not see them here, refresh after the school
+                server wakes up, or confirm they finished email confirmation and registered with the
+                correct department.
+              </p>
+            )}
+          </div>
         ) : (
           <ul className="mt-4 space-y-3">
             {pending.map((teacher) => (
