@@ -29,24 +29,38 @@ export const requireTeacherSession = cache(async (): Promise<{
   if (!token) redirect("/login");
 
   const api = createServerApiClient(token);
-  try {
-    const { user } = await api.get<{ user: ApiUser }>("/me");
-    if (!isAccessApproved(user.profile)) {
-      redirect("/auth/signout?next=/login&pending=1");
+  // Brief retries: Neon free can take a few seconds after idle; one failure
+  // used to bounce teachers warming ↔ dashboard forever.
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const { user } = await api.get<{ user: ApiUser }>("/me");
+      if (!isAccessApproved(user.profile)) {
+        redirect("/auth/signout?next=/login&pending=1");
+      }
+      return { api, user, profile: user.profile };
+    } catch (error) {
+      lastError = error;
+      if (error instanceof ApiError && error.status === 401) {
+        // Clear the cookie or middleware will bounce login ↔ dashboard forever
+        // (common after a DB reset like Neon cutover).
+        redirect("/auth/signout?next=/login");
+      }
+      if (error instanceof ApiError && error.status === 403) {
+        redirect("/auth/signout?next=/login&pending=1");
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+      }
     }
-    return { api, user, profile: user.profile };
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      // Clear the cookie or middleware will bounce login ↔ dashboard forever
-      // (common after a DB reset like Neon cutover).
-      redirect("/auth/signout?next=/login");
-    }
-    if (error instanceof ApiError && error.status === 403) {
-      redirect("/auth/signout?next=/login&pending=1");
-    }
-    // Keep the session cookie — Render free tier often 502s while waking.
-    redirect("/warming");
   }
+
+  if (lastError instanceof ApiError && lastError.status === 401) {
+    redirect("/auth/signout?next=/login");
+  }
+  // Keep the session cookie — transient API/DB errors should not force logout.
+  // /warming retries until /me succeeds (not only /up).
+  redirect("/warming");
 });
 
 export async function requireAdminSession(): Promise<{
