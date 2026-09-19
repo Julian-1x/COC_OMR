@@ -1,9 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import {
-  API_TOKEN_COOKIE,
-  setApiTokenCookie,
-} from "@/lib/api/laravel-client";
+import { setApiTokenCookie } from "@/lib/api/laravel-client";
+import { sealLoginHandoff } from "@/lib/api/login-handoff";
 import { tryGetApiBaseUrl, apiBaseUrlMismatch, apiConfigHint } from "@/lib/api/env";
 import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
 import { COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
@@ -27,6 +25,15 @@ type AuthResponse = {
   captcha_required?: boolean;
   captcha_site_key?: string;
 };
+
+function jsonWithSession(token: string, body: Record<string, unknown>) {
+  const response = NextResponse.json({
+    ...body,
+    handoff: sealLoginHandoff(token),
+  });
+  setApiTokenCookie(response.cookies, token);
+  return response;
+}
 
 function authErrorMessage(payload: AuthResponse | null, fallback: string): string {
   if (payload?.message) return payload.message;
@@ -202,14 +209,12 @@ export async function POST(request: Request) {
         payload?.user?.profile?.access_status === "pending";
 
       if (!needsEmailConfirmation && payload?.token) {
-        const response = NextResponse.json({
+        return jsonWithSession(payload.token, {
           ok: true,
           needsEmailConfirmation,
           accessPending: !needsEmailConfirmation && accessPending,
           message: payload?.message,
         });
-        setApiTokenCookie(response.cookies, payload.token);
-        return response;
       }
 
       return NextResponse.json({
@@ -250,9 +255,7 @@ export async function POST(request: Request) {
           { status: mfaResponse.status || 400 },
         );
       }
-      const mfaOk = NextResponse.json({ ok: true });
-      setApiTokenCookie(mfaOk.cookies, mfaPayload.token);
-      return mfaOk;
+      return jsonWithSession(mfaPayload.token, { ok: true });
     }
 
     const response = await fetchAuthUpstream(`${baseUrl}/api/login`, {
@@ -338,15 +341,12 @@ export async function POST(request: Request) {
     }
 
     const cookieStore = await cookies();
-    const ok = NextResponse.json({ ok: true });
-    setApiTokenCookie(ok.cookies, payload.token);
     try {
       setApiTokenCookie(cookieStore, payload.token);
     } catch {
-      // Response cookie above is authoritative.
+      // Response cookie below is authoritative.
     }
-
-    return ok;
+    return jsonWithSession(payload.token, { ok: true });
   } catch (error) {
     return NextResponse.json({ error: friendlyCatchMessage(error) }, { status: 500 });
   }

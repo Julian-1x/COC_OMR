@@ -151,7 +151,14 @@ function LoginForm() {
     const authError = searchParams.get("error");
     if (authError === "session") {
       setError(
-        "Sign-in did not stay active. Allow cookies for omrweb.vercel.app, then try again. If this keeps happening, the school API may be rejecting the session — check Render Logs.",
+        "Sign-in handoff expired or cookies were blocked. Allow cookies for this site, then sign in again with a fresh authenticator code.",
+      );
+      setMode("login");
+      return;
+    }
+    if (authError === "rejected") {
+      setError(
+        "Signed in, but the school API rejected the session. Confirm https://coc-omr-api.onrender.com/up is up, then try again.",
       );
       setMode("login");
       return;
@@ -405,6 +412,7 @@ function LoginForm() {
       const payload = await readJsonResponse<{
         error?: string;
         ok?: boolean;
+        handoff?: string;
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
         message?: string;
@@ -467,7 +475,23 @@ function LoginForm() {
         return;
       }
 
-      // Server verifies the httpOnly cookie + /api/me before opening the desk.
+      // Form POST sets the httpOnly cookie on a real document navigation (reliable
+      // on Vercel). fetch() Set-Cookie alone was bouncing teachers back to login.
+      if (payload.handoff) {
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = "/auth/after-login";
+        form.style.display = "none";
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "handoff";
+        input.value = payload.handoff;
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+        return;
+      }
+
       window.location.assign("/auth/after-login");
       return;
     } catch (err) {
