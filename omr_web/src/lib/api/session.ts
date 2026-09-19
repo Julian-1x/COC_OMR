@@ -26,7 +26,7 @@ export const requireTeacherSession = cache(async (): Promise<{
   profile: DbTeacherProfile | null;
 }> => {
   const token = await getServerApiToken();
-  if (!token) redirect("/login");
+  if (!token) redirect("/login?error=session");
 
   const api = createServerApiClient(token);
   // Brief retries: Neon free can take a few seconds after idle; one failure

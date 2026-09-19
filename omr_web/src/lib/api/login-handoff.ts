@@ -3,14 +3,14 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypt
 const HANDOFF_TTL_MS = 2 * 60 * 1000;
 
 function handoffSecret(): string {
+  // Prefer build-time public URL so every Vercel serverless isolate seals/unseals
+  // with the same key (runtime-only AUTH_SECRET mismatches were bouncing teachers).
   const secret =
-    process.env.AUTH_SECRET?.trim() ||
+    process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ||
     process.env.API_BASE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-  if (!secret) {
-    throw new Error("AUTH_SECRET or API_BASE_URL is required to seal login handoffs.");
-  }
-  return secret;
+    process.env.AUTH_SECRET?.trim() ||
+    "coc-omr-web-handoff-v1";
+  return `coc-omr-handoff:${secret}`;
 }
 
 function keyBytes(): Buffer {

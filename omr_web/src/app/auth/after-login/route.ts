@@ -10,6 +10,36 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+/**
+ * Set-Cookie on 303 redirects is unreliable in some browsers (including
+ * embedded webviews). A 200 HTML bridge applies the cookie, then navigates.
+ */
+function htmlBridgeToDashboard(token: string) {
+  const response = new NextResponse(
+    `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <title>Opening desk…</title>
+    <meta http-equiv="refresh" content="0;url=/dashboard"/>
+    <script>location.replace("/dashboard");</script>
+  </head>
+  <body>
+    <p style="font-family:system-ui,sans-serif;padding:2rem">Opening your desk…</p>
+  </body>
+</html>`,
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+  setApiTokenCookie(response.cookies, token);
+  return response;
+}
+
 async function openDashboard(origin: string, token: string) {
   try {
     const api = createServerApiClient(token);
@@ -24,9 +54,7 @@ async function openDashboard(origin: string, token: string) {
       );
     }
 
-    const response = NextResponse.redirect(`${origin}/dashboard`, { status: 303 });
-    setApiTokenCookie(response.cookies, token);
-    return response;
+    return htmlBridgeToDashboard(token);
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       return NextResponse.redirect(
@@ -40,7 +68,6 @@ async function openDashboard(origin: string, token: string) {
         { status: 303 },
       );
     }
-    // Keep any cookie we can set and let warming retry.
     const warming = NextResponse.redirect(`${origin}/warming`, { status: 303 });
     setApiTokenCookie(warming.cookies, token);
     return warming;
@@ -49,7 +76,6 @@ async function openDashboard(origin: string, token: string) {
 
 /**
  * Preferred path: form POST from login with a sealed one-time handoff.
- * Set-Cookie on a document navigation is reliable; fetch() Set-Cookie is not.
  */
 export async function POST(request: Request) {
   const origin = new URL(request.url).origin;
@@ -58,7 +84,9 @@ export async function POST(request: Request) {
   const token = sealed ? unsealLoginHandoff(sealed) : null;
 
   if (!token) {
-    return NextResponse.redirect(`${origin}/login?error=session`, { status: 303 });
+    return NextResponse.redirect(`${origin}/login?error=session`, {
+      status: 303,
+    });
   }
 
   return openDashboard(origin, token);
@@ -70,7 +98,9 @@ export async function GET(request: Request) {
   const token = await getServerApiToken();
 
   if (!token) {
-    return NextResponse.redirect(`${origin}/login?error=session`, { status: 303 });
+    return NextResponse.redirect(`${origin}/login?error=session`, {
+      status: 303,
+    });
   }
 
   return openDashboard(origin, token);
