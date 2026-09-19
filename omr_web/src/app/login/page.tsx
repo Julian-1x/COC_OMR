@@ -6,7 +6,7 @@ import Link from "next/link";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { isApiConfigured } from "@/lib/api/env";
+import { isApiConfigured, apiConfigHint } from "@/lib/api/env";
 import { readJsonResponse } from "@/lib/api/read-json-response";
 import { wakeSchoolApi } from "@/lib/api/wake-api";
 import {
@@ -30,6 +30,7 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [lastName, setLastName] = useState("");
   const [firstName, setFirstName] = useState("");
+  const [suffix, setSuffix] = useState("");
   const [department, setDepartment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -351,9 +352,7 @@ function LoginForm() {
 
     try {
       if (!isApiConfigured()) {
-        throw new Error(
-          "API URL missing. Check omr_web/.env.local and restart npm run dev.",
-        );
+        throw new Error(apiConfigHint());
       }
 
       if (awaitingMfaEnrollment && !mfaSetupSecret) {
@@ -385,6 +384,7 @@ function LoginForm() {
           password,
           last_name: mode === "register" ? lastName : undefined,
           first_name: mode === "register" ? firstName : undefined,
+          suffix: mode === "register" && suffix.trim() ? suffix : undefined,
           school: COC_SCHOOL_NAME,
           department: mode === "register" ? department : undefined,
           captcha_token: captchaToken ?? undefined,
@@ -459,8 +459,10 @@ function LoginForm() {
         return;
       }
 
-      router.push("/dashboard");
-      router.refresh();
+      // Full navigation so the Set-Cookie from /auth/login is applied before
+      // dashboard middleware runs (client router.push can race the cookie).
+      window.location.assign("/dashboard");
+      return;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
       const lower = message.toLowerCase();
@@ -586,8 +588,18 @@ function LoginForm() {
                   onChange={(e) => setFirstName(e.target.value)}
                   required
                 />
+              </div>
+              <div className="mb-3">
+                <Label htmlFor="suffix">Suffix (optional)</Label>
+                <Input
+                  id="suffix"
+                  autoComplete="off"
+                  placeholder="Jr., Sr., III"
+                  value={suffix}
+                  onChange={(e) => setSuffix(e.target.value)}
+                />
                 <p className="mt-1 text-xs text-slate-500">
-                  We store names as First Last (e.g. Maria Santos) and fix ALL CAPS automatically.
+                  Leave blank if none. Names are stored as First Last (e.g. Maria Santos Jr.).
                 </p>
               </div>
               <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
@@ -772,8 +784,8 @@ function LoginForm() {
 
           {slowServerHint ? (
             <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
-              Connecting to the school server — free cloud hosting can take up to a minute the first
-              time. Stay on this page.
+              Connecting to the school server — this can take a few seconds if the database is
+              waking. Stay on this page.
             </p>
           ) : null}
 

@@ -47,6 +47,7 @@ export default function WarmingPage() {
         const payload = (await me.json().catch(() => null)) as {
           message?: string;
         } | null;
+        // Do not sign out on transient API failures — only hard 401/403 above.
         setStatus(
           payload?.message?.trim() ||
             "School API is up, but loading your account failed (often the database waking). Retrying…",

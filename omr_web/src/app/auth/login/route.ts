@@ -4,7 +4,7 @@ import {
   API_TOKEN_COOKIE,
   apiTokenCookieOptions,
 } from "@/lib/api/laravel-client";
-import { tryGetApiBaseUrl } from "@/lib/api/env";
+import { tryGetApiBaseUrl, apiBaseUrlMismatch, apiConfigHint } from "@/lib/api/env";
 import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
 import { COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { normalizePersonName, normalizePersonNameFromParts } from "@/lib/person-name";
@@ -98,7 +98,16 @@ export async function POST(request: Request) {
     const baseUrl = tryGetApiBaseUrl();
     if (!baseUrl) {
       return NextResponse.json(
-        { error: "API is not configured. Check omr_web/.env.local and restart npm run dev." },
+        { error: apiConfigHint() },
+        { status: 500 },
+      );
+    }
+    if (apiBaseUrlMismatch()) {
+      return NextResponse.json(
+        {
+          error:
+            "API_BASE_URL and NEXT_PUBLIC_API_BASE_URL must be the same Laravel URL (no trailing slash). Fix env, then restart or redeploy.",
+        },
         { status: 500 },
       );
     }
@@ -110,6 +119,7 @@ export async function POST(request: Request) {
       name?: string;
       first_name?: string;
       last_name?: string;
+      suffix?: string;
       school?: string;
       department?: string;
       captcha_token?: string;
@@ -139,6 +149,7 @@ export async function POST(request: Request) {
           ? normalizePersonNameFromParts(
               body.first_name?.trim() ?? "",
               body.last_name?.trim() ?? "",
+              body.suffix?.trim(),
             )
           : normalizePersonName(body.name?.trim() ?? "");
       const department = body.department?.trim().toUpperCase() ?? "";
@@ -191,8 +202,14 @@ export async function POST(request: Request) {
         payload?.user?.profile?.access_status === "pending";
 
       if (!needsEmailConfirmation && payload?.token) {
-        const cookieStore = await cookies();
-        cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+        const response = NextResponse.json({
+          ok: true,
+          needsEmailConfirmation,
+          accessPending: !needsEmailConfirmation && accessPending,
+          message: payload?.message,
+        });
+        response.cookies.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+        return response;
       }
 
       return NextResponse.json({
@@ -233,9 +250,9 @@ export async function POST(request: Request) {
           { status: mfaResponse.status || 400 },
         );
       }
-      const cookieStore = await cookies();
-      cookieStore.set(API_TOKEN_COOKIE, mfaPayload.token, apiTokenCookieOptions());
-      return NextResponse.json({ ok: true });
+      const mfaOk = NextResponse.json({ ok: true });
+      mfaOk.cookies.set(API_TOKEN_COOKIE, mfaPayload.token, apiTokenCookieOptions());
+      return mfaOk;
     }
 
     const response = await fetchAuthUpstream(`${baseUrl}/api/login`, {
@@ -321,9 +338,18 @@ export async function POST(request: Request) {
     }
 
     const cookieStore = await cookies();
-    cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+    // Prefer attaching Set-Cookie on the response object so the browser always
+    // stores the Sanctum token before the client navigates to /dashboard.
+    const ok = NextResponse.json({ ok: true });
+    ok.cookies.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+    // Keep cookies() in sync for any same-request readers.
+    try {
+      cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+    } catch {
+      // Response cookie above is authoritative.
+    }
 
-    return NextResponse.json({ ok: true });
+    return ok;
   } catch (error) {
     return NextResponse.json({ error: friendlyCatchMessage(error) }, { status: 500 });
   }

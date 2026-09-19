@@ -72,7 +72,7 @@ export function useSlowApiLoad(
         setError(
           err instanceof Error
             ? err.message
-            : "Could not load data. The school server may still be waking up.",
+            : "Could not load data. The school server may be busy — try Refresh.",
         );
       } finally {
         if (!cancelled) {
@@ -100,7 +100,7 @@ export function useSlowApiLoad(
 
 export function slowApiLoadingMessage(attempt: number, maxAttempts: number): string {
   if (attempt <= 0) {
-    return "The school server may take up to a minute to wake up on first visit.";
+    return "Loading from the school server…";
   }
-  return `Server waking up — retrying automatically (${attempt}/${maxAttempts})…`;
+  return `School server is slow — retrying automatically (${attempt}/${maxAttempts})…`;
 }
