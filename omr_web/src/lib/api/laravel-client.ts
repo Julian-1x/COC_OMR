@@ -1,7 +1,47 @@
-import { getPublicApiBaseUrl } from "@/lib/api/env";
 import type { DbTeacherProfile } from "@/lib/types/database";
 
 export const API_TOKEN_COOKIE = "coc_api_token";
+
+/**
+ * Sanctum plain-text tokens contain `|`. Store them base64url-encoded so
+ * proxies/cookie parsers cannot truncate or alter the value.
+ * Raw `id|hash` values are still accepted for older sessions.
+ */
+export function encodeApiTokenCookie(token: string): string {
+  const trimmed = token.trim();
+  if (!trimmed) return trimmed;
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(trimmed, "utf8").toString("base64url");
+  }
+  const bytes = new TextEncoder().encode(trimmed);
+  let binary = "";
+  bytes.forEach((b) => {
+    binary += String.fromCharCode(b);
+  });
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+export function decodeApiTokenCookie(value: string | undefined | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // Legacy unencoded Sanctum token.
+  if (trimmed.includes("|")) return trimmed;
+  try {
+    if (typeof Buffer !== "undefined") {
+      const decoded = Buffer.from(trimmed, "base64url").toString("utf8");
+      return decoded.includes("|") ? decoded : trimmed;
+    }
+    const padded = trimmed.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+    const binary = atob(padded + pad);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    const decoded = new TextDecoder().decode(bytes);
+    return decoded.includes("|") ? decoded : trimmed;
+  } catch {
+    return trimmed;
+  }
+}
 
 export type ApiUser = {
   id: string;
@@ -161,29 +201,72 @@ export function apiTokenCookieOptions(): {
   path: string;
   sameSite: "lax";
   secure: boolean;
+  httpOnly: boolean;
   maxAge: number;
 } {
   return {
     path: "/",
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
+    // Token must not be readable by page JS (XSS). Browser calls go through /api/laravel.
+    httpOnly: true,
     maxAge: WEB_SESSION_MAX_AGE_SECONDS,
   };
 }
 
-
-function readBrowserToken(): string {
-  if (typeof document === "undefined") {
-    throw new Error("Browser API client is only available in the browser.");
-  }
-  const match = document.cookie.match(new RegExp(`(?:^|; )${API_TOKEN_COOKIE}=([^;]*)`));
-  const token = match?.[1] ? decodeURIComponent(match[1]) : "";
-  if (!token) {
-    throw new Error("Sign in required.");
-  }
-  return token;
+/** Set the Sanctum bearer on a NextResponse (preferred) or cookie store. */
+export function setApiTokenCookie(
+  target: { set: (name: string, value: string, options: ReturnType<typeof apiTokenCookieOptions>) => void },
+  token: string,
+): void {
+  target.set(API_TOKEN_COOKIE, encodeApiTokenCookie(token), apiTokenCookieOptions());
 }
 
+/**
+ * Browser client talks to the same-origin BFF (`/api/laravel/...`), which attaches
+ * the httpOnly Sanctum cookie. Never read the bearer token from document.cookie.
+ */
 export function createBrowserApiClient(): ApiClient {
-  return new ApiClient(readBrowserToken(), getPublicApiBaseUrl());
+  if (typeof window === "undefined") {
+    throw new Error("createBrowserApiClient is only for client components.");
+  }
+  // Relative base: ApiClient appends /api{path}. Path /laravel/subjects → /api/laravel/subjects.
+  const origin = window.location.origin;
+  return new BrowserBffApiClient(origin);
+}
+
+/** Same as ApiClient but prefixes Laravel paths with /laravel for the BFF route. */
+class BrowserBffApiClient extends ApiClient {
+  constructor(origin: string) {
+    // Token unused — BFF reads httpOnly cookie. Empty string keeps Authorization off.
+    super("", origin);
+  }
+
+  override async get<T>(path: string, options?: RequestOptions): Promise<T> {
+    return super.get<T>(toBffPath(path), options);
+  }
+
+  override async post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return super.post<T>(toBffPath(path), body, options);
+  }
+
+  override async put<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return super.put<T>(toBffPath(path), body, options);
+  }
+
+  override async patch<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+    return super.patch<T>(toBffPath(path), body, options);
+  }
+
+  override async delete<T>(path: string, options?: RequestOptions): Promise<T> {
+    return super.delete<T>(toBffPath(path), options);
+  }
+}
+
+function toBffPath(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (normalized.startsWith("/laravel/") || normalized === "/laravel") {
+    return normalized;
+  }
+  return `/laravel${normalized}`;
 }

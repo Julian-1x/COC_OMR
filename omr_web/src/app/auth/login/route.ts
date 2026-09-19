@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import {
   API_TOKEN_COOKIE,
-  apiTokenCookieOptions,
+  setApiTokenCookie,
 } from "@/lib/api/laravel-client";
 import { tryGetApiBaseUrl, apiBaseUrlMismatch, apiConfigHint } from "@/lib/api/env";
 import { fetchAuthUpstream, wakeSchoolApi } from "@/lib/api/wake-api";
@@ -208,7 +208,7 @@ export async function POST(request: Request) {
           accessPending: !needsEmailConfirmation && accessPending,
           message: payload?.message,
         });
-        response.cookies.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+        setApiTokenCookie(response.cookies, payload.token);
         return response;
       }
 
@@ -251,7 +251,7 @@ export async function POST(request: Request) {
         );
       }
       const mfaOk = NextResponse.json({ ok: true });
-      mfaOk.cookies.set(API_TOKEN_COOKIE, mfaPayload.token, apiTokenCookieOptions());
+      setApiTokenCookie(mfaOk.cookies, mfaPayload.token);
       return mfaOk;
     }
 
@@ -338,13 +338,10 @@ export async function POST(request: Request) {
     }
 
     const cookieStore = await cookies();
-    // Prefer attaching Set-Cookie on the response object so the browser always
-    // stores the Sanctum token before the client navigates to /dashboard.
     const ok = NextResponse.json({ ok: true });
-    ok.cookies.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
-    // Keep cookies() in sync for any same-request readers.
+    setApiTokenCookie(ok.cookies, payload.token);
     try {
-      cookieStore.set(API_TOKEN_COOKIE, payload.token, apiTokenCookieOptions());
+      setApiTokenCookie(cookieStore, payload.token);
     } catch {
       // Response cookie above is authoritative.
     }

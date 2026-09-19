@@ -1,11 +1,14 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { API_TOKEN_COOKIE } from "@/lib/api/laravel-client";
+import {
+  API_TOKEN_COOKIE,
+  decodeApiTokenCookie,
+} from "@/lib/api/laravel-client";
 import { tryGetApiBaseUrl } from "@/lib/api/env";
 
 async function clearSessionCookie() {
   const cookieStore = await cookies();
-  const token = cookieStore.get(API_TOKEN_COOKIE)?.value;
+  const token = decodeApiTokenCookie(cookieStore.get(API_TOKEN_COOKIE)?.value);
   const baseUrl = tryGetApiBaseUrl();
 
   if (token && baseUrl) {
@@ -44,6 +47,9 @@ export async function GET(request: Request) {
   response.cookies.set(API_TOKEN_COOKIE, "", {
     path: "/",
     maxAge: 0,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
   });
   return response;
 }
@@ -54,6 +60,9 @@ export async function POST() {
   response.cookies.set(API_TOKEN_COOKIE, "", {
     path: "/",
     maxAge: 0,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
   });
   return response;
 }

@@ -149,6 +149,13 @@ function LoginForm() {
 
   useEffect(() => {
     const authError = searchParams.get("error");
+    if (authError === "session") {
+      setError(
+        "Sign-in did not stay active. Allow cookies for omrweb.vercel.app, then try again. If this keeps happening, the school API may be rejecting the session — check Render Logs.",
+      );
+      setMode("login");
+      return;
+    }
     if (authError === "confirm") {
       setNotice(
         "Your email may already be confirmed. Sign in below with the same email and password.",
@@ -378,6 +385,7 @@ function LoginForm() {
       const response = await fetch("/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           mode: awaitingMfa ? "login" : mode,
           email,
@@ -459,9 +467,8 @@ function LoginForm() {
         return;
       }
 
-      // Full navigation so the Set-Cookie from /auth/login is applied before
-      // dashboard middleware runs (client router.push can race the cookie).
-      window.location.assign("/dashboard");
+      // Server verifies the httpOnly cookie + /api/me before opening the desk.
+      window.location.assign("/auth/after-login");
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign in failed.";
