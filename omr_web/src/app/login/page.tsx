@@ -157,41 +157,17 @@ function LoginForm() {
   }
 
   useEffect(() => {
-    // #region agent log
-    fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "cc7a38",
-      },
-      body: JSON.stringify({
-        sessionId: "cc7a38",
-        location: "login/page.tsx:mount",
-        message: "login page mount",
-        data: {
-          href: typeof window !== "undefined" ? window.location.href : "",
-          error: searchParams.get("error"),
-          dbg: searchParams.get("dbg"),
-          pending: searchParams.get("pending"),
-          next: searchParams.get("next"),
-        },
-        hypothesisId: "A-E",
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-
     const authError = searchParams.get("error");
     if (authError === "session") {
       setError(
-        `Sign-in did not stay active${searchParams.get("dbg") ? ` [${searchParams.get("dbg")}]` : ""}. Allow cookies for this site, then try again with a fresh authenticator code.`,
+        "Sign-in did not stay active. Allow cookies for this site, then try again with a fresh authenticator code.",
       );
       setMode("login");
       return;
     }
     if (authError === "rejected") {
       setError(
-        `Signed in, but the school API rejected the session${searchParams.get("dbg") ? ` [${searchParams.get("dbg")}]` : ""}. Confirm the API is up, then try again.`,
+        "Signed in, but the school API rejected the session. Confirm the API is up, then try again.",
       );
       setMode("login");
       return;
@@ -456,32 +432,6 @@ function LoginForm() {
         captchaSiteKey?: string;
       }>(response);
 
-      // #region agent log
-      fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "cc7a38",
-        },
-        body: JSON.stringify({
-          sessionId: "cc7a38",
-          location: "login/page.tsx:auth-response",
-          message: "login/MFA response",
-          data: {
-            httpStatus: response.status,
-            ok: Boolean(payload.ok),
-            hasHandoff: Boolean(payload.handoff),
-            handoffLen: payload.handoff?.length ?? 0,
-            mfaRequired: Boolean(payload.mfaRequired),
-            hasError: Boolean(payload.error),
-            awaitingMfa,
-          },
-          hypothesisId: "D",
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
-
       if (payload.mfaRequired && payload.mfaTicket) {
         setAwaitingMfa(true);
         setAwaitingMfaEnrollment(payload.mfaEnrollmentRequired === true);
@@ -537,23 +487,6 @@ function LoginForm() {
       // Form POST sets the httpOnly cookie on a real document navigation (reliable
       // on Vercel). fetch() Set-Cookie alone was bouncing teachers back to login.
       if (payload.handoff) {
-        // #region agent log
-        fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "cc7a38",
-          },
-          body: JSON.stringify({
-            sessionId: "cc7a38",
-            location: "login/page.tsx:handoff-submit",
-            message: "submitting handoff form POST",
-            data: { handoffLen: payload.handoff.length },
-            hypothesisId: "A",
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
         const form = document.createElement("form");
         form.method = "POST";
         form.action = "/auth/after-login";
@@ -567,24 +500,6 @@ function LoginForm() {
         form.submit();
         return;
       }
-
-      // #region agent log
-      fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "cc7a38",
-        },
-        body: JSON.stringify({
-          sessionId: "cc7a38",
-          location: "login/page.tsx:no-handoff",
-          message: "ok without handoff; GET after-login fallback",
-          data: { ok: Boolean(payload.ok) },
-          hypothesisId: "D",
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
 
       window.location.assign("/auth/after-login");
       return;

@@ -17,22 +17,7 @@ export {
 export async function getServerApiToken(): Promise<string | null> {
   const cookieStore = await cookies();
   const raw = cookieStore.get(API_TOKEN_COOKIE)?.value ?? null;
-  const token = decodeApiTokenCookie(raw);
-  // #region agent log
-  const { agentDebugLog } = await import("@/lib/debug-agent-log");
-  agentDebugLog(
-    "laravel-server.ts:getServerApiToken",
-    "read session cookie",
-    {
-      hasRaw: Boolean(raw),
-      rawLen: raw?.length ?? 0,
-      decoded: Boolean(token),
-      decodedHasPipe: Boolean(token?.includes("|")),
-    },
-    "B",
-  );
-  // #endregion
-  return token;
+  return decodeApiTokenCookie(raw);
 }
 
 export function createServerApiClient(token: string): ApiClient {

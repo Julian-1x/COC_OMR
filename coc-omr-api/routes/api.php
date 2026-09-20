@@ -62,21 +62,6 @@ Route::get('/health/mail-config', [MailDiagnosticsController::class, 'config']);
 Route::post('/health/mail-test', [MailDiagnosticsController::class, 'sendTest'])
     ->middleware('throttle:6,1');
 
-// Temporary auth-header probe (no secrets): distinguishes missing Authorization vs bad token.
-Route::get('/health/auth-probe', static function (\Illuminate\Http\Request $request) {
-    $bearer = $request->bearerToken();
-    $alt = $request->header('X-COC-Api-Token');
-
-    return response()->json([
-        'has_authorization_header' => $request->headers->has('Authorization'),
-        'has_bearer' => is_string($bearer) && $bearer !== '',
-        'bearer_len' => is_string($bearer) ? strlen($bearer) : 0,
-        'has_alt_token_header' => is_string($alt) && $alt !== '',
-        'alt_token_len' => is_string($alt) ? strlen($alt) : 0,
-        'server_has_http_authorization' => isset($_SERVER['HTTP_AUTHORIZATION']) || isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION']),
-    ]);
-})->middleware('throttle:60,1');
-
 Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(function () {
     Route::post('/logout', LogoutController::class);
     Route::get('/me', MeController::class);
