@@ -29,4 +29,8 @@ describe("normalizePersonNameFromParts", () => {
     expect(normalizePersonNameFromParts("", "Santos")).toBe("");
     expect(normalizePersonNameFromParts("Maria", "  ")).toBe("");
   });
+
+  it("appends optional suffix", () => {
+    expect(normalizePersonNameFromParts("Maria", "Santos", "jr")).toBe("Maria Santos JR");
+  });
 });

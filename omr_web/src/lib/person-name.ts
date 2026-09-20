@@ -72,13 +72,19 @@ export function normalizePersonName(input: string): string {
 export function normalizePersonNameFromParts(
   firstName: string,
   lastName: string,
+  suffix?: string,
 ): string {
   const given = firstName.trim();
   const family = lastName.trim();
   if (!given || !family) {
     return "";
   }
-  return normalizePersonName(`${given} ${family}`);
+  let combined = `${given} ${family}`;
+  const extra = suffix?.trim() ?? "";
+  if (extra) {
+    combined = `${combined} ${extra}`;
+  }
+  return normalizePersonName(combined);
 }
 
 function titleWord(word: string): string {
