@@ -1,5 +1,6 @@
 # Keep CLI uploads small when deploying the monorepo to Vercel.
 # Project Root Directory remains `omr_web`.
+# Do NOT ignore *.png / *.jpg — omr_web/public brand assets must ship.
 android/
 ios/
 lib/
@@ -25,9 +26,6 @@ omr_web/.next/
 *.pdf
 *.apk
 *.zip
-*.png
-*.jpg
-*.jpeg
 pubspec.yaml
 pubspec.lock
 secrets.json
