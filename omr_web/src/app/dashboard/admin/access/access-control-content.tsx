@@ -26,6 +26,7 @@ export function AccessControlContent({ schoolName, profile, user }: AccessContro
   const viewerIsSuperAdmin = isSuperAdmin(profile, user);
   const [pending, setPending] = useState<AccessRequestTeacher[]>([]);
   const [teachers, setTeachers] = useState<SchoolTeacherSummary[]>([]);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
   const { loading, error, attempt, maxAttempts, reload } = useSlowApiLoad(async () => {
     const api = createBrowserApiClient();
@@ -35,6 +36,7 @@ export function AccessControlContent({ schoolName, profile, user }: AccessContro
     ]);
     setPending(pendingRows);
     setTeachers(teacherRows);
+    setHasLoadedOnce(true);
   }, [schoolName, user.id]);
 
   const approved = teachers.filter(
@@ -44,12 +46,20 @@ export function AccessControlContent({ schoolName, profile, user }: AccessContro
   );
   const revoked = teachers.filter((teacher) => teacher.accessStatus === "revoked");
 
+  const showPanel = hasLoadedOnce || (!loading && !error);
+
   return (
     <>
-      {loading ? (
+      {loading && !hasLoadedOnce ? (
         <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
           <p className="font-semibold">Loading access requests…</p>
           <p className="mt-1 text-xs text-slate-500">{slowApiLoadingMessage(attempt, maxAttempts)}</p>
+        </div>
+      ) : null}
+
+      {loading && hasLoadedOnce ? (
+        <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50/70 px-4 py-2 text-xs font-semibold text-emerald-800">
+          Updating list…
         </div>
       ) : null}
 
@@ -62,13 +72,14 @@ export function AccessControlContent({ schoolName, profile, user }: AccessContro
         </div>
       ) : null}
 
-      {!loading && !error ? (
+      {showPanel && !error ? (
         <AccessControlPanel
           pending={pending}
           approved={approved}
           revoked={revoked}
           viewerIsSuperAdmin={viewerIsSuperAdmin}
           viewerDepartment={profile.department}
+          onAccessChanged={reload}
         />
       ) : null}
     </>

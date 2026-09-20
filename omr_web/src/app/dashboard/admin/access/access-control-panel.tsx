@@ -19,12 +19,15 @@ export function AccessControlPanel({
   revoked,
   viewerIsSuperAdmin = false,
   viewerDepartment = null,
+  onAccessChanged,
 }: {
   pending: AccessRequestTeacher[];
   approved: SchoolTeacherSummary[];
   revoked: SchoolTeacherSummary[];
   viewerIsSuperAdmin?: boolean;
   viewerDepartment?: string | null;
+  /** Refetch pending/approved lists after a successful approve/revoke/delete. */
+  onAccessChanged?: () => void;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -44,14 +47,43 @@ export function AccessControlPanel({
         setError(result.error);
         return;
       }
+      // Lists are loaded into client state — refresh the RSC tree AND reload the
+      // browser fetch so pending → approved moves without a hard refresh.
+      onAccessChanged?.();
       router.refresh();
     });
   }
 
-  function confirmDelete(teacher: { id: string; full_name: string; email: string | null }) {
+  function confirmRevoke(teacher: { id: string; full_name: string; email: string | null }) {
     const label = teacher.full_name || teacher.email || "this teacher";
     const confirmed = window.confirm(
-      `Permanently delete ${label}?\n\nThis removes their account, cloud roster, answer keys, and scan results. They will be signed out on the phone immediately. This cannot be undone.`,
+      `Revoke access for ${label}?\n\nThey will be signed out of the phone app and this website until an admin approves them again.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    run(teacher.id, revokeTeacherAction);
+  }
+
+  function confirmDelete(teacher: { id: string; full_name: string; email: string | null }) {
+    const label = teacher.full_name || teacher.email || "this teacher";
+    const email = (teacher.email ?? "").trim().toLowerCase();
+    if (!email) {
+      setError("Cannot delete: this account has no email on file.");
+      return;
+    }
+    const typed = window.prompt(
+      `Permanently delete ${label}?\n\nThis removes their account, cloud roster, answer keys, and scan results. They will be signed out on the phone immediately. This cannot be undone.\n\nType their email exactly to confirm:\n${teacher.email}`,
+    );
+    if (typed === null) {
+      return;
+    }
+    if (typed.trim().toLowerCase() !== email) {
+      setError("Delete cancelled — email did not match.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Last chance: permanently delete ${label} (${teacher.email})? This cannot be undone.`,
     );
     if (!confirmed) {
       return;
@@ -187,7 +219,7 @@ export function AccessControlPanel({
                               type="button"
                               variant="secondary"
                               disabled={isPending && pendingId === teacher.id}
-                              onClick={() => run(teacher.id, revokeTeacherAction)}
+                              onClick={() => confirmRevoke(teacher)}
                             >
                               {isPending && pendingId === teacher.id ? "Revoking…" : "Revoke"}
                             </Button>
