@@ -104,9 +104,19 @@ function LoginForm() {
         ok?: boolean;
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
+        accessRevoked?: boolean;
         message?: string;
       }>(response);
       if (!response.ok || payload.error) {
+        if (
+          payload.accessRevoked ||
+          payload.error?.toLowerCase().includes("revoked by your school admin")
+        ) {
+          throw new Error(
+            payload.error ??
+              "This account was revoked by your school admin. Contact your COC admin if you need access again.",
+          );
+        }
         if (payload.accessPending || payload.error?.toLowerCase().includes("admin approval")) {
           const err = new Error(payload.error ?? "Waiting for school admin approval.");
           (err as Error & { accessPending?: boolean }).accessPending = true;
@@ -424,6 +434,7 @@ function LoginForm() {
         handoff?: string;
         needsEmailConfirmation?: boolean;
         accessPending?: boolean;
+        accessRevoked?: boolean;
         message?: string;
         mfaRequired?: boolean;
         mfaEnrollmentRequired?: boolean;
@@ -479,6 +490,17 @@ function LoginForm() {
         setNotice(
           payload.message ??
             "Your email is ready. Ask your COC admin to approve your account before you can open the dashboard.",
+        );
+        setMode("login");
+        return;
+      }
+
+      if (payload.accessRevoked) {
+        setAwaitingConfirmation(false);
+        setAwaitingApproval(false);
+        setError(
+          payload.error ??
+            "This account was revoked by your school admin. Contact your COC admin if you need access again.",
         );
         setMode("login");
         return;

@@ -301,16 +301,28 @@ export async function POST(request: Request) {
       const lower = message.toLowerCase();
       const unverified =
         lower.includes("not confirmed") || lower.includes("not verified");
+      const revoked =
+        lower.includes("revoked by your school admin") ||
+        lower.includes("account was revoked");
       const pendingApproval =
-        lower.includes("waiting for school admin") ||
-        lower.includes("admin approval") ||
-        lower.includes("revoked by your school admin");
+        !revoked &&
+        (lower.includes("waiting for school admin") ||
+          lower.includes("admin approval"));
 
       if (unverified) {
         return NextResponse.json(
           {
             error:
               "This email has not been confirmed yet. Open the confirmation email, then sign in again.",
+          },
+          { status: 403 },
+        );
+      }
+      if (revoked) {
+        return NextResponse.json(
+          {
+            error: message,
+            accessRevoked: true,
           },
           { status: 403 },
         );

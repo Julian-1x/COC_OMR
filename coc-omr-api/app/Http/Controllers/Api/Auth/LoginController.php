@@ -13,7 +13,7 @@ use App\Services\Auth\MfaService;
 use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
 class LoginController extends Controller
@@ -47,12 +47,15 @@ class LoginController extends Controller
             $this->captcha->assertValid($credentials['captcha_token'], $request);
         }
 
-        if (! Auth::attempt([
-            'email' => $email,
-            'password' => $credentials['password'],
-        ])) {
-            $existing = User::query()->where('email', $email)->first();
-            $this->security->recordFailure($email, $request, $existing);
+        /** @var User|null $user */
+        $user = User::query()->where('email', $email)->with('teacherProfile')->first();
+        $passwordOk = $user !== null
+            && is_string($user->password)
+            && Hash::check($credentials['password'], $user->password);
+
+        // Wrong email/password: never reveal pending vs revoked (avoids account fishing).
+        if (! $passwordOk) {
+            $this->security->recordFailure($email, $request, $user);
 
             $payload = ['email' => ['These credentials do not match our records.']];
             if ($this->security->requiresCaptcha($email, $request) && $this->captcha->isEnabled()) {
@@ -65,10 +68,6 @@ class LoginController extends Controller
             throw ValidationException::withMessages($payload);
         }
 
-        /** @var User $user */
-        $user = Auth::user();
-        $user->loadMissing('teacherProfile');
-
         if (AdminBootstrap::promoteIfListed($user)) {
             $user->load('teacherProfile');
         }
@@ -78,32 +77,25 @@ class LoginController extends Controller
         $profile = $user->teacherProfile;
         $accessStatus = $profile?->access_status ?? CocSchool::ACCESS_PENDING;
 
+        // Correct password + revoked: say revoked (not "credentials don't match").
         if ($accessStatus === CocSchool::ACCESS_REVOKED || ($profile && ! $profile->is_active && $accessStatus !== CocSchool::ACCESS_PENDING)) {
-            Auth::logout();
-            $this->security->recordFailure($email, $request, $user);
-
             throw ValidationException::withMessages([
                 'email' => ['This account was revoked by your school admin. Contact your COC admin if you need access again.'],
             ]);
         }
 
         if (! config('app.auto_verify_email') && ! $user->hasVerifiedEmail()) {
-            Auth::logout();
-
             throw ValidationException::withMessages([
                 'email' => ['This email has not been confirmed yet. Open the confirmation email, then sign in again.'],
             ]);
         }
 
+        // Correct password + never approved yet.
         if ($accessStatus !== CocSchool::ACCESS_APPROVED || ! ($profile?->is_active ?? false)) {
-            Auth::logout();
-
             throw ValidationException::withMessages([
                 'email' => ['Your account is waiting for school admin approval. Ask your COC admin to approve you before signing in.'],
             ]);
         }
-
-        Auth::logout();
 
         $this->security->recordSuccess($user, $request);
 

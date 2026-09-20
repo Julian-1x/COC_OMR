@@ -55,9 +55,15 @@ class MfaChallengeController extends Controller
         $this->mfa->forgetTicket($validated['mfa_ticket']);
         $this->events->record('mfa_success', $user->email, $user, $request);
 
-        if (! ($user->teacherProfile?->isApproved() ?? false)) {
+        $user->loadMissing('teacherProfile');
+        $status = $user->teacherProfile?->access_status ?? CocSchool::ACCESS_PENDING;
+        if ($status === CocSchool::ACCESS_REVOKED || ! ($user->teacherProfile?->isApproved() ?? false)) {
+            $message = $status === CocSchool::ACCESS_REVOKED
+                ? 'This account was revoked by your school admin. Contact your COC admin if you need access again.'
+                : 'Your account is waiting for school admin approval. Ask your COC admin to approve you before signing in.';
+
             throw ValidationException::withMessages([
-                'email' => ['Your account is waiting for school admin approval.'],
+                'email' => [$message],
             ]);
         }
 
