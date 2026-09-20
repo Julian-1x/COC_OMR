@@ -39,3 +39,31 @@ export function isApiConfigured(): boolean {
   const url = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
   return Boolean(url && /^https?:\/\//.test(url));
 }
+
+/** Human-readable deploy/config checklist for teachers/devs when sign-in fails. */
+export function apiConfigHint(): string {
+  if (!isApiConfigured()) {
+    return (
+      "Set NEXT_PUBLIC_API_BASE_URL and API_BASE_URL to your Laravel API URL " +
+      "(same value, no trailing slash), then restart or redeploy the web app. " +
+      "On the API host, set FRONTEND_URL to this website’s URL so email links work."
+    );
+  }
+  return (
+    "If email verification or password reset links fail, set FRONTEND_URL on the " +
+    "Laravel API to this website’s public URL, then redeploy the API."
+  );
+}
+
+/** True when public and server API bases disagree (common deploy mistake). */
+export function apiBaseUrlMismatch(): boolean {
+  const pub = process.env.NEXT_PUBLIC_API_BASE_URL?.trim().replace(/\/$/, "") ?? "";
+  const srv = (
+    process.env.API_BASE_URL ??
+    process.env.NEXT_PUBLIC_API_BASE_URL
+  )
+    ?.trim()
+    .replace(/\/$/, "");
+  if (!pub || !srv) return false;
+  return pub !== srv;
+}
