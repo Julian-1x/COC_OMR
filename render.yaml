@@ -7,6 +7,11 @@ services:
     name: coc-omr-api
     runtime: docker
     plan: free
+    # Must match the Neon database region (ap-southeast-1). A US service pays
+    # ~1.6s per connection + ~0.5s per query talking to Singapore, which made
+    # every authenticated request take ~4s. Render cannot change the region of
+    # an existing service — recreate the service if it is not in Singapore.
+    region: singapore
     rootDir: coc-omr-api
     healthCheckPath: /up
     envVars:
@@ -34,6 +39,11 @@ services:
           property: connectionString
       - key: LOG_CHANNEL
         value: stderr
+      # Neon pooler + Laravel database cache transactions cause login 500 (SQLSTATE 25P02).
+      - key: CACHE_STORE
+        value: file
+      - key: SESSION_DRIVER
+        value: file
       - key: SANCTUM_STATEFUL_DOMAINS
         value: omrweb.vercel.app
       - key: MAIL_MAILER
