@@ -115,6 +115,8 @@ export class ApiClient {
 
     if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
+      // Fallback when Apache/proxies strip Authorization before Laravel/Sanctum.
+      headers["X-COC-Api-Token"] = this.token;
     }
 
     if (body !== undefined) {

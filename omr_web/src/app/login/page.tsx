@@ -49,6 +49,9 @@ function LoginForm() {
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaSiteKey, setCaptchaSiteKey] = useState(CAPTCHA_SITE_KEY);
   const [slowServerHint, setSlowServerHint] = useState(false);
+  // Decide captcha after mount to avoid SSR/client hostname hydration mismatch.
+  const [captchaHostReady, setCaptchaHostReady] = useState(false);
+  const [skipCaptchaOnLocalhost, setSkipCaptchaOnLocalhost] = useState(false);
   const autoSignInInFlight = useRef(false);
   const loadingRef = useRef(false);
 
@@ -65,6 +68,12 @@ function LoginForm() {
       return;
     }
     void wakeSchoolApi(apiBase, { attempts: 2, delayMs: 1500 });
+  }, []);
+
+  useEffect(() => {
+    const host = window.location.hostname;
+    setSkipCaptchaOnLocalhost(host === "localhost" || host === "127.0.0.1");
+    setCaptchaHostReady(true);
   }, []);
 
   useEffect(() => {
@@ -148,17 +157,41 @@ function LoginForm() {
   }
 
   useEffect(() => {
+    // #region agent log
+    fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Debug-Session-Id": "cc7a38",
+      },
+      body: JSON.stringify({
+        sessionId: "cc7a38",
+        location: "login/page.tsx:mount",
+        message: "login page mount",
+        data: {
+          href: typeof window !== "undefined" ? window.location.href : "",
+          error: searchParams.get("error"),
+          dbg: searchParams.get("dbg"),
+          pending: searchParams.get("pending"),
+          next: searchParams.get("next"),
+        },
+        hypothesisId: "A-E",
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+
     const authError = searchParams.get("error");
     if (authError === "session") {
       setError(
-        "Sign-in handoff expired or cookies were blocked. Allow cookies for this site, then sign in again with a fresh authenticator code.",
+        `Sign-in did not stay active${searchParams.get("dbg") ? ` [${searchParams.get("dbg")}]` : ""}. Allow cookies for this site, then try again with a fresh authenticator code.`,
       );
       setMode("login");
       return;
     }
     if (authError === "rejected") {
       setError(
-        "Signed in, but the school API rejected the session. Confirm https://coc-omr-api.onrender.com/up is up, then try again.",
+        `Signed in, but the school API rejected the session${searchParams.get("dbg") ? ` [${searchParams.get("dbg")}]` : ""}. Confirm the API is up, then try again.`,
       );
       setMode("login");
       return;
@@ -423,6 +456,32 @@ function LoginForm() {
         captchaSiteKey?: string;
       }>(response);
 
+      // #region agent log
+      fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "cc7a38",
+        },
+        body: JSON.stringify({
+          sessionId: "cc7a38",
+          location: "login/page.tsx:auth-response",
+          message: "login/MFA response",
+          data: {
+            httpStatus: response.status,
+            ok: Boolean(payload.ok),
+            hasHandoff: Boolean(payload.handoff),
+            handoffLen: payload.handoff?.length ?? 0,
+            mfaRequired: Boolean(payload.mfaRequired),
+            hasError: Boolean(payload.error),
+            awaitingMfa,
+          },
+          hypothesisId: "D",
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+
       if (payload.mfaRequired && payload.mfaTicket) {
         setAwaitingMfa(true);
         setAwaitingMfaEnrollment(payload.mfaEnrollmentRequired === true);
@@ -478,6 +537,23 @@ function LoginForm() {
       // Form POST sets the httpOnly cookie on a real document navigation (reliable
       // on Vercel). fetch() Set-Cookie alone was bouncing teachers back to login.
       if (payload.handoff) {
+        // #region agent log
+        fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "cc7a38",
+          },
+          body: JSON.stringify({
+            sessionId: "cc7a38",
+            location: "login/page.tsx:handoff-submit",
+            message: "submitting handoff form POST",
+            data: { handoffLen: payload.handoff.length },
+            hypothesisId: "A",
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         const form = document.createElement("form");
         form.method = "POST";
         form.action = "/auth/after-login";
@@ -491,6 +567,24 @@ function LoginForm() {
         form.submit();
         return;
       }
+
+      // #region agent log
+      fetch("http://127.0.0.1:7835/ingest/66559ec0-f9a7-4749-a867-c6e887cfcfff", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Debug-Session-Id": "cc7a38",
+        },
+        body: JSON.stringify({
+          sessionId: "cc7a38",
+          location: "login/page.tsx:no-handoff",
+          message: "ok without handoff; GET after-login fallback",
+          data: { ok: Boolean(payload.ok) },
+          hypothesisId: "D",
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
 
       window.location.assign("/auth/after-login");
       return;
@@ -787,8 +881,20 @@ function LoginForm() {
             </div>
           ) : null}
 
-          {captchaSiteKey && !awaitingMfa ? (
+          {captchaHostReady &&
+          captchaSiteKey &&
+          !awaitingMfa &&
+          !skipCaptchaOnLocalhost ? (
             <TurnstileField siteKey={captchaSiteKey} onToken={setCaptchaToken} />
+          ) : null}
+          {captchaHostReady &&
+          captchaSiteKey &&
+          !awaitingMfa &&
+          skipCaptchaOnLocalhost ? (
+            <p className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Local debug: Cloudflare captcha skipped on localhost so we can trace the
+              post-MFA dashboard bounce.
+            </p>
           ) : null}
 
           {awaitingConfirmation ? (

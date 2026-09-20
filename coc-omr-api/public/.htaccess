@@ -5,6 +5,11 @@
 
     RewriteEngine On
 
+    # Apache often strips Authorization before PHP (Bearer → Sanctum 401).
+    # Keep Laravel's standard passthrough so API tokens reach the app.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteCond %{REQUEST_URI} (.+)/$
     RewriteRule ^ %1 [L,R=301]
@@ -13,3 +18,9 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+# Pass Authorization to PHP/CGI when Apache would otherwise consume it.
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+CGIPassAuth On

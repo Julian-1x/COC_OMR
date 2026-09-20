@@ -44,6 +44,7 @@ async function proxy(request: NextRequest, pathParts: string[]) {
   const headers: Record<string, string> = {
     Accept: "application/json",
     Authorization: `Bearer ${token}`,
+    "X-COC-Api-Token": token,
   };
   if (baseUrl.includes("loca.lt")) {
     headers["Bypass-Tunnel-Reminder"] = "true";

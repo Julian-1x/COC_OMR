@@ -17,8 +17,11 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Http\Request;
 use Illuminate\Cache\RateLimiting\Limit;
+use App\Services\TeacherApprovalBootstrap;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Sanctum\Sanctum;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -36,6 +39,21 @@ class AppServiceProvider extends ServiceProvider
         if (str_starts_with($appUrl, 'https://')) {
             URL::forceScheme('https');
         }
+
+        // Some Apache setups strip Authorization. Accept the same Sanctum
+        // token from X-COC-Api-Token so Bearer auth still works for desk/mobile.
+        Sanctum::getAccessTokenFromRequestUsing(static function (Request $request) {
+            $bearer = $request->bearerToken();
+            if (is_string($bearer) && str_contains($bearer, '|')) {
+                return $bearer;
+            }
+            $alt = $request->header('X-COC-Api-Token');
+            if (is_string($alt) && str_contains($alt, '|')) {
+                return $alt;
+            }
+
+            return is_string($bearer) ? $bearer : '';
+        });
 
         // Registration + password reset: 8+ chars with a letter, number, and symbol.
         Password::defaults(static function () {
@@ -67,5 +85,19 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(Subject::class, SubjectPolicy::class);
         Gate::policy(ScanResult::class, ScanResultPolicy::class);
         Gate::policy(Deadline::class, DeadlinePolicy::class);
+
+        try {
+            $approved = TeacherApprovalBootstrap::approvePendingFromEnv();
+            if ($approved > 0) {
+                Log::info('COC teacher approval bootstrap applied on boot', [
+                    'approved_count' => $approved,
+                ]);
+            }
+        } catch (\Throwable $error) {
+            // DB may not be ready during install/migrate; login hook still applies approvals.
+            Log::debug('COC teacher approval bootstrap skipped on boot', [
+                'error' => $error->getMessage(),
+            ]);
+        }
     }
 }

@@ -255,6 +255,59 @@ export async function POST(request: Request) {
           { status: mfaResponse.status || 400 },
         );
       }
+      // #region agent log
+      try {
+        const { agentDebugLog } = await import("@/lib/debug-agent-log");
+        agentDebugLog(
+          "auth/login/route.ts:mfa-success",
+          "MFA issued token+handoff",
+          {
+            tokenLen: mfaPayload.token.length,
+            hasPipe: mfaPayload.token.includes("|"),
+            enrollment: Boolean(body.mfa_enrollment),
+          },
+          "A",
+        );
+        // Immediate /me with the fresh token (before seal) — isolates handoff vs API auth.
+        try {
+          const meRes = await fetch(`${baseUrl}/api/me`, {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${mfaPayload.token}`,
+              "X-COC-Api-Token": mfaPayload.token,
+            },
+            cache: "no-store",
+          });
+          agentDebugLog(
+            "auth/login/route.ts:mfa-me-probe",
+            "immediate /me after MFA token",
+            {
+              status: meRes.status,
+              apiHost: (() => {
+                try {
+                  return new URL(baseUrl).host;
+                } catch {
+                  return "invalid";
+                }
+              })(),
+            },
+            "G",
+          );
+        } catch (meProbeError) {
+          agentDebugLog(
+            "auth/login/route.ts:mfa-me-probe-error",
+            "immediate /me after MFA failed to run",
+            {
+              name: meProbeError instanceof Error ? meProbeError.name : "unknown",
+            },
+            "G",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      // #endregion
       return jsonWithSession(mfaPayload.token, { ok: true });
     }
 
@@ -346,6 +399,23 @@ export async function POST(request: Request) {
     } catch {
       // Response cookie below is authoritative.
     }
+    // #region agent log
+    try {
+      const { agentDebugLog } = await import("@/lib/debug-agent-log");
+      agentDebugLog(
+        "auth/login/route.ts:success",
+        "login issued token+handoff",
+        {
+          tokenLen: payload.token.length,
+          hasPipe: payload.token.includes("|"),
+          mfa: false,
+        },
+        "D",
+      );
+    } catch {
+      // ignore
+    }
+    // #endregion
     return jsonWithSession(payload.token, { ok: true });
   } catch (error) {
     return NextResponse.json({ error: friendlyCatchMessage(error) }, { status: 500 });

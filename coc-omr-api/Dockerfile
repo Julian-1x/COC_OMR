@@ -20,6 +20,7 @@ RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-av
       '    Options FollowSymLinks' \
       '    AllowOverride All' \
       '    Require all granted' \
+      '    CGIPassAuth On' \
       '</Directory>' \
       > /etc/apache2/conf-available/laravel-override.conf \
     && a2enconf laravel-override \

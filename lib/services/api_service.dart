@@ -37,6 +37,15 @@ class ApiService {
 
   static const String _baseUrl = String.fromEnvironment('API_BASE_URL');
 
+  /// School web portal — Turnstile CAPTCHA on mobile loads pages from this origin.
+  static const String _webBaseUrl = String.fromEnvironment(
+    'WEB_BASE_URL',
+    defaultValue: 'https://omrweb.vercel.app',
+  );
+
+  static String get webBaseUrl =>
+      _webBaseUrl.replaceAll(RegExp(r'/$'), '');
+
   static const String _tokenKey = 'api_auth_token';
   static const String _userIdKey = 'api_user_id';
   static const String _emailKey = 'api_user_email';
@@ -153,7 +162,7 @@ class ApiService {
       path.startsWith('/login/mfa');
 
   static bool _isRetryableStatus(int status) =>
-      status == 502 || status == 503 || status == 504;
+      status == 500 || status == 502 || status == 503 || status == 504;
 
   /// Wakes free-tier cloud hosts (Render) before login/register/MFA.
   static Future<void> _wakeSchoolApi() async {
@@ -212,6 +221,7 @@ class ApiService {
           throw const ApiException('Sign in before using cloud features.');
         }
         headers['Authorization'] = 'Bearer $token';
+        headers['X-COC-Api-Token'] = token;
       }
 
       late http.Response response;
@@ -308,7 +318,12 @@ class ApiService {
       if (decoded is Map<String, dynamic>) {
         final message = decoded['message'];
         if (message is String && message.trim().isNotEmpty) {
-          return message;
+          final trimmed = message.trim();
+          if (trimmed.toLowerCase() == 'server error') {
+            return 'School server had a problem (may still be waking up). '
+                'Wait about a minute and try again.';
+          }
+          return trimmed;
         }
         final errors = decoded['errors'];
         if (errors is Map) {
@@ -324,6 +339,23 @@ class ApiService {
       // Fall through to status-based message.
     }
 
+    final body = response.body;
+    final htmlTitle = RegExp(
+      r'<title>\s*([^<]+?)\s*</title>',
+      caseSensitive: false,
+    ).firstMatch(body);
+    if (htmlTitle != null) {
+      final title = htmlTitle.group(1)?.trim() ?? '';
+      if (title.toLowerCase() == 'server error') {
+        return 'School server had a problem (may still be waking up). '
+            'Wait about a minute and try again.';
+      }
+    }
+
+    if (response.statusCode == 500) {
+      return 'School server had a problem (may still be waking up). '
+          'Wait about a minute and try again.';
+    }
     if (response.statusCode == 502 || response.statusCode == 504) {
       return 'School server is waking up. Wait about a minute and try again.';
     }
