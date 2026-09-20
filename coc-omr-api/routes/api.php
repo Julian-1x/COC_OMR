@@ -62,6 +62,47 @@ Route::get('/health/mail-config', [MailDiagnosticsController::class, 'config']);
 Route::post('/health/mail-test', [MailDiagnosticsController::class, 'sendTest'])
     ->middleware('throttle:6,1');
 
+// TEMPORARY diagnostic: separates DB connection handshake cost from query cost.
+// Reports timings only (no rows, no credentials). Remove after slowness is fixed.
+Route::get('/health/db-latency', static function () {
+    $url = (string) config('database.connections.pgsql.url');
+    $host = parse_url($url, PHP_URL_HOST) ?: (string) config('database.connections.pgsql.host');
+    $parts = explode('.', $host);
+    if (count($parts) > 2) {
+        $parts[0] = '***';
+    }
+
+    \Illuminate\Support\Facades\DB::disconnect();
+
+    $t = microtime(true);
+    \Illuminate\Support\Facades\DB::connection()->getPdo();
+    $connectMs = (microtime(true) - $t) * 1000;
+
+    $t = microtime(true);
+    \Illuminate\Support\Facades\DB::select('select 1');
+    $firstQueryMs = (microtime(true) - $t) * 1000;
+
+    $t = microtime(true);
+    for ($i = 0; $i < 5; $i++) {
+        \Illuminate\Support\Facades\DB::select('select 1');
+    }
+    $fiveQueriesMs = (microtime(true) - $t) * 1000;
+
+    $t = microtime(true);
+    \Illuminate\Support\Facades\DB::table('users')->count();
+    $userCountMs = (microtime(true) - $t) * 1000;
+
+    return response()->json([
+        'db_host_masked' => implode('.', $parts),
+        'connect_ms' => round($connectMs, 1),
+        'first_query_ms' => round($firstQueryMs, 1),
+        'five_queries_ms' => round($fiveQueriesMs, 1),
+        'per_query_ms' => round($fiveQueriesMs / 5, 1),
+        'user_count_query_ms' => round($userCountMs, 1),
+        'build_commit' => substr((string) env('RENDER_GIT_COMMIT', 'unknown'), 0, 7),
+    ]);
+})->middleware('throttle:30,1');
+
 Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(function () {
     Route::post('/logout', LogoutController::class);
     Route::get('/me', MeController::class);
