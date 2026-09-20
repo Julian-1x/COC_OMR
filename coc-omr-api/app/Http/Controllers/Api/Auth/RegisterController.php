@@ -7,6 +7,7 @@ use App\Models\TeacherProfile;
 use App\Models\User;
 use App\Support\CocSchool;
 use App\Support\PersonName;
+use App\Services\TeacherApprovalBootstrap;
 use App\Services\Auth\AuthEventLogger;
 use App\Services\Auth\CaptchaVerifier;
 use Illuminate\Http\JsonResponse;
@@ -142,6 +143,8 @@ class RegisterController extends Controller
         }
 
         $user->loadMissing('teacherProfile');
+        TeacherApprovalBootstrap::approveIfListed($user);
+        $user->load('teacherProfile');
         $approved = $user->isAccessApproved();
 
         $payload = [

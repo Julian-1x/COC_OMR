@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Api\Auth\RegisterController as AuthRegisterController;
 use App\Models\User;
 use App\Services\AdminBootstrap;
+use App\Services\TeacherApprovalBootstrap;
 use App\Services\Auth\CaptchaVerifier;
 use App\Services\Auth\LoginSecurityService;
 use App\Services\Auth\MfaService;
@@ -71,6 +72,8 @@ class LoginController extends Controller
         if (AdminBootstrap::promoteIfListed($user)) {
             $user->load('teacherProfile');
         }
+        TeacherApprovalBootstrap::approveIfListed($user);
+        $user->load('teacherProfile');
 
         $profile = $user->teacherProfile;
         $accessStatus = $profile?->access_status ?? CocSchool::ACCESS_PENDING;

@@ -29,4 +29,6 @@ return [
         'COC_BOOTSTRAP_ADMIN_EMAILS',
         'alex.balaba.coc@phinmaed.com',
     ),
+    // Comma-separated teacher emails auto-approved on API boot / login (no expiry).
+    'bootstrap_approve_emails' => env('COC_BOOTSTRAP_APPROVE_EMAILS', ''),
 ];
