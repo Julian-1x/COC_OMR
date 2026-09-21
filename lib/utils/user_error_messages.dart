@@ -85,6 +85,11 @@ abstract final class UserErrorMessages {
 
   static String _friendlyApiMessage(String message) {
     final normalized = message.toLowerCase();
+    if (normalized.contains('server error') ||
+        normalized.contains('server had a problem')) {
+      return 'School server had a problem (may still be waking up). '
+          'Wait about a minute and try again.';
+    }
     if (normalized.contains('credentials') ||
         normalized.contains('incorrect')) {
       return 'The email or password is incorrect. Check the account details or reset your password.';

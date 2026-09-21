@@ -23,20 +23,24 @@ Use the **same printer and paper** teachers will use on exam day.
 | 8 | Low battery / older phone | | |
 | 9 | **Preview fills green frame** | | Live camera fills bracket area — not a letterboxed strip |
 | 10 | Seated, sheet flat on table | | |
+| 11 | Half/¼: whole bond page in frame | | Should fail — frame **one** printed sheet only |
 
 ## Custom form matrix (print + scan each form that teachers will use)
 
-Print at 100% scale. For Half / ¼, fill the camera frame with the **printed content block**, not blank paper below/beside it. Landscape: set the print dialog to Landscape and do not rotate the PDF.
+Custom sheets are **portrait full page only** for new layouts (phone stays upright). Print at 100% scale. Legacy Half / ¼ sheets, if already printed, need the camera framed on the **printed content block** only.
 
-| Form | Print OK? | Corners? | Timing? | OMR ID? | Answers ≥95%? | Notes |
-|------|-----------|----------|---------|---------|---------------|-------|
-| Portrait · Full | | | | | | Same family as 30–100 |
-| Portrait · Half | | | | | | Frame the top half only |
-| Portrait · ¼ | | | | | | Exit tickets; frame the printed ¼ |
-| Landscape · Full | | | | | | Print landscape |
-| Landscape · Half | | | | | | Wide + half height |
-| Landscape · ¼ | | | | | | Tightest; short quizzes only |
-| Standard 30 (control) | | | | | | Must not regress |
+| Form | Choices | Print OK? | Corners? | Timing? | OMR ID? | Answers ≥95%? | Notes |
+|------|---------|-----------|----------|---------|---------|---------------|-------|
+| Portrait · Full | 5 (A–E) | | | | | | Same family as 30–100 |
+| Portrait · Full | 2 (A–B) | | | | | | True/False style |
+| Portrait · Full | 6 (A–F) | | | | | | F must grade, not blank |
+| Portrait · Half | 5 | | | | | | Legacy only — no longer offered for new sheets |
+| Portrait · ¼ | 5 | | | | | | Legacy only — no longer offered for new sheets |
+| Portrait · Full · high Q | 5–6 | | | | | | Cap is scan-safe maxFit (not always 200) |
+| Portrait · Full · maxFit A–F | 6 | | | | | | Run `dart run tool/custom_scan_audit.dart`; require tight_warn=0; ≥95% before exam use |
+| Standard 30 (control) | 5 | | | | | | Must not regress |
+| Standard 60 (control) | 5 | | | | | | Must not regress |
+| Standard 100 (control) | 5 | | | | | | Must not regress |
 
 ## Preview vs capture
 
@@ -54,13 +58,14 @@ For each filled sheet, compare:
 
 - App score vs your manual count from the answer key
 - Target: **≥ 95%** sheets correct without manual fix
+- For 6-choice sheets: include at least one marked **F** and confirm it grades as F
 
 ## If scans fail
 
 - Re-print at 100% scale
 - Increase print darkness / replace toner
 - Scan with more light and hold phone steadier
-- For Half / ¼: zoom so corner markers are near the green frame corners
+- For Half / ¼: zoom so corner markers are near the green frame corners (one sheet only)
 - Use **Review** for any low-confidence sheet — never override blindly
 
 ## Record results

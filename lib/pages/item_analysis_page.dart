@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/item_analysis_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
@@ -655,8 +656,9 @@ class _AnswerDistributionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Sort answers A-E
-    final sortedAnswers = ['A', 'B', 'C', 'D', 'E']
+    // Sort answers in sheet order (A–F for custom layouts).
+    final sortedAnswers = OmrPageConstants.answerOptionLabels
+        .take(subject.optionsCount.clamp(2, 6))
         .where((a) => distribution.containsKey(a))
         .toList();
 

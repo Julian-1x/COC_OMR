@@ -4,6 +4,8 @@ import { tryGetApiBaseUrl } from "@/lib/api/env";
 type ForgotResponse = {
   message?: string;
   errors?: Record<string, string[]>;
+  captcha_required?: boolean;
+  captcha_site_key?: string | null;
 };
 
 function errorMessage(payload: ForgotResponse | null, fallback: string): string {
@@ -47,7 +49,11 @@ export async function POST(request: Request) {
           ? "We could not send the reset email right now. Try again in a few minutes."
           : "Could not send reset link.";
       return NextResponse.json(
-        { error: errorMessage(payload, fallback) },
+        {
+          error: errorMessage(payload, fallback),
+          captchaRequired: Boolean(payload.captcha_required),
+          captchaSiteKey: payload.captcha_site_key ?? undefined,
+        },
         { status: response.status },
       );
     }

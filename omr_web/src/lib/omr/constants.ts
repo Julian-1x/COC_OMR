@@ -47,7 +47,8 @@ export const OMR_PAGE = {
   answerBubbleDiameter: 11.5,
   answerBubbleBorder: 1.2,
   answerOptionsCount: 5,
-  answerOptionLabels: ["A", "B", "C", "D", "E"] as const,
+  /** Includes F for custom 6-choice sheets (phone OmrPageConstants). */
+  answerOptionLabels: ["A", "B", "C", "D", "E", "F"] as const,
   answerColumnInset: 6,
   answerNumberBubbleGap: 6,
   questionNumberWidth: 16,

@@ -42,6 +42,13 @@ export type DbSubject = {
   exam_date: string | null;
   passing_score: number;
   use_partial_credit: boolean;
+  /** Phone custom sheet — synced so web can print the same grid. */
+  use_custom_layout?: boolean | null;
+  options_count?: number | null;
+  layout_shape?: string | null;
+  custom_layout_id?: string | null;
+  custom_grid_columns?: number | null;
+  custom_grid_rows?: number | null;
   sync_status: string;
   created_at: string;
   updated_at: string;

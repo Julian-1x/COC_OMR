@@ -7,6 +7,7 @@ import 'package:omr_app/pages/scanner_page.dart';
 import 'package:omr_app/services/exam_day_absence_store.dart';
 import 'package:omr_app/services/exam_day_board_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/scan_confidence_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_page_transitions.dart';
 import 'package:omr_app/theme/app_spacing.dart';
@@ -394,7 +395,7 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
   }
 
   Widget _buildRow(ExamDayBoardRow row) {
-    final colors = _statusColors(row.status);
+    final colors = _statusColors(row);
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Material(
@@ -436,7 +437,7 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
                       Text(row.displayName, style: AppTypography.listTitle),
                       const SizedBox(height: 2),
                       Text(
-                        _statusLabel(row.status),
+                        _statusLabel(row),
                         style: TextStyle(
                           fontWeight: FontWeight.w800,
                           color: colors.$2,
@@ -493,7 +494,7 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
                 Text(row.displayName, style: AppTypography.sectionTitle),
                 const SizedBox(height: 4),
                 Text(
-                  'OMR ${row.omrId} · ${_statusLabel(row.status)}',
+                  'OMR ${row.omrId} · ${_statusLabel(row)}',
                   style: AppTypography.captionMuted,
                 ),
                 if (row.statusDetail != null) ...[
@@ -552,14 +553,18 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
     );
   }
 
-  String _statusLabel(ExamDayStatus status) {
-    switch (status) {
+  String _statusLabel(ExamDayBoardRow row) {
+    switch (row.status) {
       case ExamDayStatus.done:
         return 'Done';
       case ExamDayStatus.missing:
         return 'Not scanned';
       case ExamDayStatus.needsReview:
-        return 'Needs review';
+        final scan = row.latestScan;
+        if (scan != null) {
+          return ScanConfidenceService.fromScanResult(scan).title;
+        }
+        return 'Must review';
       case ExamDayStatus.duplicate:
         return 'Duplicate sheet';
       case ExamDayStatus.absent:
@@ -567,8 +572,8 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
     }
   }
 
-  (Color, Color, Color) _statusColors(ExamDayStatus status) {
-    switch (status) {
+  (Color, Color, Color) _statusColors(ExamDayBoardRow row) {
+    switch (row.status) {
       case ExamDayStatus.done:
         return (
           AppColors.statusSuccessBg,
@@ -582,6 +587,21 @@ class _ExamDayBoardPageState extends State<ExamDayBoardPage> {
           AppColors.statusDangerBorder,
         );
       case ExamDayStatus.needsReview:
+        final scan = row.latestScan;
+        if (scan != null &&
+            ScanConfidenceService.fromScanResult(scan).level ==
+                ScanConfidenceLevel.mustReview) {
+          return (
+            AppColors.statusDangerBg,
+            AppColors.statusDanger,
+            AppColors.statusDangerBorder,
+          );
+        }
+        return (
+          AppColors.statusWarningBg,
+          AppColors.statusWarning,
+          AppColors.statusWarningBorder,
+        );
       case ExamDayStatus.duplicate:
         return (
           AppColors.statusWarningBg,

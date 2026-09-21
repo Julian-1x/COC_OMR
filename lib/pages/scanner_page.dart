@@ -14,6 +14,7 @@ import 'package:omr_app/opencv_bridge.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
 import 'package:omr_app/pages/scan_review_page.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/scan_confidence_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_page_transitions.dart';
@@ -21,6 +22,7 @@ import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/theme/app_typography.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
+import 'package:omr_app/widgets/scan_confidence_card.dart';
 import 'package:omr_app/utils/omr_scan_diagnostics.dart';
 import 'package:omr_app/utils/omr_scan_failure_message.dart';
 import 'package:omr_app/services/scanner_preferences_service.dart';
@@ -35,6 +37,7 @@ import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/utils/scan_sheet_identity.dart';
 import 'package:omr_app/utils/scan_lighting_guard.dart';
+import 'package:omr_app/utils/answer_key_scope.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class ScannerPage extends StatefulWidget {
@@ -138,18 +141,18 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   ScanLightingLevel _lightingLevel = ScanLightingLevel.good;
   bool _torchEnabled = false;
 
-  // Stability thresholds — turbo mode captures sooner when sheet is aligned.
+  // Stability thresholds — Auto needs more consecutive good frames than turbo alone.
   int get _requiredStableFrames {
     if (_examTurboMode) {
-      return _sheetAligned ? 2 : (_isLowEndDevice ? 3 : 3);
+      return _sheetAligned ? 3 : (_isLowEndDevice ? 4 : 4);
     }
     return _isLowEndDevice ? 5 : 8;
   }
 
   Duration get _scanCooldown => _examTurboMode
       ? (_isLowEndDevice
-          ? const Duration(milliseconds: 900)
-          : const Duration(milliseconds: 600))
+          ? const Duration(milliseconds: 1200)
+          : const Duration(milliseconds: 900))
       : (_isLowEndDevice
           ? const Duration(milliseconds: 2200)
           : const Duration(milliseconds: 1500));
@@ -172,11 +175,19 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _opencvAvailable = ScannerEngine.isReady;
-    _sessionLayout = ScannerSessionLayout.fromSubject(widget.targetSubject);
     final scanGate = ScannerSessionLayout.examReadyScanErrorForSubject(
       widget.targetSubject,
     );
     if (scanGate != null) {
+      // Placeholder layout — page pops before any capture uses it.
+      _sessionLayout = ScannerSessionLayout.fromSubject(
+        Subject(
+          id: widget.targetSubject.id,
+          name: widget.targetSubject.name,
+          answerKey: widget.targetSubject.answerKey,
+          totalQuestions: widget.targetSubject.totalQuestions.clamp(30, 100),
+        ),
+      );
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           return;
@@ -190,6 +201,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         );
         Navigator.of(context).maybePop();
       });
+    } else {
+      _sessionLayout = ScannerSessionLayout.fromSubject(widget.targetSubject);
     }
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadScannerPreferences());
@@ -205,8 +218,22 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   Future<void> _loadScannerPreferences() async {
     final turbo = await ScannerPreferencesService.getExamTurboMode();
-    if (mounted) {
-      setState(() => _examTurboMode = turbo);
+    final autoCapture = await ScannerPreferencesService.getAutoCaptureEnabled();
+    final reviewBeforeSave =
+        await ScannerPreferencesService.getReviewBeforeSave();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _examTurboMode = turbo;
+      // Auto always keeps Review before save on — wrong grades are worse.
+      _isContinuousMode = autoCapture;
+      _reviewBeforeSave = autoCapture ? true : reviewBeforeSave;
+    });
+    if (autoCapture) {
+      unawaited(ScannerPreferencesService.setReviewBeforeSave(true));
+      // Camera may already be ready by the time prefs finish loading.
+      _resumeContinuousPollingIfNeeded();
     }
   }
 
@@ -597,20 +624,21 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       return 'Auto-scanning… align sheet';
     }
     if (_status == 'Align Answer Sheet' || _status == 'Ready to scan...') {
+      final shape = _sessionLayout.layoutShape;
+      if (shape.contains('half') || shape.contains('quarter')) {
+        return 'Frame ONE printed sheet — corners fill the brackets';
+      }
       return 'Fit full sheet — corners + timing marks aligned';
     }
     return _status;
   }
 
   String? get _scanSectionLabel {
-    final sections = widget.targetSubject.sectionNames;
-    if (sections == null || sections.isEmpty) {
-      return null;
+    final scope = AnswerKeyScope.of(widget.targetSubject);
+    if (scope.isUnassigned) {
+      return 'Add a section to this key before grading';
     }
-    if (sections.length == 1) {
-      return sections.first;
-    }
-    return '${sections.length} sections';
+    return scope.gradingContextLabel;
   }
 
   Color get _frameAccentColor {
@@ -829,9 +857,14 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                           color: AppColors.brandText,
                         ),
                       ),
-                      subtitle: const Text(
-                        'Check answers on screen before saving each scan.',
-                        style: TextStyle(color: AppColors.brandMuted, fontSize: 12),
+                      subtitle: Text(
+                        _isContinuousMode
+                            ? 'Required while Auto is on — check each scan before saving.'
+                            : 'Check answers on screen before saving each scan.',
+                        style: const TextStyle(
+                          color: AppColors.brandMuted,
+                          fontSize: 12,
+                        ),
                       ),
                       value: _reviewBeforeSave,
                       activeThumbColor: AppColors.brandGreen,
@@ -839,6 +872,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                           ? null
                           : (value) {
                               setState(() => _reviewBeforeSave = value);
+                              unawaited(
+                                ScannerPreferencesService.setReviewBeforeSave(
+                                  value,
+                                ),
+                              );
                             },
                     ),
                     const SizedBox(height: 8),
@@ -878,7 +916,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                     const SizedBox(height: 6),
                     Text(
                       _isContinuousMode
-                          ? 'Auto captures when the sheet is aligned and steady.'
+                          ? 'Auto captures when the sheet is aligned and steady, '
+                              'then opens Review before save.'
                           : 'You tap capture when the frame looks good.',
                       style: const TextStyle(
                         color: AppColors.brandMuted,
@@ -1106,6 +1145,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                 'Tap the preview on the paper to focus, wait a second, then capture.',
                 'Match the printed timing marks on the sheet to the green ticks on each edge.',
                 'Keep all four corner squares inside the green brackets.',
+                if (_sessionLayout.layoutShape.contains('half') ||
+                    _sessionLayout.layoutShape.contains('quarter'))
+                  'For half or ¼ sheets: frame ONE printed sheet only — not the whole bond page.',
                 'One scan reads the QR code, student ID bubbles, and all answers.',
                 'Use a dark pencil (HB or 2B) and fill bubbles completely.',
                 'In auto mode, wait for the green border, then hold steady.',
@@ -1232,14 +1274,20 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   // ==================== CONTINUOUS SCANNING MODE ====================
 
   void _toggleContinuousMode() {
+    final next = !_isContinuousMode;
     setState(() {
-      _isContinuousMode = !_isContinuousMode;
-      if (_isContinuousMode) {
+      _isContinuousMode = next;
+      if (next) {
+        _reviewBeforeSave = true;
         _startContinuousScanning();
       } else {
         _stopContinuousScanning();
       }
     });
+    unawaited(ScannerPreferencesService.setAutoCaptureEnabled(next));
+    if (next) {
+      unawaited(ScannerPreferencesService.setReviewBeforeSave(true));
+    }
   }
 
   void _startContinuousScanning() {
@@ -1343,7 +1391,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         _continuousHint = detection.hint ?? '';
       });
 
-      if (detection.isReadyForCapture) {
+      if (detection.isReadyForAutoCapture) {
         _stableFrameCount++;
 
         if (mounted) {
@@ -1356,7 +1404,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         // If stable for enough frames, trigger capture
         if (_stableFrameCount >= _requiredStableFrames) {
           _stableFrameCount = 0;
-          await _triggerAutoCapture(bytes);
+          await _triggerAutoCapture();
         }
       } else {
         _stableFrameCount = 0;
@@ -1372,6 +1420,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                   torchOn: _torchEnabled,
                 ) ??
                 "Improve lighting";
+          } else if (detection.confidence < 0.75) {
+            hint = "Hold steady — almost ready";
           }
           setState(() {
             _status = hint.isNotEmpty ? hint : "Auto-scan active";
@@ -1387,8 +1437,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _triggerAutoCapture(Uint8List bytes) async {
-    if (_isProcessing || !mounted) return;
+  Future<void> _triggerAutoCapture() async {
+    if (_isProcessing || !mounted || _scannerCamera == null) return;
+
+    // Fresh still for grading — do not reuse the detection JPEG.
+    await _prepareCaptureFocus();
+    final bytes = await _scannerCamera!.capture();
 
     if (await _blockIfCaptureTooDark(bytes, showDialog: false)) {
       _stableFrameCount = 0;
@@ -1509,12 +1563,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
           scanSafety: duplicateSafety,
           sourceBytes: processBytes,
           replaceExisting: existingScan,
+          scanDebugInfo: omrResult.debugInfo,
         );
-        if (mounted) {
-          setState(() {
-            _status = '${student.name} rescan queued for review';
-          });
-        }
+        // Status is set by save/review/discard paths — do not overwrite.
         _lastScannedOmrId = omrResult.omrId;
         _lastScanTime = DateTime.now();
         return;
@@ -1529,16 +1580,13 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         sheetId: sheetId,
         scanSafety: _effectiveScanSafety(
           scanSafety,
-          turboAutoSave: _canTurboAutoSave(
-            safety: scanSafety,
-            omrResult: omrResult,
-            subject: subject,
-          ),
+          turboAutoSave: false,
         ),
         sourceBytes: processBytes,
         processingMs: omrResult.debugInfo['processingTimeMs'] is num
             ? (omrResult.debugInfo['processingTimeMs'] as num).toInt()
             : null,
+        scanDebugInfo: omrResult.debugInfo,
       );
 
       _lastScannedOmrId = omrResult.omrId;
@@ -1601,8 +1649,50 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     required _ScanSafetyAssessment scanSafety,
     Uint8List? sourceBytes,
     ScanResult? replaceExisting,
+    Map<String, dynamic>? scanDebugInfo,
     int? processingMs,
   }) async {
+    // Auto mode keeps Review before save on — open the review screen.
+    // Always pause continuous capture while review is open so another frame
+    // cannot save underneath the teacher. Preserve replaceExisting so a rescan
+    // updates the prior result instead of inserting a duplicate grade.
+    if (_reviewBeforeSave || scanSafety.requiresReview) {
+      final wasContinuous = _isContinuousMode;
+      if (wasContinuous) {
+        _stopContinuousScanning();
+      }
+      try {
+        if (replaceExisting != null) {
+          await _reviewAndUpdateExistingScan(
+            student: student,
+            subject: subject,
+            existingScan: replaceExisting,
+            newAnswers: answers,
+            newConfidence: confidence,
+            sheetId: sheetId,
+            scanSafety: scanSafety,
+            scanDebugInfo: scanDebugInfo,
+          );
+        } else {
+          await _showScanReview(
+            student: student,
+            subject: subject,
+            answers: answers,
+            confidence: confidence,
+            sheetId: sheetId,
+            scanSafety: scanSafety,
+            sourceBytes: sourceBytes,
+            scanDebugInfo: scanDebugInfo,
+          );
+        }
+      } finally {
+        if (wasContinuous && mounted) {
+          _startContinuousScanning();
+        }
+      }
+      return;
+    }
+
     final score = subject.calculateSmartScore(answers);
     final scanTime = DateTime.now();
     final pendingReview = scanSafety.requiresReview;
@@ -1657,11 +1747,16 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     final scoreDisplay = '${formatScoreValue(score)}/${subject.totalQuestions}';
 
     if (mounted) {
+      final confidenceReport = ScanConfidenceService.assess(
+        reviewReasons: scanSafety.reviewReasons,
+        flaggedQuestions: scanSafety.flaggedQuestions,
+        confidence: confidence,
+      );
       final timingSuffix = processingMs != null ? ' · ${processingMs}ms' : '';
       setState(() {
         _isProcessing = false;
-        _status = pendingReview
-            ? '${student.name}: queued for review'
+        _status = confidenceReport.requiresReview
+            ? '${student.name}: ${confidenceReport.title}'
             : "✓ ${student.name}: $scoreDisplay$timingSuffix";
       });
 
@@ -1670,7 +1765,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         updatedStudent,
         subject,
         score,
-        pendingReview: pendingReview,
+        confidenceReport: confidenceReport,
       );
     }
   }
@@ -1679,22 +1774,29 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     Student student,
     Subject subject,
     double score, {
-    bool pendingReview = false,
+    required ScanConfidenceReport confidenceReport,
   }) {
     final percentageValue = (score / subject.totalQuestions) * 100;
     final percentage = percentageValue.toStringAsFixed(0);
-    final passed = percentageValue >= 60;
+    final bg = switch (confidenceReport.level) {
+      ScanConfidenceLevel.safe => _scannerAccent,
+      ScanConfidenceLevel.check => AppColors.statusWarning,
+      ScanConfidenceLevel.mustReview => AppColors.statusDanger,
+    };
+    final detail = confidenceReport.requiresReview
+        ? (confidenceReport.primaryReason ?? confidenceReport.title)
+        : "${student.scoreDisplay}/${subject.totalQuestions} ($percentage%)";
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
             Icon(
-              pendingReview
-                  ? Icons.rate_review
-                  : passed
-                      ? Icons.check_circle
-                      : Icons.error_outline,
+              switch (confidenceReport.level) {
+                ScanConfidenceLevel.safe => Icons.check_circle,
+                ScanConfidenceLevel.check => Icons.flag_rounded,
+                ScanConfidenceLevel.mustReview => Icons.warning_rounded,
+              },
               color: Colors.white,
             ),
             const SizedBox(width: 12),
@@ -1704,14 +1806,14 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    student.name,
+                    '${student.name} · ${confidenceReport.title}',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   Text(
-                    pendingReview
-                        ? 'Queued for review before saving final score'
-                        : "${student.scoreDisplay}/${subject.totalQuestions} ($percentage%)",
+                    detail,
                     style: const TextStyle(fontSize: 12),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
@@ -1729,7 +1831,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             ),
           ],
         ),
-        backgroundColor: passed ? _scannerAccent : Colors.orange,
+        backgroundColor: bg,
         behavior: SnackBarBehavior.floating,
         duration: _resultDisplayDuration,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 100),
@@ -2444,15 +2546,18 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   ScanResult? _findExistingScan(Student student, Subject subject) {
     final studentScans = findScansByStudent(student.omrId);
+    ScanResult? latest;
     for (final result in studentScans) {
       if (result.subjectId == subject.id ||
           (result.subjectId == null &&
               result.subjectName.trim().toUpperCase() ==
                   subject.name.trim().toUpperCase())) {
-        return result;
+        if (latest == null || result.scanTime.isAfter(latest.scanTime)) {
+          latest = result;
+        }
       }
     }
-    return null;
+    return latest;
   }
 
   _ScanSafetyAssessment _assessScanSafety({
@@ -2696,17 +2801,6 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         .toList();
   }
 
-  String _assignedSectionsLabel() {
-    final sections = _assignedScanSections;
-    if (sections.isEmpty) {
-      return widget.targetSubject.displayName;
-    }
-    if (sections.length == 1) {
-      return sections.first;
-    }
-    return sections.join(', ');
-  }
-
   String? _wrongSubjectMessage(SubjectSheetQrPayload? qrPayload) {
     if (qrPayload == null) {
       return null;
@@ -2714,21 +2808,27 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
     final target = widget.targetSubject;
     final sheetSubject = qrPayload.resolveSubject();
-    final sheetLabel = sheetSubject?.displayName ??
-        (qrPayload.subjectName.trim().isEmpty
-            ? 'another subject'
-            : qrPayload.subjectName);
 
     if (qrPayload.subjectId.isNotEmpty && qrPayload.subjectId != target.id) {
-      return 'This sheet is for $sheetLabel, but you opened the scanner for '
-          '${target.displayName}. Print the correct subject\'s sheet or open '
-          'that subject\'s answer key before scanning.';
+      if (sheetSubject != null) {
+        return AnswerKeyScope.wrongKeyMessage(
+          scannerSubject: target,
+          sheetSubject: sheetSubject,
+        );
+      }
+      final sheetLabel = qrPayload.subjectName.trim().isEmpty
+          ? 'another answer key'
+          : qrPayload.subjectName;
+      return 'This sheet is for $sheetLabel, but you are grading '
+          '${AnswerKeyScope.of(target).describeSubject(target)}.\n\n'
+          'Open the matching answer key, or reprint from the key you have open.';
     }
 
     if (sheetSubject != null && sheetSubject.id != target.id) {
-      return 'This sheet is for ${sheetSubject.displayName}, but you opened '
-          'the scanner for ${target.displayName}. Print the correct subject\'s '
-          'sheet or open that subject\'s answer key before scanning.';
+      return AnswerKeyScope.wrongKeyMessage(
+        scannerSubject: target,
+        sheetSubject: sheetSubject,
+      );
     }
 
     return null;
@@ -2815,18 +2915,21 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     if (qrSection != null && qrSection.isNotEmpty) {
       final normalizedQrSection = _normalizeScanSection(qrSection);
       if (!assigned.contains(normalizedQrSection)) {
-        return 'This sheet is for $qrSection, but you are grading '
-            '${_assignedSectionsLabel()}. Print the sheet for the correct section '
-            'or open the answer key for $qrSection.';
+        return AnswerKeyScope.wrongSectionForOpenKeyMessage(
+          scannerSubject: widget.targetSubject,
+          sheetSection: qrSection,
+        );
       }
     }
 
     if (student != null) {
       final studentSection = _normalizeScanSection(student.section);
       if (!assigned.contains(studentSection)) {
-        return '${student.name} is in ${student.section}, which is not assigned to '
-            '${widget.targetSubject.displayName}. You are grading '
-            '${_assignedSectionsLabel()}.';
+        final scope = AnswerKeyScope.of(widget.targetSubject);
+        return '${student.name} is in ${student.section}, which is not on '
+            '${scope.describeSubject(widget.targetSubject)}.\n\n'
+            '${scope.gradingContextLabel}. Open the key for their section '
+            'or move the student before grading.';
       }
     }
 
@@ -2999,24 +3102,29 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     );
 
     // Risky scans are reviewed even when the optional review toggle is off.
+    // Always pause continuous capture for any review screen (not only when
+    // safety forces it) so Auto mode cannot fire another save underneath.
     if ((_reviewBeforeSave && !skipReview && !turboAutoSave) ||
         safety.requiresReview) {
       final wasContinuous = _isContinuousMode;
-      if (wasContinuous && safety.requiresReview) {
+      if (wasContinuous) {
         _stopContinuousScanning();
       }
-      await _showScanReview(
-        student: student,
-        subject: subject,
-        answers: answers,
-        confidence: confidence,
-        sheetId: sheetId,
-        scanSafety: safety,
-        sourceBytes: sourceBytes,
-        scanDebugInfo: scanDebugInfo,
-      );
-      if (wasContinuous && mounted) {
-        _startContinuousScanning();
+      try {
+        await _showScanReview(
+          student: student,
+          subject: subject,
+          answers: answers,
+          confidence: confidence,
+          sheetId: sheetId,
+          scanSafety: safety,
+          sourceBytes: sourceBytes,
+          scanDebugInfo: scanDebugInfo,
+        );
+      } finally {
+        if (wasContinuous && mounted) {
+          _startContinuousScanning();
+        }
       }
       return;
     }
@@ -3184,11 +3292,16 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     HapticFeedback.heavyImpact();
 
     if (mounted) {
+      final confidenceReport = ScanConfidenceService.assess(
+        reviewReasons: scanSafety.reviewReasons,
+        flaggedQuestions: scanSafety.flaggedQuestions,
+        confidence: confidence,
+      );
       final timingSuffix = processingMs != null ? ' · ${processingMs}ms' : '';
       setState(() {
         _isProcessing = false;
         _status = pendingReview
-            ? "Queued for review: ${student.name}"
+            ? '${student.name}: ${confidenceReport.title}'
             : wasEdited
                 ? "Saved (edited): ${updatedStudent.name}"
                 : "Scanned: ${updatedStudent.name} - ${subject.displayName}$timingSuffix";
@@ -3196,9 +3309,14 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
       if (pendingReview) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Scan queued for review before final score is saved'),
-            backgroundColor: Colors.orange,
+          SnackBar(
+            content: Text(
+              '${confidenceReport.title}'
+              '${confidenceReport.primaryReason != null ? ' — ${confidenceReport.primaryReason}' : ''}',
+            ),
+            backgroundColor: confidenceReport.level == ScanConfidenceLevel.mustReview
+                ? AppColors.statusDanger
+                : AppColors.statusWarning,
           ),
         );
       } else {
@@ -3599,7 +3717,9 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   Map<int, String> _generateMockAnswers(Subject subject) {
     final answers = <int, String>{};
-    final letters = ['A', 'B', 'C', 'D', 'E'];
+    final letters = OmrPageConstants.answerOptionLabels
+        .take(subject.optionsCount.clamp(2, 6))
+        .toList();
 
     for (int i = 1; i <= subject.totalQuestions; i++) {
       if (i % 5 == 0) {
@@ -3607,7 +3727,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       } else {
         final acceptedAnswers = subject.answerKey[i];
         answers[i] = acceptedAnswers == null || acceptedAnswers.isEmpty
-            ? 'A'
+            ? letters.first
             : acceptedAnswers.first;
       }
     }
@@ -4141,6 +4261,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 14),
+              const ScanConfidenceBadge(level: ScanConfidenceLevel.safe),
+              const SizedBox(height: 10),
               Text(
                 student.name,
                 textAlign: TextAlign.center,
@@ -4218,12 +4340,21 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               ),
               if (_batchResults.length > 1) ...[
                 const SizedBox(height: 10),
-                Text(
-                  '${_batchResults.length} scanned this session',
-                  style: const TextStyle(
-                    color: AppColors.brandMuted,
-                    fontSize: 12,
-                  ),
+                Builder(
+                  builder: (context) {
+                    final summary =
+                        ScanConfidenceService.summarizeBatch(_batchResults);
+                    return Text(
+                      '${summary.total} scanned · '
+                      '${summary.safe} safe · '
+                      '${summary.needsAttention} need a look',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: AppColors.brandMuted,
+                        fontSize: 12,
+                      ),
+                    );
+                  },
                 ),
               ],
               const SizedBox(height: 20),
@@ -4233,7 +4364,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
                     child: OutlinedButton(
                       onPressed: () {
                         Navigator.pop(context);
-                        Navigator.pop(context);
+                        unawaited(_showBatchConfidenceSummaryThenExit());
                       },
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.brandText,
@@ -4276,6 +4407,115 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  Future<void> _showBatchConfidenceSummaryThenExit() async {
+    if (!mounted) {
+      return;
+    }
+    if (_batchResults.length <= 1) {
+      Navigator.pop(context);
+      return;
+    }
+
+    final summary = ScanConfidenceService.summarizeBatch(_batchResults);
+    final riskyPreview = summary.riskyScans.take(5).toList(growable: false);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandBorder,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Session summary',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.brandText,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '${summary.safe} safe · ${summary.check} check · '
+                  '${summary.mustReview} must review',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.brandMuted,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (riskyPreview.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  ...riskyPreview.map((scan) {
+                    final report = ScanConfidenceService.fromScanResult(scan);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          ScanConfidenceBadge(level: report.level),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'OMR ${scan.studentOmrId}',
+                              style: AppTypography.listTitle,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  if (summary.riskyScans.length > riskyPreview.length)
+                    Text(
+                      '+${summary.riskyScans.length - riskyPreview.length} more in Review',
+                      style: AppTypography.captionMuted,
+                    ),
+                ],
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.brandGreen,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  child: Text(
+                    summary.needsAttention > 0
+                        ? 'Done — open Review for flagged sheets'
+                        : 'Done',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (mounted) {
+      Navigator.pop(context);
+    }
   }
 
   @override
@@ -4373,8 +4613,79 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             ),
           _buildScanViewport(),
           if (_lightingOverlayHint != null) _buildLightingBanner(),
+          _buildScanModeToggle(),
           _buildBottomBar(colorScheme),
         ],
+      ),
+    );
+  }
+
+  Widget _buildScanModeToggle() {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: 96 + bottomInset,
+      child: Align(
+        alignment: Alignment.center,
+        child: Material(
+          color: Colors.transparent,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildModeChip(
+                    label: 'Manual',
+                    selected: !_isContinuousMode,
+                    onTap: _isProcessing || !_isContinuousMode
+                        ? null
+                        : _toggleContinuousMode,
+                  ),
+                  _buildModeChip(
+                    label: 'Auto',
+                    selected: _isContinuousMode,
+                    onTap: _isProcessing || _isContinuousMode
+                        ? null
+                        : _toggleContinuousMode,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModeChip({
+    required String label,
+    required bool selected,
+    required VoidCallback? onTap,
+  }) {
+    return Material(
+      color: selected ? AppColors.brandGreen : Colors.transparent,
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.white70,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
       ),
     );
   }

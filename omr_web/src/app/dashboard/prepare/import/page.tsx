@@ -16,6 +16,7 @@ import {
   schoolYearOptions,
 } from "@/lib/academic-term";
 import { downloadText } from "@/lib/utils";
+import { SyncLoopNotice } from "@/components/desk-notices";
 
 export default function ImportRosterPage() {
   const router = useRouter();
@@ -74,12 +75,11 @@ export default function ImportRosterPage() {
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Import roster</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Use the school <strong>Class List Report</strong> Excel (.xlsx). We keep{" "}
-          <strong>Student ID</strong>, <strong>Student Name</strong>, and{" "}
-          <strong>Section</strong> only — Session, Campus, Gender, College, Course, Subject,
-          and Email are ignored.
+          Class List Report (.xlsx) — needs Student ID, Student Name, and Section.
         </p>
       </div>
+
+      <SyncLoopNotice className="mb-4" />
 
       <Card>
         <div className="mb-4 grid gap-3 sm:grid-cols-2">

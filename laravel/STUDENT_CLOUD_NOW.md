@@ -21,7 +21,9 @@ Open Render → **coc-omr-api** → **Environment**. Set:
 | `FRONTEND_URL` | `https://omrweb.vercel.app` |
 | `APP_URL` | `https://coc-omr-api.onrender.com` |
 | `DB_CONNECTION` | `pgsql` |
-| `DATABASE_URL` / `DB_URL` | Neon connection string |
+| `DATABASE_URL` / `DB_URL` | Neon connection string (pooler URL is OK) |
+| `CACHE_STORE` | `file` (required with Neon pooler — do not use `database`) |
+| `SESSION_DRIVER` | `file` |
 
 Save and wait until deploy is **Live**.
 

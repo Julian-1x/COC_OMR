@@ -13,6 +13,8 @@ cd omr_web
 copy .env.local.example .env.local
 ```
 
+Edit `.env.local` so `API_BASE_URL` and `NEXT_PUBLIC_API_BASE_URL` are the same Laravel URL (no trailing slash).
+
 4. Install and run:
 
 ```powershell
@@ -24,6 +26,16 @@ Open [http://localhost:3000](http://localhost:3000).
 
 Set `FRONTEND_URL=http://localhost:3000` in the Laravel API `.env` so email verification links return to `/auth/callback`.
 
+### Exam week — keep the API awake
+
+Free hosts may sleep. Before exam mornings:
+
+```powershell
+.\scripts\keep_api_awake.ps1 -ApiBaseUrl https://your-api.example.com
+```
+
+Prefer an always-on API host for production exam days.
+
 ## Features
 
 - Sign in with the same teacher email/password as the mobile app
@@ -33,6 +45,20 @@ Set `FRONTEND_URL=http://localhost:3000` in the Laravel API `.env` so email veri
 - **Settings** — account info, cloud sync diagnostics
 
 No camera scanner on web (by design).
+
+## Security notes (web)
+
+- Auth token cookie (`coc_api_token`) is **httpOnly**. Browser pages call the school API through same-origin `/api/laravel/*` (BFF), so page scripts cannot read the bearer token.
+- Teachers stay **pending** until a school admin approves them.
+- Super-admin account delete requires typing the teacher email, then a second confirm.
+
+## Print / key integrity
+
+- Web print supports **standard 30–100** sheets and **synced custom layouts** from the phone (same scan geometry).
+- Custom print uses the phone’s exam-ready gates: lengthwise full / legacy half / quarter only; A–F choices; dense full-page when needed; multi-up tiling for half/quarter.
+- Answer keys show **Shared / One section / No section** badges; print PDFs include `SHARED KEY` or `THIS SECTION ONLY`.
+- Print is blocked when the section is not on the key, the key is incomplete, or the custom grid failed to sync / is no longer scannable.
+- Always print at **100% scale (Actual size)**. After changing OMR geometry, re-validate on a real printer + phone scan.
 
 ## Deploy to Vercel (free hosting)
 

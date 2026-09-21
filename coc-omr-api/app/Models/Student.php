@@ -26,6 +26,7 @@ class Student extends Model
         'confidence',
         'local_id',
         'sync_status',
+        'archived_at',
     ];
 
     protected function casts(): array
@@ -33,6 +34,7 @@ class Student extends Model
         return [
             'answers' => 'array',
             'scan_date' => 'datetime',
+            'archived_at' => 'datetime',
             'score' => 'float',
             'confidence' => 'float',
         ];

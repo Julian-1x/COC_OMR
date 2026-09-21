@@ -4,6 +4,7 @@ class OnboardingPreferencesService {
   OnboardingPreferencesService._();
 
   static const String _completedKey = 'onboarding_completed_v1';
+  static const String _customSheetGuideKey = 'custom_sheet_editor_guide_seen_v1';
 
   static Future<bool> hasCompletedOnboarding() async {
     final prefs = await SharedPreferences.getInstance();
@@ -13,5 +14,15 @@ class OnboardingPreferencesService {
   static Future<void> setOnboardingCompleted() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_completedKey, true);
+  }
+
+  static Future<bool> hasSeenCustomSheetGuide() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_customSheetGuideKey) ?? false;
+  }
+
+  static Future<void> setCustomSheetGuideSeen() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_customSheetGuideKey, true);
   }
 }

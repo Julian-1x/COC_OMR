@@ -105,7 +105,8 @@ void main() {
     expect(native['rowMarkX'], isNotNull);
   });
 
-  test('landscape custom warps to landscape content block', () {
+  test('legacy landscape custom is blocked before scan (portrait-only policy)',
+      () {
     final subject = Subject(
       id: 'SUB-LAND',
       name: 'Wide quiz',
@@ -117,16 +118,9 @@ void main() {
       customGridColumns: 3,
       customGridRows: 4,
     );
-    final native = ScannerSessionLayout.fromSubject(subject).toNativeMap();
-    expect(native['useFrozenRegistrationMarks'], isFalse);
-    expect(
-      (native['contentBlockWidth'] as num).toDouble(),
-      closeTo(OmrPageConstants.pageHeight, 0.5),
-    );
-    expect(
-      (native['contentBlockHeight'] as num).toDouble(),
-      closeTo(OmrPageConstants.pageWidth, 0.5),
-    );
+    final gate = ScannerSessionLayout.examReadyScanErrorForSubject(subject);
+    expect(gate, isNotNull);
+    expect(gate!.toLowerCase(), contains('landscape'));
   });
 
   test('portrait full custom is exam-ready when grid is saved', () {
@@ -155,5 +149,97 @@ void main() {
       ScannerSessionLayout.examReadyScanErrorForSubject(subject),
       isNull,
     );
+  });
+
+  test('six-choice custom session exposes optionsCount 6 and subjectId to native',
+      () {
+    final fit = OmrLayoutProfile.tryCompute(
+      itemCount: 20,
+      optionsCount: 6,
+      form: const OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      ),
+    );
+    expect(fit.isOk, isTrue);
+    expect(fit.profile!.optionLabels, ['A', 'B', 'C', 'D', 'E', 'F']);
+
+    final subject = Subject(
+      id: 'SUB-SIX',
+      name: 'Six choice quiz',
+      answerKey: {for (int i = 1; i <= 20; i++) i: 'F'},
+      totalQuestions: 20,
+      useCustomLayout: true,
+      optionsCount: 6,
+      layoutShape: 'lengthwise_full',
+      customGridColumns: fit.profile!.grid.columns,
+      customGridRows: fit.profile!.grid.rows,
+    );
+    final session = ScannerSessionLayout.fromSubject(subject);
+    final native = session.toNativeMap();
+
+    expect(native['optionsCount'], 6);
+    expect(native['subjectId'], 'SUB-SIX');
+    expect(native['isCustom'], isTrue);
+    expect(native['useFrozenRegistrationMarks'], isFalse);
+    expect(session.optionsCount, 6);
+  });
+
+  test('dense max-fit grid stays above scan-safe row height', () {
+    const form = OmrLayoutForm(
+      orientation: OmrLayoutOrientation.lengthwise,
+      pageFill: OmrLayoutPageFill.full,
+    );
+    final maxFit = OmrLayoutProfile.maxFitItems(form: form, optionsCount: 6);
+    final fit = OmrLayoutProfile.tryCompute(
+      itemCount: maxFit,
+      optionsCount: 6,
+      form: form,
+    );
+    expect(fit.isOk, isTrue);
+    final profile = fit.profile!;
+    expect(
+      profile.grid.rowHeight,
+      greaterThanOrEqualTo(OmrLayoutProfile.scanMinRowHeight(profile.geometry)),
+    );
+    expect(
+      profile.grid.bubbleSpacingX,
+      greaterThanOrEqualTo(
+        OmrLayoutProfile.scanMinBubbleSpacing(profile.form, profile.geometry),
+      ),
+    );
+    expect(profile.grid.rows, lessThanOrEqualTo(OmrLayoutProfile.maxRowsPerColumn));
+    final subject = Subject(
+      id: 'SUB-MAX',
+      name: 'Long custom',
+      answerKey: {for (int i = 1; i <= maxFit; i++) i: 'A'},
+      totalQuestions: maxFit,
+      useCustomLayout: true,
+      optionsCount: 6,
+      layoutShape: 'lengthwise_full',
+      customGridColumns: profile.grid.columns,
+      customGridRows: profile.grid.rows,
+    );
+    expect(ScannerSessionLayout.examReadyScanErrorForSubject(subject), isNull);
+    final native = ScannerSessionLayout.fromSubject(subject).toNativeMap();
+    expect(native['optionsCount'], 6);
+    expect((native['rowHeight'] as num).toDouble(),
+        greaterThanOrEqualTo(OmrLayoutProfile.minRowHeightDense));
+    expect((native['bubbleSpacingX'] as num).toDouble(),
+        greaterThanOrEqualTo(OmrLayoutProfile.minBubbleSpacingXDense));
+  });
+
+  test('200 x A-F is blocked when it would violate scan floors', () {
+    final fit = OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: 5,
+      rows: 40,
+      optionsCount: 6,
+      form: const OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      ),
+    );
+    // 5x40 was the old tight pack — must not pass the reliable floors.
+    expect(fit.isOk, isFalse);
   });
 }

@@ -13,7 +13,7 @@ use Illuminate\Support\Str;
 class SyncSnapshotService
 {
     /**
-     * Mirrors mobile pull logic in supabase_sync_service.dart.
+     * Phone pull: active sections only, then roster/scans for those sections.
      */
     public function buildForTeacher(User $user): array
     {
@@ -44,6 +44,7 @@ class SyncSnapshotService
         $students = Student::query()
             ->where('owner_teacher_id', $ownerId)
             ->whereIn('section_name', $activeSectionNames)
+            ->whereNull('archived_at')
             ->orderBy('name')
             ->get();
 

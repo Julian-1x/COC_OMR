@@ -35,7 +35,7 @@ async function tableDiagnostic(
   table: "sections" | "students" | "subjects" | "scan_results",
 ) {
   if (table === "sections") {
-    const rows = await fetchSections(api);
+    const rows = await fetchSections(api, { includeAll: true });
     return { table, count: rows.length, latestUpdated: latestUpdated(rows) };
   }
   if (table === "students") {

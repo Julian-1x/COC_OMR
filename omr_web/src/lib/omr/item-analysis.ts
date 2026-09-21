@@ -167,37 +167,185 @@ export function isDistributionChoiceCorrect(
 }
 
 export function sortedDistributionKeys(distribution: Record<string, number>): string[] {
-  const keys = ["A", "B", "C", "D", "E"].filter((k) => k in distribution);
+  const preferred = ["A", "B", "C", "D", "E", "F", BLANK_DISTRIBUTION_LABEL];
+  const keys = preferred.filter((k) => k in distribution);
   for (const key of Object.keys(distribution)) {
     if (!keys.includes(key)) keys.push(key);
   }
   return keys;
 }
 
+export type DiscriminationQuality = "strong" | "good" | "fair" | "weak" | "unknown";
+
+/** Classic classroom bands for upper–lower discrimination (D). */
+export function discriminationQuality(d: number | null): DiscriminationQuality {
+  if (d === null || Number.isNaN(d)) return "unknown";
+  if (d >= 0.4) return "strong";
+  if (d >= 0.3) return "good";
+  if (d >= 0.2) return "fair";
+  return "weak";
+}
+
+export function discriminationLabel(d: number | null): string {
+  switch (discriminationQuality(d)) {
+    case "strong":
+      return "Strong";
+    case "good":
+      return "Good";
+    case "fair":
+      return "Fair";
+    case "weak":
+      return "Weak";
+    default:
+      return "Need more scans";
+  }
+}
+
+export function discriminationColorClass(d: number | null): string {
+  switch (discriminationQuality(d)) {
+    case "strong":
+      return "text-emerald-800 bg-emerald-50";
+    case "good":
+      return "text-emerald-700 bg-emerald-50";
+    case "fair":
+      return "text-amber-800 bg-amber-50";
+    case "weak":
+      return "text-red-800 bg-red-50";
+    default:
+      return "text-slate-600 bg-slate-50";
+  }
+}
+
+export type SortMode = "number" | "hardest" | "easiest" | "weakD";
+
+export function sortQuestions(
+  questions: QuestionAnalysis[],
+  mode: SortMode,
+): QuestionAnalysis[] {
+  const next = [...questions];
+  switch (mode) {
+    case "hardest":
+      next.sort((a, b) => questionDifficulty(a) - questionDifficulty(b));
+      break;
+    case "easiest":
+      next.sort((a, b) => questionDifficulty(b) - questionDifficulty(a));
+      break;
+    case "weakD":
+      next.sort((a, b) => {
+        const da = a.discriminationIndex ?? -2;
+        const db = b.discriminationIndex ?? -2;
+        return da - db;
+      });
+      break;
+    default:
+      next.sort((a, b) => a.questionNumber - b.questionNumber);
+  }
+  return next;
+}
+
+export function overallDifficulty(report: ItemAnalysisReport): number {
+  if (report.questions.length === 0) return 0;
+  const sum = report.questions.reduce((acc, q) => acc + questionDifficulty(q), 0);
+  return sum / report.questions.length;
+}
+
+export type AttentionFlag = {
+  questionNumber: number;
+  reasons: string[];
+  topWrongChoice: string | null;
+  topWrongCount: number;
+};
+
+/** Items teachers should reteach or rewrite (hard + weak D, or popular wrong choice). */
+export function questionsNeedingAttention(
+  subject: DbSubject,
+  report: ItemAnalysisReport,
+): AttentionFlag[] {
+  const flags: AttentionFlag[] = [];
+  for (const q of report.questions) {
+    const reasons: string[] = [];
+    const rate = questionDifficulty(q);
+    const d = q.discriminationIndex;
+
+    if (rate < 0.3) {
+      reasons.push(`Only ${Math.round(rate * 100)}% got it right`);
+    }
+    if (d !== null && d < 0.2) {
+      reasons.push(`Weak discrimination (D ${d.toFixed(2)})`);
+    }
+
+    let topWrongChoice: string | null = null;
+    let topWrongCount = 0;
+    for (const [choice, count] of Object.entries(q.answerDistribution)) {
+      if (isDistributionChoiceCorrect(subject, q.questionNumber, choice)) continue;
+      if (count > topWrongCount) {
+        topWrongChoice = choice;
+        topWrongCount = count;
+      }
+    }
+    if (
+      topWrongChoice &&
+      topWrongCount >= Math.max(2, Math.ceil(q.totalAttempts * 0.25))
+    ) {
+      reasons.push(
+        `Many chose ${topWrongChoice} (${topWrongCount}/${q.totalAttempts})`,
+      );
+    }
+
+    if (reasons.length > 0) {
+      flags.push({
+        questionNumber: q.questionNumber,
+        reasons,
+        topWrongChoice,
+        topWrongCount,
+      });
+    }
+  }
+
+  return flags.sort((a, b) => {
+    const qa = report.questions.find((q) => q.questionNumber === a.questionNumber)!;
+    const qb = report.questions.find((q) => q.questionNumber === b.questionNumber)!;
+    return questionDifficulty(qa) - questionDifficulty(qb);
+  });
+}
+
 export function exportItemAnalysisCsv(
   subjectName: string,
   report: ItemAnalysisReport,
+  subject?: DbSubject,
 ): string {
   const header =
-    "Question,Correct Answer,Attempts,Correct,Partial,Percent Correct,Discrimination,Difficulty";
+    "Question,Correct Answer,Attempts,Correct,Partial,Percent Correct,Discrimination,D Quality,Difficulty,Attention";
+  const attention = subject
+    ? new Map(
+        questionsNeedingAttention(subject, report).map((f) => [
+          f.questionNumber,
+          f.reasons.join("; "),
+        ]),
+      )
+    : new Map<number, string>();
+
   const lines = report.questions.map((a) => {
     const pct = a.totalAttempts > 0 ? Math.round((a.correctCount / a.totalAttempts) * 100) : 0;
     const d = a.discriminationIndex !== null ? a.discriminationIndex.toFixed(2) : "";
     return [
       a.questionNumber,
-      a.correctAnswer,
+      `"${a.correctAnswer.replace(/"/g, '""')}"`,
       a.totalAttempts,
       a.correctCount,
       a.partialCount,
       `${pct}%`,
       d,
+      discriminationLabel(a.discriminationIndex),
       difficultyLabel(a),
+      `"${(attention.get(a.questionNumber) ?? "").replace(/"/g, '""')}"`,
     ].join(",");
   });
   return [
     `Subject,${subjectName}`,
     `Graded students,${report.gradedStudentCount}`,
     `Pending review,${report.pendingReviewCount}`,
+    `Overall percent correct,${Math.round(overallDifficulty(report) * 100)}%`,
     header,
     ...lines,
   ].join("\n");
@@ -206,6 +354,7 @@ export function exportItemAnalysisCsv(
 export async function exportItemAnalysisPdf(
   subjectName: string,
   report: ItemAnalysisReport,
+  subject?: DbSubject,
 ): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -230,7 +379,8 @@ export async function exportItemAnalysisPdf(
   });
   y -= 20;
   page.drawText(
-    `Graded: ${report.gradedStudentCount} students · Pending review: ${report.pendingReviewCount}`,
+    `Graded: ${report.gradedStudentCount} students · Pending review: ${report.pendingReviewCount} · ` +
+      `Overall correct: ${Math.round(overallDifficulty(report) * 100)}%`,
     { x: 40, y, size: 9, font },
   );
   y -= 24;
@@ -255,15 +405,45 @@ export async function exportItemAnalysisPdf(
     y -= 8;
   }
 
-  page.drawText("Q#  Key  Correct  Partial  P%  D", { x: 40, y, size: 9, font: bold });
+  if (subject) {
+    const attention = questionsNeedingAttention(subject, report).slice(0, 8);
+    if (attention.length > 0) {
+      page.drawText("Needs attention (reteach or rewrite):", {
+        x: 40,
+        y,
+        size: 10,
+        font: bold,
+      });
+      y -= 14;
+      for (const flag of attention) {
+        newPageIfNeeded(2);
+        page.drawText(`Q${flag.questionNumber} — ${flag.reasons.join("; ").slice(0, 85)}`, {
+          x: 48,
+          y,
+          size: 8,
+          font,
+        });
+        y -= 11;
+      }
+      y -= 8;
+    }
+  }
+
+  page.drawText("Q#  Key  Correct  Partial  P%  D   Quality", {
+    x: 40,
+    y,
+    size: 9,
+    font: bold,
+  });
   y -= 14;
 
   for (const a of report.questions) {
     newPageIfNeeded(2);
     const pct = a.totalAttempts > 0 ? Math.round((a.correctCount / a.totalAttempts) * 100) : 0;
     const d = a.discriminationIndex !== null ? a.discriminationIndex.toFixed(2) : "—";
+    const quality = discriminationLabel(a.discriminationIndex);
     page.drawText(
-      `${String(a.questionNumber).padStart(2)}   ${a.correctAnswer.padEnd(4)} ${String(a.correctCount).padStart(3)}/${a.totalAttempts}   ${String(a.partialCount).padStart(3)}   ${String(pct).padStart(3)}%  ${d}`,
+      `${String(a.questionNumber).padStart(2)}   ${a.correctAnswer.padEnd(4)} ${String(a.correctCount).padStart(3)}/${a.totalAttempts}   ${String(a.partialCount).padStart(3)}   ${String(pct).padStart(3)}%  ${d.padStart(5)}  ${quality}`,
       { x: 40, y, size: 8, font },
     );
     y -= 11;
@@ -272,7 +452,13 @@ export async function exportItemAnalysisPdf(
       .join(" ");
     if (dist) {
       newPageIfNeeded();
-      page.drawText(`     ${dist.slice(0, 90)}`, { x: 40, y, size: 7, font, color: rgb(0.4, 0.4, 0.4) });
+      page.drawText(`     ${dist.slice(0, 90)}`, {
+        x: 40,
+        y,
+        size: 7,
+        font,
+        color: rgb(0.4, 0.4, 0.4),
+      });
       y -= 10;
     }
   }

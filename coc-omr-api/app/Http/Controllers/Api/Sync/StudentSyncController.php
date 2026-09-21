@@ -53,6 +53,7 @@ class StudentSyncController extends Controller
                 'confidence' => $validated['confidence'] ?? null,
                 'local_id' => $validated['omr_id'],
                 'sync_status' => 'synced',
+                'archived_at' => null,
                 'updated_at' => $updatedAt,
             ],
         );
@@ -60,6 +61,50 @@ class StudentSyncController extends Controller
         return response()->json([
             'id' => $student->id,
             'student' => $student->fresh(),
+        ]);
+    }
+
+    public function archive(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'omr_ids' => ['required', 'array', 'min:1'],
+            'omr_ids.*' => ['required', 'string', 'max:255'],
+        ]);
+
+        $ownerId = $request->user()->id;
+        $archivedAt = now();
+        $updated = Student::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->whereIn('omr_id', $validated['omr_ids'])
+            ->update([
+                'archived_at' => $archivedAt,
+                'updated_at' => $archivedAt,
+            ]);
+
+        return response()->json([
+            'archived' => $updated,
+            'archived_at' => $archivedAt->toIso8601String(),
+        ]);
+    }
+
+    public function unarchive(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'omr_ids' => ['required', 'array', 'min:1'],
+            'omr_ids.*' => ['required', 'string', 'max:255'],
+        ]);
+
+        $ownerId = $request->user()->id;
+        $updated = Student::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->whereIn('omr_id', $validated['omr_ids'])
+            ->update([
+                'archived_at' => null,
+                'updated_at' => now(),
+            ]);
+
+        return response()->json([
+            'unarchived' => $updated,
         ]);
     }
 }

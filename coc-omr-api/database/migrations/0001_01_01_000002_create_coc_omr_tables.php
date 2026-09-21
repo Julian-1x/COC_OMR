@@ -70,11 +70,13 @@ return new class extends Migration
             $table->decimal('confidence', 10, 4)->nullable();
             $table->string('local_id')->nullable();
             $table->string('sync_status')->default('synced');
+            $table->timestamp('archived_at')->nullable();
             $table->timestamps();
 
             $table->unique(['owner_teacher_id', 'omr_id']);
             $table->unique(['owner_teacher_id', 'school_id']);
             $table->index(['owner_teacher_id', 'section_name']);
+            $table->index(['owner_teacher_id', 'archived_at']);
         });
 
         Schema::create('scan_results', function (Blueprint $table) {

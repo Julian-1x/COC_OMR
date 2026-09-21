@@ -22,3 +22,77 @@ body {
 * {
   box-sizing: border-box;
 }
+
+@keyframes desk-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes desk-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes desk-soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+.desk-enter {
+  animation: desk-fade-up 0.4s ease-out both;
+}
+
+.desk-enter-slow {
+  animation: desk-fade-in 0.5s ease-out both;
+}
+
+.desk-stagger > * {
+  animation: desk-fade-up 0.4s ease-out both;
+}
+
+.desk-stagger > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.desk-stagger > *:nth-child(2) {
+  animation-delay: 50ms;
+}
+.desk-stagger > *:nth-child(3) {
+  animation-delay: 100ms;
+}
+.desk-stagger > *:nth-child(4) {
+  animation-delay: 150ms;
+}
+.desk-stagger > *:nth-child(5) {
+  animation-delay: 200ms;
+}
+.desk-stagger > *:nth-child(6) {
+  animation-delay: 250ms;
+}
+
+.desk-syncing {
+  animation: desk-soft-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-enter,
+  .desk-enter-slow,
+  .desk-stagger > *,
+  .desk-syncing {
+    animation: none;
+  }
+}

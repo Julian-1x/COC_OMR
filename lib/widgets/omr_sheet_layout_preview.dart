@@ -148,10 +148,12 @@ class _OmrSheetPreviewPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.8;
 
-    final opts = profile.optionsCount.clamp(2, 5);
-    for (var row = 0; row < grid.rows; row++) {
-      for (var col = 0; col < grid.columns; col++) {
-        final qIndex = row * grid.columns + col;
+    final opts = profile.optionsCount.clamp(2, 6);
+    // Column-major (same as print + scanner): questions run top→bottom,
+    // then the next column. Never left→right across a row.
+    for (var col = 0; col < grid.columns; col++) {
+      for (var row = 0; row < grid.rows; row++) {
+        final qIndex = col * grid.rows + row;
         if (qIndex >= profile.itemCount) {
           break;
         }
@@ -159,7 +161,11 @@ class _OmrSheetPreviewPainter extends CustomPainter {
           final cx = profile.bubbleCenterX(col, opt);
           final cy = profile.rowCenterY(row);
           final r = g.answerBubbleDiameter / 2;
-          canvas.drawCircle(Offset(sx(cx), sy(cy)), (sx(r) + sy(r)) / 2, bubblePaint);
+          canvas.drawCircle(
+            Offset(sx(cx), sy(cy)),
+            (sx(r) + sy(r)) / 2,
+            bubblePaint,
+          );
         }
       }
     }

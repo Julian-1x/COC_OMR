@@ -69,3 +69,11 @@ dart_version_capture.txt
 # Next.js web portal build output
 omr_web/.next/
 omr_web/.vercel/
+
+# Thesis extract tooling
+paper_format_extract/node_modules/
+paper_format_extract/_ch5_docx/
+.vercel/
+test_nowrap.pdf
+test_wrap.pdf
+

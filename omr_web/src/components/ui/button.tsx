@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import type { ButtonHTMLAttributes } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
+type Size = "md" | "lg";
 
 const variants: Record<Variant, string> = {
   primary:
@@ -12,16 +13,33 @@ const variants: Record<Variant, string> = {
   danger: "bg-red-600 text-white hover:bg-red-700",
 };
 
+const sizes: Record<Size, string> = {
+  md: "min-h-11 px-4 text-sm",
+  lg: "min-h-12 px-5 text-base shadow-md",
+};
+
+/** Shared look for Link CTAs that match Button size=lg primary. */
+export const primaryActionClassName =
+  "inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-5 text-base font-extrabold text-white shadow-md transition hover:bg-emerald-600";
+
+export const secondaryActionClassName =
+  "inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-white px-5 text-base font-extrabold text-emerald-800 transition hover:bg-emerald-50";
+
 export function Button({
   className,
   variant = "primary",
+  size = "md",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: Variant;
+  size?: Size;
+}) {
   return (
     <button
       className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 text-sm font-extrabold transition disabled:cursor-not-allowed",
+        "inline-flex items-center justify-center gap-2 rounded-2xl font-extrabold transition disabled:cursor-not-allowed",
         variants[variant],
+        sizes[size],
         className,
       )}
       {...props}

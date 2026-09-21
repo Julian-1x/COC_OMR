@@ -39,23 +39,13 @@ export default async function DepartmentAdminsPage() {
         </p>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Department admins</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Assign instructors who can approve teachers in one department. Only super admins see this
-          page.
+          Who can approve teachers in each department
         </p>
       </div>
 
       {cloudSlow ? (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          School server is slow or waking up. Refresh after{" "}
-          <a
-            className="font-semibold underline"
-            href="https://coc-omr-api.onrender.com/up"
-            target="_blank"
-            rel="noreferrer"
-          >
-            API status
-          </a>{" "}
-          shows Application up.
+          School server is busy — refresh in a minute.
         </div>
       ) : null}
 

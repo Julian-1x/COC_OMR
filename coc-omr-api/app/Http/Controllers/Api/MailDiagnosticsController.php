@@ -28,7 +28,7 @@ class MailDiagnosticsController extends Controller
             $issues[] = 'Set BREVO_API_KEY (recommended) or MAIL_MAILER=smtp on Render.';
         }
         if ($appUrl === '' || str_contains($appUrl, 'localhost')) {
-            $issues[] = 'APP_URL must be https://coc-omr-api.onrender.com on Render.';
+            $issues[] = 'APP_URL must be your live Render API URL (e.g. https://coc-omr-api-sg.onrender.com).';
         }
         $frontendUrl = (string) config('app.frontend_url');
         if ($frontendUrl === '' || str_contains($frontendUrl, 'localhost')) {

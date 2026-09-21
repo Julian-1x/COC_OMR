@@ -12,6 +12,26 @@ void main() {
       );
 
       expect(detection.isReadyForCapture, isTrue);
+      expect(detection.isReadyForAutoCapture, isFalse);
+    });
+
+    test('auto-capture requires higher confidence than manual gate', () {
+      final borderline = SheetDetectionResult(
+        sheetDetected: true,
+        isAligned: true,
+        hasGoodLighting: true,
+        confidence: 0.74,
+      );
+      final ready = SheetDetectionResult(
+        sheetDetected: true,
+        isAligned: true,
+        hasGoodLighting: true,
+        confidence: 0.75,
+      );
+
+      expect(borderline.isReadyForCapture, isTrue);
+      expect(borderline.isReadyForAutoCapture, isFalse);
+      expect(ready.isReadyForAutoCapture, isTrue);
     });
 
     test('still blocks low confidence and bad lighting', () {
@@ -29,7 +49,9 @@ void main() {
       );
 
       expect(lowConfidence.isReadyForCapture, isFalse);
+      expect(lowConfidence.isReadyForAutoCapture, isFalse);
       expect(badLighting.isReadyForCapture, isFalse);
+      expect(badLighting.isReadyForAutoCapture, isFalse);
     });
   });
 }

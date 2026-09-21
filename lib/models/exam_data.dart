@@ -1,6 +1,6 @@
 import 'package:omr_app/models/omr_template_specs.dart';
 
-final RegExp _storedAnswerPattern = RegExp(r'[A-E]');
+final RegExp _storedAnswerPattern = RegExp(r'[A-F]');
 
 String formatScoreValue(num? score) {
   if (score == null) {
@@ -266,7 +266,7 @@ class Subject {
   bool usePartialCredit; // Enable partial credit for multi-answer questions
   /// When false, print/scan use frozen 30–100 presets (recommended).
   bool useCustomLayout;
-  /// Options shown on the sheet (2–5). Ignored when [useCustomLayout] is false.
+  /// Options shown on the sheet (2–6 for custom, standard presets still use 5).
   int optionsCount;
   /// Custom form id: `lengthwise_full`, `crosswise_quarter`, etc.
   String layoutShape;
@@ -304,7 +304,7 @@ class Subject {
         answerKey = _normalizeAnswerKey(answerKey),
         sectionQrData = sectionQrData ?? <String, String>{},
         passingScore = passingScore ?? (totalQuestions * 0.6).round(),
-        optionsCount = optionsCount.clamp(2, 5),
+        optionsCount = optionsCount.clamp(2, 6),
         layoutShape = OmrLayoutForm.fromId(layoutShape).id,
         updatedAt = updatedAt ?? DateTime.now();
 
@@ -313,21 +313,39 @@ class Subject {
 
   OmrLayoutForm get layoutForm => OmrLayoutForm.fromId(layoutShape);
 
+  /// Custom layout that matches the saved grid exactly, or null if unscannable.
+  /// Never invents a different grid — that would print/scan the wrong sheet.
+  OmrLayoutProfile? get scannableCustomLayoutProfile {
+    if (!useCustomLayout ||
+        customGridColumns == null ||
+        customGridRows == null ||
+        customGridColumns! < 1 ||
+        customGridRows! < 1) {
+      return null;
+    }
+    return OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: customGridColumns!,
+      rows: customGridRows!,
+      optionsCount: optionsCount,
+      form: layoutForm,
+      itemCount: totalQuestions,
+    ).profile;
+  }
+
   OmrLayoutProfile get layoutProfile {
     if (useCustomLayout &&
         customGridColumns != null &&
         customGridRows != null &&
         customGridColumns! > 0 &&
         customGridRows! > 0) {
-      final explicit = OmrLayoutProfile.tryComputeExplicitGrid(
-        columns: customGridColumns!,
-        rows: customGridRows!,
-        optionsCount: optionsCount,
-        form: layoutForm,
-      );
-      if (explicit.profile != null) {
-        return explicit.profile!;
+      final explicit = scannableCustomLayoutProfile;
+      if (explicit != null) {
+        return explicit;
       }
+      // Fail closed: do not substitute a different packer grid for a bad save.
+      // Callers must check [ScannerSessionLayout.examReadyScanErrorForSubject].
+      // Return a form-only diagnostic profile via resolve for UI capacity copy —
+      // scanner/print entry points refuse this subject before using the session.
     }
     return OmrLayoutProfile.resolve(
       totalQuestions: totalQuestions,

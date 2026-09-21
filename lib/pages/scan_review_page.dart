@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/omr_template_specs.dart';
+import 'package:omr_app/services/scan_confidence_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_typography.dart';
@@ -410,22 +412,30 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
   }
 
   Widget _buildAttentionCard() {
+    final report = ScanConfidenceService.assess(
+      reviewReasons: widget.reviewReasons,
+      flaggedQuestions: widget.flaggedQuestions,
+      confidence: widget.confidence,
+    );
     final confidencePercent = (widget.confidence * 100).toStringAsFixed(0);
-    final preview = widget.reviewReasons.isEmpty
-        ? 'Confidence $confidencePercent% — check flagged answers before saving.'
-        : widget.reviewReasons.first;
-    final extraCount = widget.reviewReasons.length > 1
-        ? widget.reviewReasons.length - 1
-        : 0;
+    final preview = report.primaryReason ??
+        'Confidence $confidencePercent% — check flagged answers before saving.';
+    final extraCount = report.reasons.length > 1 ? report.reasons.length - 1 : 0;
+    final isMust = report.level == ScanConfidenceLevel.mustReview;
+    final accent = isMust ? AppColors.statusDanger : AppColors.statusWarning;
+    final bg = isMust ? AppColors.statusDangerBg : AppColors.statusWarningBg;
+    final border =
+        isMust ? AppColors.statusDangerBorder : AppColors.statusWarningBorder;
+    final textColor = isMust ? AppColors.statusDanger : AppColors.warningText;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
       child: Material(
-        color: AppColors.statusWarningBg,
+        color: bg,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: widget.reviewReasons.length > 1
+          onTap: report.reasons.length > 1
               ? () => setState(() => _alertsExpanded = !_alertsExpanded)
               : null,
           child: Container(
@@ -433,7 +443,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: AppColors.statusWarningBorder),
+              border: Border.all(color: border),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -441,9 +451,11 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(
-                      Icons.priority_high_rounded,
-                      color: AppColors.statusWarning,
+                    Icon(
+                      isMust
+                          ? Icons.warning_rounded
+                          : Icons.priority_high_rounded,
+                      color: accent,
                       size: 18,
                     ),
                     const SizedBox(width: 8),
@@ -452,9 +464,9 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Needs a quick look',
+                            report.title,
                             style: AppTypography.chipLabel.copyWith(
-                              color: AppColors.warningText,
+                              color: textColor,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
@@ -462,7 +474,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                           Text(
                             preview,
                             style: AppTypography.captionMuted.copyWith(
-                              color: AppColors.warningText,
+                              color: textColor,
                               fontSize: 12,
                               height: 1.35,
                             ),
@@ -473,7 +485,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                               child: Text(
                                 '+$extraCount more · tap to expand',
                                 style: AppTypography.captionMuted.copyWith(
-                                  color: AppColors.warningAccent,
+                                  color: accent,
                                   fontSize: 11,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -495,22 +507,22 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
                         '$confidencePercent%',
                         style: AppTypography.captionMuted.copyWith(
                           fontWeight: FontWeight.w800,
-                          color: AppColors.warningText,
+                          color: textColor,
                           fontSize: 11,
                         ),
                       ),
                     ),
                   ],
                 ),
-                if (_alertsExpanded && widget.reviewReasons.isNotEmpty) ...[
+                if (_alertsExpanded && report.reasons.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  ...widget.reviewReasons.skip(1).map(
+                  ...report.reasons.skip(1).map(
                         (reason) => Padding(
                           padding: const EdgeInsets.only(left: 26, bottom: 4),
                           child: Text(
                             '• $reason',
                             style: AppTypography.captionMuted.copyWith(
-                              color: AppColors.warningText,
+                              color: textColor,
                               fontSize: 12,
                               height: 1.35,
                             ),
@@ -826,6 +838,41 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
     );
   }
 
+  /// Letters teachers can pick — matches the sheet's choice count (A–B … A–F).
+  /// Also widens if the key or scan already uses a later letter (legacy data).
+  List<String> _choiceLettersForReview({
+    required Set<String> currentSelections,
+    required List<String> correctAnswers,
+  }) {
+    var count = widget.subject.optionsCount.clamp(2, 6);
+    void consider(String raw) {
+      final letter = raw.trim().toUpperCase();
+      final index = OmrPageConstants.answerOptionLabels.indexOf(letter);
+      if (index >= 0 && index + 1 > count) {
+        count = index + 1;
+      }
+    }
+
+    for (final letter in currentSelections) {
+      consider(letter);
+    }
+    for (final letter in correctAnswers) {
+      consider(letter);
+    }
+    for (final answers in widget.subject.answerKey.values) {
+      for (final letter in answers) {
+        consider(letter);
+      }
+    }
+    for (final answer in _editedAnswers.values) {
+      for (final letter in parseStoredAnswerSelections(answer)) {
+        consider(letter);
+      }
+    }
+
+    return OmrPageConstants.answerOptionLabels.take(count.clamp(2, 6)).toList();
+  }
+
   void _showAnswerPicker(int questionNumber) {
     final currentAnswer = _editedAnswers[questionNumber];
     final currentSelections =
@@ -834,6 +881,10 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
     final allowsMultipleSelection = widget.subject.usePartialCredit ||
         widget.subject.allowsMultipleAnswers(questionNumber) ||
         currentSelections.length > 1;
+    final choiceLetters = _choiceLettersForReview(
+      currentSelections: currentSelections,
+      correctAnswers: correctAnswers,
+    );
 
     HapticFeedback.selectionClick();
 
@@ -898,7 +949,7 @@ class _ScanReviewPageState extends State<ScanReviewPage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  for (final letter in ['A', 'B', 'C', 'D', 'E'])
+                  for (final letter in choiceLetters)
                     _buildAnswerButton(
                       letter,
                       isSelected: currentSelections.contains(letter),

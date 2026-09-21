@@ -9,7 +9,9 @@ import 'package:sqflite/sqflite.dart';
 
 import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
+import 'package:omr_app/services/backup_compare.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
 import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/api_service.dart';
@@ -24,7 +26,7 @@ class LocalDataStore {
   static final LocalDataStore instance = LocalDataStore._();
 
   static const String _databaseName = 'omr_app.db';
-  static const int _databaseVersion = 9;
+  static const int _databaseVersion = 10;
   static const String _legacyFileName = 'omr_offline_store.json';
   static const String _safetyBackupFolderName = 'safety_backups';
   static const int _maxSafetyBackups = 20;
@@ -107,12 +109,21 @@ class LocalDataStore {
     });
   }
 
-  Future<bool> restoreFromBackupMap(Map<String, dynamic> decoded) async {
+  Future<bool> restoreFromBackupMap(
+    Map<String, dynamic> decoded, {
+    BackupRestoreMode mode = BackupRestoreMode.replaceAll,
+  }) async {
     try {
       var restored = false;
       await _enqueueDbWrite(() async {
-        final snapshot =
-            _restampSnapshotOwner(_snapshotFromBackupMap(decoded));
+        final backupData = BackupSnapshotData.fromBackupMap(decoded);
+        final phoneData = phoneSnapshotFromGlobals();
+        final mergedData = mergeBackupSnapshots(
+          phone: phoneData,
+          backup: backupData,
+          mode: mode,
+        );
+        final snapshot = _restampSnapshotOwner(_appSnapshotFromBackupData(mergedData));
 
         if (kIsWeb) {
           _applySnapshotToMemory(_snapshotForCurrentTeacher(snapshot));
@@ -209,8 +220,9 @@ class LocalDataStore {
   }) async {
     if (kIsWeb) {
       _replaceStudentInMemory(updatedStudent);
+      // One active grade per student+subject — drop any duplicate rows.
       globalScanResults.removeWhere(
-        (entry) => _matchesScanIdentity(entry, previousResult),
+        (entry) => _matchesStudentSubject(entry, previousResult),
       );
       globalScanResults.add(replacementResult);
       rebuildStudentIndex();
@@ -226,13 +238,15 @@ class LocalDataStore {
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
         await _deleteStoredScanResult(txn, previousResult);
+        // Heal any prior duplicate rows for the same student+subject.
+        await _deleteOtherStoredSubjectScans(txn, previousResult);
         await txn.insert('scan_results', _scanResultRow(replacementResult));
       });
     });
 
     _replaceStudentInMemory(updatedStudent);
     globalScanResults.removeWhere(
-      (entry) => _matchesScanIdentity(entry, previousResult),
+      (entry) => _matchesStudentSubject(entry, previousResult),
     );
     globalScanResults.add(replacementResult);
     rebuildStudentIndex();
@@ -654,6 +668,416 @@ class LocalDataStore {
       removedDeadlines: deadlines.length,
       removedReviewImages: removal.removedReviewImages,
       archivedSection: true,
+    );
+  }
+
+  Future<List<PhoneArchivePack>> fetchPhoneArchivePacks() async {
+    if (kIsWeb) {
+      return const <PhoneArchivePack>[];
+    }
+    final database = await _openDatabase();
+    final rows = await database.query(
+      'phone_archive_packs',
+      orderBy: 'created_at DESC',
+    );
+    return rows.map(_phoneArchivePackFromRow).toList();
+  }
+
+  Future<int> phoneArchivePackCount() async {
+    if (kIsWeb) {
+      return 0;
+    }
+    final database = await _openDatabase();
+    final result = await database.rawQuery(
+      'SELECT COUNT(*) AS c FROM phone_archive_packs',
+    );
+    return (result.first['c'] as int?) ?? 0;
+  }
+
+  Future<({Set<String> omrIds, Set<String> sectionNames})>
+      phoneArchiveExclusions() async {
+    final packs = await fetchPhoneArchivePacks();
+    final omrIds = <String>{};
+    final sectionNames = <String>{};
+    for (final pack in packs) {
+      omrIds.addAll(pack.omrIds);
+      for (final name in pack.sectionNames) {
+        sectionNames.add(normalizeSectionName(name));
+      }
+    }
+    return (omrIds: omrIds, sectionNames: sectionNames);
+  }
+
+  Future<PhoneArchiveMoveSummary> moveStudentsToPhoneArchive(
+    List<String> omrIds,
+  ) async {
+    final uniqueIds = omrIds.toSet().toList();
+    if (uniqueIds.isEmpty) {
+      throw ArgumentError('No students to archive.');
+    }
+
+    final students = <Student>[];
+    for (final omrId in uniqueIds) {
+      final student = globalStudentIndex[omrId];
+      if (student != null) {
+        students.add(student);
+      }
+    }
+    if (students.isEmpty) {
+      throw StateError('Those students were not found on this phone.');
+    }
+
+    final scans = globalScanResults
+        .where((result) => uniqueIds.contains(result.studentOmrId))
+        .map(
+          (scan) => ScanResult(
+            studentOmrId: scan.studentOmrId,
+            subjectId: scan.subjectId,
+            subjectName: scan.subjectName,
+            sheetId: scan.sheetId,
+            detectedAnswers: scan.detectedAnswers,
+            correctnessMap: scan.correctnessMap,
+            score: scan.score,
+            totalQuestions: scan.totalQuestions,
+            confidence: scan.confidence,
+            scanTime: scan.scanTime,
+            scannedImagePath: null,
+            reviewReasons: scan.reviewReasons,
+            flaggedQuestions: scan.flaggedQuestions,
+            manuallyConfirmed: scan.manuallyConfirmed,
+            needsReview: scan.needsReview,
+            ownerTeacherId: scan.ownerTeacherId,
+            cloudId: scan.cloudId,
+            syncStatus: scan.syncStatus,
+            updatedAt: scan.updatedAt,
+          ),
+        )
+        .toList();
+
+    final title = students.length == 1
+        ? students.first.name
+        : '${students.length} students';
+    final pack = PhoneArchivePack(
+      id: 'arch_${DateTime.now().millisecondsSinceEpoch}_'
+          '${uniqueIds.length}',
+      kind: PhoneArchivePack.kindStudent,
+      title: title,
+      createdAt: DateTime.now(),
+      omrIds: students.map((s) => s.omrId).toList(),
+      sectionNames: students.map((s) => s.section).toSet().toList(),
+      students: students,
+      scanResults: scans,
+    );
+
+    await _insertPhoneArchivePack(pack);
+    final removal = await removeStudentsCascade(
+      uniqueIds,
+      queueCloudDeletions: false,
+      deleteReviewImages: true,
+      createSafetyBackup: true,
+    );
+
+    return PhoneArchiveMoveSummary(
+      pack: pack,
+      removedStudents: removal.removedStudents,
+      removedScans: removal.removedScans,
+      removedReviewImages: removal.removedReviewImages,
+    );
+  }
+
+  Future<PhoneArchiveMoveSummary> moveSectionToPhoneArchive(
+    String sectionName,
+  ) async {
+    final stored = _resolveStoredSectionName(sectionName);
+    if (stored == null) {
+      throw StateError('Section "$sectionName" was not found.');
+    }
+
+    Section? sectionRow;
+    for (final section in globalSections) {
+      if (normalizeSectionName(section.name) == normalizeSectionName(stored)) {
+        sectionRow = section;
+        break;
+      }
+    }
+    sectionRow ??= Section(name: stored);
+
+    final students = _studentsInSection(stored);
+    final omrIds = students.map((s) => s.omrId).toList();
+    final scans = globalScanResults
+        .where((result) => omrIds.contains(result.studentOmrId))
+        .map(
+          (scan) => ScanResult(
+            studentOmrId: scan.studentOmrId,
+            subjectId: scan.subjectId,
+            subjectName: scan.subjectName,
+            sheetId: scan.sheetId,
+            detectedAnswers: scan.detectedAnswers,
+            correctnessMap: scan.correctnessMap,
+            score: scan.score,
+            totalQuestions: scan.totalQuestions,
+            confidence: scan.confidence,
+            scanTime: scan.scanTime,
+            scannedImagePath: null,
+            reviewReasons: scan.reviewReasons,
+            flaggedQuestions: scan.flaggedQuestions,
+            manuallyConfirmed: scan.manuallyConfirmed,
+            needsReview: scan.needsReview,
+            ownerTeacherId: scan.ownerTeacherId,
+            cloudId: scan.cloudId,
+            syncStatus: scan.syncStatus,
+            updatedAt: scan.updatedAt,
+          ),
+        )
+        .toList();
+
+    final pack = PhoneArchivePack(
+      id: 'arch_sec_${DateTime.now().millisecondsSinceEpoch}',
+      kind: PhoneArchivePack.kindSection,
+      title: stored,
+      createdAt: DateTime.now(),
+      omrIds: omrIds,
+      sectionNames: <String>[stored],
+      students: List<Student>.from(students),
+      scanResults: scans,
+      section: sectionRow.copyWith(archivedAt: DateTime.now()),
+    );
+
+    await _insertPhoneArchivePack(pack);
+
+    // Keep answer-key section names for restore; remove roster/scores from active.
+    await _createSafetyBackupIfNeeded(
+      action: 'phone_archive_section_${normalizeSectionName(stored)}',
+    );
+    final removal = await removeStudentsCascade(
+      omrIds,
+      queueCloudDeletions: false,
+      deleteReviewImages: true,
+      createSafetyBackup: false,
+    );
+
+    final deadlines = globalDeadlines
+        .where(
+          (deadline) =>
+              normalizeSectionName(deadline.sectionName ?? '') ==
+              normalizeSectionName(stored),
+        )
+        .toList();
+
+    if (!kIsWeb) {
+      await _enqueueDbWrite(() async {
+        final database = await _openDatabase();
+        await database.transaction((txn) async {
+          for (final deadline in deadlines) {
+            await txn.delete(
+              'deadlines',
+              where: 'id = ?',
+              whereArgs: <Object?>[deadline.id],
+            );
+          }
+          await txn.delete(
+            'sections',
+            where: 'name = ?',
+            whereArgs: <Object?>[stored],
+          );
+        });
+      });
+    }
+
+    globalDeadlines.removeWhere(
+      (deadline) =>
+          normalizeSectionName(deadline.sectionName ?? '') ==
+          normalizeSectionName(stored),
+    );
+    _removeSectionFromMemory(stored);
+
+    return PhoneArchiveMoveSummary(
+      pack: pack,
+      removedStudents: removal.removedStudents,
+      removedScans: removal.removedScans,
+      removedReviewImages: removal.removedReviewImages,
+    );
+  }
+
+  Future<void> restorePhoneArchivePack(String packId) async {
+    final packs = await fetchPhoneArchivePacks();
+    PhoneArchivePack? pack;
+    for (final entry in packs) {
+      if (entry.id == packId) {
+        pack = entry;
+        break;
+      }
+    }
+    if (pack == null) {
+      throw StateError('Archived item was not found on this phone.');
+    }
+
+    final sections = <Section>[];
+    if (pack.section != null) {
+      sections.add(
+        pack.section!.copyWith(clearArchivedAt: true, syncStatus: SyncStatus.pending),
+      );
+    } else {
+      for (final name in pack.sectionNames) {
+        sections.add(Section(name: name, syncStatus: SyncStatus.pending));
+      }
+    }
+
+    final students = pack.students
+        .map(
+          (student) => student.copyWith(
+            syncStatus: SyncStatus.pending,
+            updatedAt: DateTime.now(),
+          ),
+        )
+        .toList();
+
+    await saveImportedStudents(students: students, sections: sections);
+
+    if (!kIsWeb) {
+      await _enqueueDbWrite(() async {
+        final database = await _openDatabase();
+        await database.transaction((txn) async {
+          for (final scan in pack!.scanResults) {
+            final restored = ScanResult(
+              studentOmrId: scan.studentOmrId,
+              subjectId: scan.subjectId,
+              subjectName: scan.subjectName,
+              sheetId: scan.sheetId,
+              detectedAnswers: scan.detectedAnswers,
+              correctnessMap: scan.correctnessMap,
+              score: scan.score,
+              totalQuestions: scan.totalQuestions,
+              confidence: scan.confidence,
+              scanTime: scan.scanTime,
+              scannedImagePath: null,
+              reviewReasons: scan.reviewReasons,
+              flaggedQuestions: scan.flaggedQuestions,
+              manuallyConfirmed: scan.manuallyConfirmed,
+              needsReview: scan.needsReview,
+              ownerTeacherId: scan.ownerTeacherId,
+              cloudId: scan.cloudId,
+              syncStatus: SyncStatus.pending,
+              updatedAt: DateTime.now(),
+            );
+            await txn.insert('scan_results', _scanResultRow(restored));
+            addScanResult(restored);
+          }
+        });
+      });
+    } else {
+      for (final scan in pack.scanResults) {
+        addScanResult(scan);
+      }
+    }
+
+    await deletePhoneArchivePack(packId);
+  }
+
+  Future<void> permanentlyDeletePhoneArchivePack(String packId) async {
+    final packs = await fetchPhoneArchivePacks();
+    PhoneArchivePack? pack;
+    for (final entry in packs) {
+      if (entry.id == packId) {
+        pack = entry;
+        break;
+      }
+    }
+    if (pack == null) {
+      return;
+    }
+
+    for (final scan in pack.scanResults) {
+      await _queueCloudDeletion(
+        entityTable: 'scan_results',
+        cloudId: scan.cloudId,
+        ownerTeacherId: scan.ownerTeacherId,
+      );
+    }
+    for (final student in pack.students) {
+      await _queueCloudDeletion(
+        entityTable: 'students',
+        cloudId: student.cloudId,
+        ownerTeacherId: student.ownerTeacherId,
+      );
+    }
+    if (pack.kind == PhoneArchivePack.kindSection) {
+      final section = pack.section;
+      if (section?.cloudId != null && section!.cloudId!.isNotEmpty) {
+        await _queueCloudDeletion(
+          entityTable: 'sections',
+          cloudId: section.cloudId,
+          ownerTeacherId: section.ownerTeacherId,
+        );
+      } else if (pack.sectionNames.isNotEmpty) {
+        await _queueSectionCloudDeletion(pack.sectionNames.first);
+      }
+    }
+
+    await deletePhoneArchivePack(packId);
+  }
+
+  Future<void> deletePhoneArchivePack(String packId) async {
+    if (kIsWeb) {
+      return;
+    }
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.delete(
+        'phone_archive_packs',
+        where: 'id = ?',
+        whereArgs: <Object?>[packId],
+      );
+    });
+  }
+
+  Future<void> _insertPhoneArchivePack(PhoneArchivePack pack) async {
+    if (kIsWeb) {
+      return;
+    }
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.insert(
+        'phone_archive_packs',
+        <String, Object?>{
+          'id': pack.id,
+          'kind': pack.kind,
+          'title': pack.title,
+          'created_at': pack.createdAt.toIso8601String(),
+          'omr_ids_json': jsonEncode(pack.omrIds),
+          'section_names_json': jsonEncode(pack.sectionNames),
+          'payload_json': jsonEncode(pack.toJson()),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
+  }
+
+  PhoneArchivePack _phoneArchivePackFromRow(Map<String, Object?> row) {
+    final payloadRaw = row['payload_json']?.toString() ?? '{}';
+    try {
+      final decoded = jsonDecode(payloadRaw);
+      if (decoded is Map) {
+        return PhoneArchivePack.fromJson(Map<String, dynamic>.from(decoded));
+      }
+    } catch (error) {
+      debugPrint('Failed to decode phone archive pack: $error');
+    }
+    return PhoneArchivePack(
+      id: row['id']?.toString() ?? '',
+      kind: row['kind']?.toString() ?? PhoneArchivePack.kindStudent,
+      title: row['title']?.toString() ?? 'Archived item',
+      createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+          DateTime.now(),
+      omrIds: (_decodeJsonList(row['omr_ids_json'] as String?) ?? const [])
+          .map((e) => e.toString())
+          .toList(),
+      sectionNames:
+          (_decodeJsonList(row['section_names_json'] as String?) ?? const [])
+              .map((e) => e.toString())
+              .toList(),
+      students: const <Student>[],
+      scanResults: const <ScanResult>[],
     );
   }
 
@@ -1448,6 +1872,7 @@ class LocalDataStore {
   Future<void> upsertCustomSheetLayout(CustomSheetLayout layout) async {
     if (kIsWeb) {
       _upsertCustomSheetLayoutInMemory(layout);
+      await restampSubjectsLinkedToCustomLayout(layout);
       return;
     }
 
@@ -1461,6 +1886,31 @@ class LocalDataStore {
     });
 
     _upsertCustomSheetLayoutInMemory(layout);
+    await restampSubjectsLinkedToCustomLayout(layout);
+  }
+
+  /// When a saved custom sheet changes, stamp the new grid onto every answer
+  /// key that still links that layout, then mark them pending for cloud push.
+  Future<void> restampSubjectsLinkedToCustomLayout(
+    CustomSheetLayout layout,
+  ) async {
+    final linked = globalSubjects
+        .where(
+          (subject) =>
+              subject.useCustomLayout && subject.customLayoutId == layout.id,
+        )
+        .toList(growable: false);
+    if (linked.isEmpty) {
+      return;
+    }
+
+    for (final subject in linked) {
+      final stamped = layout.applyToSubject(subject).copyWith(
+            syncStatus: SyncStatus.pending,
+            updatedAt: DateTime.now(),
+          );
+      await upsertSubject(stamped);
+    }
   }
 
   Future<void> deleteCustomSheetLayout(String layoutId) async {
@@ -1982,7 +2432,9 @@ class LocalDataStore {
     if (kIsWeb) {
       final local = _snapshotFromCurrentMemory();
       final excluded = await _fetchPendingDeletionCloudIds();
-      final filteredCloud = _filterCloudByDeletions(cloud, excluded);
+      final filteredCloud = await _filterCloudForLocalPhone(
+        _filterCloudByDeletions(cloud, excluded),
+      );
       final merged = CloudSnapshotMerger.merge(
         localSections: local.sections,
         localStudents: local.students,
@@ -2014,7 +2466,9 @@ class LocalDataStore {
     await _enqueueDbWrite(() async {
       final database = await _openDatabase();
       final excluded = await _fetchPendingDeletionCloudIds();
-      final filteredCloud = _filterCloudByDeletions(cloud, excluded);
+      final filteredCloud = await _filterCloudForLocalPhone(
+        _filterCloudByDeletions(cloud, excluded),
+      );
 
       _AppSnapshot combined = _AppSnapshot(
         students: const <Student>[],
@@ -2195,6 +2649,9 @@ class LocalDataStore {
         if (oldVersion < 9) {
           await _upgradeToV9(db);
         }
+        if (oldVersion < 10) {
+          await _upgradeToV10(db);
+        }
       },
     );
 
@@ -2364,6 +2821,7 @@ class LocalDataStore {
     ''');
 
     await _createPendingDeletionsTable(db);
+    await _createPhoneArchiveTable(db);
   }
 
   Future<void> _createPendingDeletionsTable(DatabaseExecutor db) async {
@@ -2378,6 +2836,23 @@ class LocalDataStore {
     ''');
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_pending_deletions_cloud ON pending_deletions(entity_table, cloud_id)',
+    );
+  }
+
+  Future<void> _createPhoneArchiveTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS phone_archive_packs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        omr_ids_json TEXT NOT NULL,
+        section_names_json TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_phone_archive_created ON phone_archive_packs(created_at)',
     );
   }
 
@@ -2472,6 +2947,10 @@ class LocalDataStore {
   Future<void> _upgradeToV9(Database db) async {
     await _addColumnIfMissing(db, 'subjects', 'custom_grid_columns INTEGER');
     await _addColumnIfMissing(db, 'subjects', 'custom_grid_rows INTEGER');
+  }
+
+  Future<void> _upgradeToV10(Database db) async {
+    await _createPhoneArchiveTable(db);
   }
 
   Future<void> _upgradeToV5(Database db) async {
@@ -3434,6 +3913,48 @@ class LocalDataStore {
     );
   }
 
+  /// Soft-archived rows still on the cloud must not reappear until restored.
+  Future<CloudPullSnapshot> _filterCloudForLocalPhone(
+    CloudPullSnapshot cloud,
+  ) async {
+    final exclusions = await phoneArchiveExclusions();
+    if (exclusions.omrIds.isEmpty && exclusions.sectionNames.isEmpty) {
+      return cloud;
+    }
+
+    bool sectionActive(Section section) {
+      return !exclusions.sectionNames
+          .contains(normalizeSectionName(section.name));
+    }
+
+    bool studentActive(Student student) {
+      if (exclusions.omrIds.contains(student.omrId)) {
+        return false;
+      }
+      return !exclusions.sectionNames
+          .contains(normalizeSectionName(student.section));
+    }
+
+    final students = cloud.students.where(studentActive).toList();
+    final activeOmr = students.map((s) => s.omrId).toSet();
+
+    return CloudPullSnapshot(
+      sections: cloud.sections.where(sectionActive).toList(),
+      students: students,
+      subjects: cloud.subjects,
+      scanResults: cloud.scanResults
+          .where((scan) => activeOmr.contains(scan.studentOmrId))
+          .toList(),
+      deadlines: cloud.deadlines
+          .where(
+            (deadline) => !exclusions.sectionNames.contains(
+              normalizeSectionName(deadline.sectionName ?? ''),
+            ),
+          )
+          .toList(),
+    );
+  }
+
   Future<int> processPendingDeletions() async {
     if (kIsWeb) {
       return 0;
@@ -4000,42 +4521,22 @@ class LocalDataStore {
   }
 
   _AppSnapshot _snapshotFromBackupMap(Map<String, dynamic> decoded) {
+    return _appSnapshotFromBackupData(BackupSnapshotData.fromBackupMap(decoded));
+  }
+
+  _AppSnapshot _appSnapshotFromBackupData(BackupSnapshotData data) {
     return _AppSnapshot(
-      students: (decoded['students'] as List? ?? const <dynamic>[])
-          .map((entry) => Student.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      sections: (decoded['sections'] as List? ?? const <dynamic>[])
-          .map((entry) => Section.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      subjects: (decoded['subjects'] as List? ?? const <dynamic>[])
-          .map((entry) => Subject.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      scanResults: (decoded['scanResults'] as List? ?? const <dynamic>[])
-          .map((entry) => ScanResult.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      deadlines: (decoded['deadlines'] as List? ?? const <dynamic>[])
-          .map((entry) => Deadline.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      exportRecords: (decoded['exportRecords'] as List? ?? const <dynamic>[])
-          .map((entry) => ExportRecord.fromJson(_asStringDynamicMap(entry)))
-          .toList(),
-      answerKeyTemplates:
-          (decoded['answerKeyTemplates'] as List? ?? const <dynamic>[])
-              .map(
-                (entry) =>
-                    AnswerKeyTemplate.fromJson(_asStringDynamicMap(entry)),
-              )
-              .toList(),
-      customSheetLayouts:
-          (decoded['customSheetLayouts'] as List? ?? const <dynamic>[])
-              .map(
-                (entry) =>
-                    CustomSheetLayout.fromJson(_asStringDynamicMap(entry)),
-              )
-              .toList(),
-      omrCounter: _readCounter(decoded['omrCounter']),
-      subjectCounter: _readCounter(decoded['subjectCounter']),
-      sheetCounter: _readCounter(decoded['sheetCounter']),
+      students: data.students,
+      sections: data.sections,
+      subjects: data.subjects,
+      scanResults: data.scanResults,
+      deadlines: data.deadlines,
+      exportRecords: data.exportRecords,
+      answerKeyTemplates: data.answerKeyTemplates,
+      customSheetLayouts: data.customSheetLayouts,
+      omrCounter: data.omrCounter ?? 1,
+      subjectCounter: data.subjectCounter ?? 1,
+      sheetCounter: data.sheetCounter ?? 1,
     );
   }
 
@@ -4059,16 +4560,6 @@ class LocalDataStore {
     syncOmrCounterToRoster(snapshot.students);
 
     rebuildStudentIndex();
-  }
-
-  static Map<String, dynamic> _asStringDynamicMap(dynamic value) {
-    if (value is Map<String, dynamic>) {
-      return value;
-    }
-    if (value is Map) {
-      return Map<String, dynamic>.from(value);
-    }
-    return <String, dynamic>{};
   }
 
   static int _readInt(dynamic value, {int fallback = 0}) {
@@ -4119,13 +4610,6 @@ class LocalDataStore {
       return decoded;
     }
     return null;
-  }
-
-  static int _readCounter(dynamic value) {
-    if (value is int) {
-      return value;
-    }
-    return int.tryParse(value?.toString() ?? '') ?? 1;
   }
 }
 

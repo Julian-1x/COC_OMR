@@ -54,28 +54,6 @@ class OmrScanResult {
 class OpenCVBridge {
   static const MethodChannel _channel = MethodChannel('opencv');
 
-  /// Process an image and return raw bytes (legacy method)
-  static Future<Uint8List> process(Uint8List bytes) async {
-    try {
-      final result = await _channel.invokeMethod('process', bytes);
-      if (result == null) {
-        throw Exception('No result from native side');
-      }
-      // If result is a string (JSON), we got the new format
-      if (result is String) {
-        // Return empty bytes to indicate structured result is available
-        return Uint8List(0);
-      }
-      return result as Uint8List;
-    } on PlatformException catch (e) {
-      debugPrint('OpenCV bridge error: ${e.message}');
-      rethrow;
-    } catch (e) {
-      debugPrint('Unexpected error: $e');
-      rethrow;
-    }
-  }
-
   static const Duration _processOmrTimeout = Duration(seconds: 22);
 
   /// Process an image and return structured OMR scan result.
@@ -619,7 +597,11 @@ class SheetDetectionResult {
     );
   }
 
-  /// Check if sheet is ready for capture
+  /// Loose gate used for overlay hints.
   bool get isReadyForCapture =>
       sheetDetected && isAligned && hasGoodLighting && confidence >= 0.62;
+
+  /// Stricter gate for Auto-capture — fewer false fires on exam day.
+  bool get isReadyForAutoCapture =>
+      sheetDetected && isAligned && hasGoodLighting && confidence >= 0.75;
 }

@@ -23,11 +23,11 @@ class SubjectSyncController extends Controller
             'passing_score' => ['required', 'integer'],
             'use_partial_credit' => ['nullable', 'boolean'],
             'use_custom_layout' => ['nullable', 'boolean'],
-            'options_count' => ['nullable', 'integer', 'min:2', 'max:5'],
+            'options_count' => ['nullable', 'integer', 'min:2', 'max:6'],
             'layout_shape' => ['nullable', 'string', 'max:64'],
             'custom_layout_id' => ['nullable', 'string', 'max:64'],
             'custom_grid_columns' => ['nullable', 'integer', 'min:1', 'max:10'],
-            'custom_grid_rows' => ['nullable', 'integer', 'min:1', 'max:30'],
+            'custom_grid_rows' => ['nullable', 'integer', 'min:1', 'max:31'],
             'updated_at' => ['nullable', 'date'],
         ]);
 

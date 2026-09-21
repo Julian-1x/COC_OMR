@@ -11,7 +11,8 @@
 | Offline PIN | Hashed on phone; hash also backed up to your account | Salted hash only (not the digits) |
 | Class roster, student names | Yes | Yes (when you sync) |
 | Exam scores and answers | Yes | Yes (when you sync) |
-| Scan photos | Yes, on device only | **No** |
+| Phone Archive (removed students/classes + scores) | Yes, until uploaded | Yes after Sync / Upload & clear |
+| Scan photos | Yes, on device only | **No** (not kept in Phone Archive) |
 
 ## Who can see it
 

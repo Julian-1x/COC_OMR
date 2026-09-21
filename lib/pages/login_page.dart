@@ -5,6 +5,7 @@ import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:omr_app/constants/auth_config.dart';
 import 'package:omr_app/constants/coc_school.dart';
 import 'package:omr_app/pages/dashboard_page.dart';
 import 'package:omr_app/pages/welcome_onboarding_page.dart';
@@ -49,7 +50,9 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final CloudAuthService _auth = CloudAuthService.instance;
   final LocalAuthService _localAuth = LocalAuthService.instance;
-  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _lastNameController = TextEditingController();
+  final TextEditingController _firstNameController = TextEditingController();
+  final TextEditingController _suffixController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _unlockPinController = TextEditingController();
@@ -78,6 +81,7 @@ class _LoginPageState extends State<LoginPage> {
   String? _captchaToken;
   String? _captchaSiteKeyOverride;
   bool _loginCaptchaRequired = false;
+  bool _registerCaptchaRequired = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   StreamSubscription<Uri>? _authLinkSub;
   final AppLinks _appLinks = AppLinks();
@@ -114,7 +118,7 @@ class _LoginPageState extends State<LoginPage> {
       return false;
     }
     if (_mode == _AuthMode.register) {
-      return _securityConfig.captchaEnabled;
+      return _securityConfig.captchaEnabled || _registerCaptchaRequired;
     }
     return _loginCaptchaRequired;
   }
@@ -122,6 +126,7 @@ class _LoginPageState extends State<LoginPage> {
   void _resetCaptchaChallenge() {
     _captchaToken = null;
     _loginCaptchaRequired = false;
+    _registerCaptchaRequired = false;
     _captchaSiteKeyOverride = null;
   }
 
@@ -148,7 +153,9 @@ class _LoginPageState extends State<LoginPage> {
   void dispose() {
     _connectivitySub?.cancel();
     _authLinkSub?.cancel();
-    _nameController.dispose();
+    _lastNameController.dispose();
+    _firstNameController.dispose();
+    _suffixController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _unlockPinController.dispose();
@@ -209,7 +216,8 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   bool _isAuthCallbackUri(Uri uri) {
-    return uri.scheme == 'edu.coc.omr' && uri.host == 'login-callback';
+    final expected = Uri.parse(kAuthRedirectUrl);
+    return uri.scheme == expected.scheme && uri.host == expected.host;
   }
 
   Future<void> _handleAuthDeepLink(Uri uri) async {
@@ -432,13 +440,15 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final name = _nameController.text.trim();
+    final lastName = _lastNameController.text.trim();
+    final firstName = _firstNameController.text.trim();
+    final suffix = _suffixController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
     final isRegister = _mode == _AuthMode.register;
 
-    if (isRegister && name.isEmpty) {
-      _showMessage('Enter your full name (first name, then last name).', isError: true);
+    if (isRegister && (lastName.isEmpty || firstName.isEmpty)) {
+      _showMessage('Enter your last name and first name.', isError: true);
       return;
     }
     if (isRegister &&
@@ -475,7 +485,9 @@ class _LoginPageState extends State<LoginPage> {
     try {
       if (isRegister) {
         final registration = await _auth.registerTeacher(
-          name: name,
+          lastName: lastName,
+          firstName: firstName,
+          suffix: suffix.isEmpty ? null : suffix,
           email: email,
           password: password,
           school: CocSchool.name,
@@ -604,7 +616,21 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isSubmitting = false);
         final message = UserErrorMessages.friendlyError(error);
         final lower = message.toLowerCase();
-        if (lower.contains('not been confirmed') ||
+        if (lower.contains('security check') || lower.contains('captcha')) {
+          final refreshed =
+              await SecurityConfigService.instance.fetch(forceRefresh: true);
+          if (mounted) {
+            setState(() {
+              _securityConfig = refreshed;
+              _captchaToken = null;
+              if (_mode == _AuthMode.register) {
+                _registerCaptchaRequired = true;
+              } else {
+                _loginCaptchaRequired = true;
+              }
+            });
+          }
+        } else if (lower.contains('not been confirmed') ||
             lower.contains('confirmation email') ||
             lower.contains('confirm your email')) {
           setState(() {
@@ -777,6 +803,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _routeAfterOnlineAuth(
     CloudTeacherAccount account, {
     required bool isNewRegistration,
+    bool requirePinUnlock = false,
   }) async {
     if (_resettingForgottenPin) {
       final existingProfile = await _localAuth.loadProfile();
@@ -809,6 +836,10 @@ class _LoginPageState extends State<LoginPage> {
     if (existingProfile?.cloudUserId == account.id &&
         await _localAuth.hasProfile()) {
       await _syncPinToCloudIfNeeded();
+      if (requirePinUnlock) {
+        await _goToOfflineUnlock(restoredFromCloud: false);
+        return;
+      }
       await _enterAppAfterAuth(showWelcome: isNewRegistration);
       return;
     }
@@ -1161,9 +1192,12 @@ class _LoginPageState extends State<LoginPage> {
         _mfaTicket = null;
         _mfaSetupSecret = null;
         _mfaOtpAuthUrl = null;
-        _stage = _LoginStage.onlineAuth;
       });
-      await _routeAfterOnlineAuth(account, isNewRegistration: false);
+      await _routeAfterOnlineAuth(
+        account,
+        isNewRegistration: false,
+        requirePinUnlock: true,
+      );
     } catch (error) {
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -1532,10 +1566,27 @@ class _LoginPageState extends State<LoginPage> {
           ],
           if (isRegister && !_resettingForgottenPin) ...[
             _textField(
-              controller: _nameController,
-              label: 'Full name',
-              hint: 'First name then last name (e.g. Maria Santos)',
+              controller: _lastNameController,
+              label: 'Last name',
+              hint: 'e.g. Santos',
               icon: Icons.person_outline_rounded,
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _textField(
+              controller: _firstNameController,
+              label: 'First name',
+              hint: 'e.g. Maria',
+              icon: Icons.person_outline_rounded,
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: AppSpacing.md),
+            _textField(
+              controller: _suffixController,
+              label: 'Suffix (optional)',
+              hint: 'Jr., Sr., III — leave blank if none',
+              icon: Icons.person_outline_rounded,
+              textCapitalization: TextCapitalization.words,
             ),
             const SizedBox(height: AppSpacing.md),
             _statusNote(
@@ -1944,6 +1995,7 @@ class _LoginPageState extends State<LoginPage> {
     required String label,
     required String hint,
     required IconData icon,
+    TextCapitalization textCapitalization = TextCapitalization.none,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1952,6 +2004,7 @@ class _LoginPageState extends State<LoginPage> {
         const SizedBox(height: AppSpacing.xs),
         TextField(
           controller: controller,
+          textCapitalization: textCapitalization,
           decoration: _inputDecoration(hint: hint, icon: icon),
         ),
       ],

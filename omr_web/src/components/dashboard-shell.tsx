@@ -10,11 +10,13 @@ import {
   GraduationCap,
   Home,
   LogOut,
+  Menu,
   Settings,
   Shield,
   Users,
+  X,
 } from "lucide-react";
-import { BrandHeader } from "@/components/brand";
+import { BrandHeader, CocLogo } from "@/components/brand";
 import {
   parsePortalMode,
   portalModeCookieValue,
@@ -23,25 +25,32 @@ import {
 } from "@/lib/portal-mode";
 import { cn } from "@/lib/utils";
 
-const teacherNav = [
-  { href: "/dashboard", label: "Home", icon: Home },
+type NavItem = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  exact?: boolean;
+};
+
+const teacherNav: NavItem[] = [
+  { href: "/dashboard", label: "Home", icon: Home, exact: true },
   { href: "/dashboard/classes", label: "Classes", icon: GraduationCap },
   { href: "/dashboard/prepare", label: "Prepare", icon: BookOpen },
   { href: "/dashboard/results", label: "Results", icon: BarChart3 },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
-const adminNavBase = [
-  { href: "/dashboard/admin", label: "Overview", icon: Shield, exact: true as const },
+const adminNavBase: NavItem[] = [
+  { href: "/dashboard/admin", label: "Overview", icon: Shield, exact: true },
   { href: "/dashboard/admin/access", label: "Access", icon: ClipboardList },
 ];
 
-const adminNavSuper = [
+const adminNavSuper: NavItem[] = [
   { href: "/dashboard/admin/departments", label: "Dept admins", icon: Users },
   { href: "/dashboard/admin/security", label: "Sign-in log", icon: Shield },
 ];
 
-const adminNavTail = [
+const adminNavTail: NavItem[] = [
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -56,12 +65,14 @@ function readPortalModeCookie(): PortalMode {
 function PortalModeSwitch({
   mode,
   onChange,
+  className = "",
 }: {
   mode: PortalMode;
   onChange: (mode: PortalMode) => void;
+  className?: string;
 }) {
   return (
-    <div className="mt-4 rounded-xl bg-slate-100 p-1">
+    <div className={cn("rounded-xl bg-slate-100 p-1", className)}>
       <div className="grid grid-cols-2 gap-1">
         <button
           type="button"
@@ -115,49 +126,65 @@ export function DashboardShell({
   const pathname = usePathname();
   const router = useRouter();
   const [mode, setMode] = useState<PortalMode>(initialMode);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Keep desk mode in sync with the URL: any /dashboard/admin* page is Admin desk.
+  useEffect(() => {
+    if (!isAdmin) return;
+    const onAdminRoute = pathname.startsWith("/dashboard/admin");
+    if (onAdminRoute) {
+      if (mode !== "admin") {
+        document.cookie = portalModeCookieValue("admin");
+        setMode("admin");
+      }
+      return;
+    }
+    const cookieMode = readPortalModeCookie();
+    if (cookieMode !== mode) setMode(cookieMode);
+  }, [pathname, isAdmin, mode]);
 
   useEffect(() => {
-    setMode(readPortalModeCookie());
-  }, []);
+    setMenuOpen(false);
+  }, [pathname]);
 
   const subtitle = isAdmin && mode === "admin" ? "Admin monitoring" : "Teacher desk";
-  const adminNav = [
-    ...adminNavBase,
-    ...(isSuperAdmin ? adminNavSuper : []),
-    ...adminNavTail,
-  ];
+  const adminNav = [...adminNavBase, ...(isSuperAdmin ? adminNavSuper : []), ...adminNavTail];
   const nav = isAdmin && mode === "admin" ? adminNav : teacherNav;
+  // Bottom bar: keep 4 primary tabs; Settings lives in the menu on phone.
+  const bottomNav =
+    isAdmin && mode === "admin"
+      ? adminNav.filter((item) => item.href !== "/dashboard/settings").slice(0, 4)
+      : teacherNav.filter((item) => item.href !== "/dashboard/settings");
 
   function switchMode(next: PortalMode) {
     document.cookie = portalModeCookieValue(next);
     setMode(next);
+    setMenuOpen(false);
     router.push(next === "admin" ? "/dashboard/admin" : "/dashboard");
     router.refresh();
   }
 
   async function signOut() {
+    setMenuOpen(false);
     await fetch("/auth/signout", { method: "POST" });
     router.push("/login");
     router.refresh();
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="mx-auto flex min-h-screen max-w-7xl">
+    <div className="min-h-dvh bg-slate-50">
+      <div className="mx-auto flex min-h-dvh max-w-7xl">
+        {/* Desktop sidebar */}
         <aside className="hidden w-64 shrink-0 flex-col border-r border-slate-200 bg-white p-5 lg:flex">
           <BrandHeader subtitle={subtitle} />
           <p className="mt-4 text-xs font-semibold text-slate-500">
             {teacherName}
             {schoolName ? ` · ${schoolName}` : ""}
           </p>
-          {isAdmin ? <PortalModeSwitch mode={mode} onChange={switchMode} /> : null}
+          {isAdmin ? <PortalModeSwitch mode={mode} onChange={switchMode} className="mt-4" /> : null}
           <nav className="mt-6 flex flex-1 flex-col gap-1">
             {nav.map((item) => {
-              const active = navItemActive(
-                pathname,
-                item.href,
-                "exact" in item ? Boolean(item.exact) : false,
-              );
+              const active = navItemActive(pathname, item.href, item.exact);
               const Icon = item.icon;
               return (
                 <Link
@@ -187,36 +214,101 @@ export function DashboardShell({
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
-            <BrandHeader subtitle={subtitle} />
-            {isAdmin ? (
-              <div className="mt-3">
-                <PortalModeSwitch mode={mode} onChange={switchMode} />
+          {/* Phone / tablet header */}
+          <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 px-3 py-2 backdrop-blur lg:hidden">
+            <div className="flex items-center gap-2">
+              <CocLogo size={36} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-extrabold text-slate-800">COC OMR</p>
+                <p className="truncate text-[11px] font-semibold text-slate-500">{subtitle}</p>
+              </div>
+              <button
+                type="button"
+                onClick={signOut}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-700"
+                aria-label="Sign out"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Sign out
+              </button>
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700"
+                aria-expanded={menuOpen}
+                aria-label={menuOpen ? "Close menu" : "Open menu"}
+              >
+                {menuOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+              </button>
+            </div>
+
+            {menuOpen ? (
+              <div className="mt-3 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="truncate text-xs font-semibold text-slate-500">
+                  {teacherName}
+                  {schoolName ? ` · ${schoolName}` : ""}
+                </p>
+                {isAdmin ? <PortalModeSwitch mode={mode} onChange={switchMode} /> : null}
+                <nav className="grid gap-1">
+                  {nav.map((item) => {
+                    const active = navItemActive(pathname, item.href, item.exact);
+                    const Icon = item.icon;
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={cn(
+                          "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold",
+                          active
+                            ? "bg-emerald-500 text-white"
+                            : "bg-white text-slate-700 ring-1 ring-slate-200",
+                        )}
+                      >
+                        <Icon className="h-4 w-4" />
+                        {item.label}
+                      </Link>
+                    );
+                  })}
+                </nav>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700 ring-1 ring-red-100"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign out
+                </button>
               </div>
             ) : null}
-            <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-              {nav.map((item) => {
-                const active = navItemActive(
-                  pathname,
-                  item.href,
-                  "exact" in item ? Boolean(item.exact) : false,
-                );
+          </header>
+
+          <main className="flex-1 p-4 pb-24 md:p-6 lg:pb-6">{children}</main>
+
+          {/* Phone bottom tabs */}
+          <nav
+            className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5 backdrop-blur lg:hidden"
+            aria-label="Main"
+          >
+            <div className="mx-auto grid max-w-lg grid-cols-4 gap-1">
+              {bottomNav.map((item) => {
+                const active = navItemActive(pathname, item.href, item.exact);
+                const Icon = item.icon;
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "shrink-0 rounded-full px-3 py-1.5 text-xs font-bold",
-                      active ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-600",
+                      "flex flex-col items-center gap-0.5 rounded-xl px-1 py-2 text-[10px] font-bold",
+                      active ? "bg-emerald-50 text-emerald-800" : "text-slate-500",
                     )}
                   >
-                    {item.label}
+                    <Icon className="h-5 w-5" />
+                    <span className="truncate">{item.label}</span>
                   </Link>
                 );
               })}
             </div>
-          </header>
-          <main className="flex-1 p-4 md:p-6">{children}</main>
+          </nav>
         </div>
       </div>
     </div>

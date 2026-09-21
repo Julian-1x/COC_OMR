@@ -73,4 +73,21 @@ void main() {
     expect(layout.validateForSubject(subject), isNull);
     expect(layout.examReadyScanError, isNull);
   });
+
+  test('byGrid layout keeps question count and six choices', () {
+    final layout = CustomSheetLayout(
+      id: 'csl_grid',
+      name: 'Quiz 26x6',
+      totalQuestions: 26,
+      optionsCount: 6,
+      layoutShape: 'lengthwise_full',
+      gridColumns: 2,
+      gridRows: 13,
+      inputMode: CustomSheetLayoutInputMode.byGrid,
+      createdAt: DateTime(2026),
+    );
+
+    expect(layout.layoutProfile.itemCount, 26);
+    expect(layout.layoutProfile.optionLabels, ['A', 'B', 'C', 'D', 'E', 'F']);
+  });
 }

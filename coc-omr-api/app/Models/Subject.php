@@ -47,6 +47,8 @@ class Subject extends Model
             'use_partial_credit' => 'boolean',
             'use_custom_layout' => 'boolean',
             'options_count' => 'integer',
+            'custom_grid_columns' => 'integer',
+            'custom_grid_rows' => 'integer',
         ];
     }
 

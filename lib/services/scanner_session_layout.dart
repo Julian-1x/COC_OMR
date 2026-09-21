@@ -1,15 +1,11 @@
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 
-/// Locked layout metadata for an exam scan session.
+/// Locked layout for one exam-day scan session (preset or custom).
 ///
-/// Passed to native OMR so each sheet skips QR decode and uses the exact
-/// template geometry from the selected answer key / printed sheets.
-///
-/// Identity rule (critical for accuracy):
-/// - Standard vs custom is decided by [isCustom] / subject.useCustomLayout —
-///   **never** by question count alone.
-/// - A custom 30-question sheet must not be treated as frozen template "30".
+/// Built once when the teacher opens Scan for a subject. Native OpenCV uses
+/// [toNativeMap] so bubble positions match the printed sheet exactly — never
+/// inferred from question count alone (a custom 30-Q sheet is not template "30").
 class ScannerSessionLayout {
   const ScannerSessionLayout({
     required this.templateId,
@@ -53,8 +49,20 @@ class ScannerSessionLayout {
   final String layoutShape;
 
   /// Build from the subject the teacher selected before opening the scanner.
+  ///
+  /// Custom subjects must pass [examReadyScanErrorForSubject] first — this
+  /// method never invents a substitute grid when the saved layout is invalid.
   static ScannerSessionLayout fromSubject(Subject subject) {
-    final profile = subject.layoutProfile;
+    final OmrLayoutProfile profile;
+    if (subject.useCustomLayout) {
+      final gate = examReadyScanErrorForSubject(subject);
+      if (gate != null) {
+        throw StateError(gate);
+      }
+      profile = subject.scannableCustomLayoutProfile!;
+    } else {
+      profile = OmrLayoutProfile.preset(subject.totalQuestions);
+    }
     final template = profile.grid;
     final geometry = profile.geometry;
     final isCustom = subject.useCustomLayout || profile.isCustom;
@@ -93,11 +101,19 @@ class ScannerSessionLayout {
           'printing or scanning.';
     }
 
+    final form = subject.layoutForm;
+    if (!OmrLayoutProfile.allCustomForms.any((f) => f.id == form.id)) {
+      return 'This custom sheet uses a landscape layout that is no longer '
+          'supported. Open the custom sheet editor and pick a portrait layout '
+          'before printing or scanning.';
+    }
+
     final fit = OmrLayoutProfile.tryComputeExplicitGrid(
       columns: subject.customGridColumns!,
       rows: subject.customGridRows!,
       optionsCount: subject.optionsCount,
-      form: subject.layoutForm,
+      form: form,
+      itemCount: subject.totalQuestions,
     );
     if (!fit.isOk) {
       return fit.errorMessage ??
@@ -119,13 +135,48 @@ class ScannerSessionLayout {
           'the answer key has ${subject.totalQuestions}.';
     }
 
-    if (profile.grid.rowHeight < OmrLayoutProfile.minRowHeight) {
+    if (profile.grid.rowHeight <
+        OmrLayoutProfile.scanMinRowHeight(profile.geometry)) {
       return 'Rows on this sheet are too small to scan reliably. '
           'Pick a larger page size or fewer questions.';
     }
-    if (profile.grid.bubbleSpacingX < OmrLayoutProfile.minBubbleSpacingX) {
+    if (profile.grid.rows > OmrLayoutProfile.maxRowsPerColumn) {
+      return 'This layout has too many rows per column to scan reliably. '
+          'Pick a layout with more columns or fewer questions.';
+    }
+    if (profile.grid.columns >
+        OmrLayoutProfile.maxColumnsFor(
+          form,
+          itemCount: subject.totalQuestions,
+        )) {
+      return 'This layout is too wide to scan reliably on a phone. '
+          'Pick a taller layout with at most '
+          '${OmrLayoutProfile.maxColumnsFor(form, itemCount: subject.totalQuestions)} '
+          'question columns (like the standard sheets).';
+    }
+    if (profile.grid.columns == 1 && subject.totalQuestions > 25) {
+      return 'A single question column is not reliable for this many questions. '
+          'Pick a layout with at least 2 columns.';
+    }
+    final minSpacing =
+        OmrLayoutProfile.scanMinBubbleSpacing(form, profile.geometry);
+    if (profile.grid.bubbleSpacingX < minSpacing) {
       return 'Bubbles on this sheet are too close together to scan reliably. '
           'Pick a larger page size or fewer answer choices.';
+    }
+    if (profile.grid.rowHeight <
+        profile.geometry.answerBubbleDiameter +
+            OmrLayoutProfile.minBubbleVerticalClearance) {
+      return 'Answer bubbles would sit too close vertically to scan reliably. '
+          'Pick fewer questions or a larger page size.';
+    }
+    if (!profile.bubblesFitInsideColumns()) {
+      return 'Bubbles on this sheet would overlap column edges. '
+          'Pick a larger page size, fewer columns, or fewer answer choices.';
+    }
+    if (!profile.hasAdequateTimingMarks()) {
+      return 'This sheet does not have enough timing marks to align the scanner. '
+          'Pick a larger page size or fewer questions.';
     }
 
     return null;
@@ -147,6 +198,7 @@ class ScannerSessionLayout {
       'layoutMode': layoutMode,
       'layoutShape': layoutShape,
       'totalQuestions': totalQuestions,
+      'subjectId': subjectId,
       // Preset 30–100 keep frozen mark constants; every custom form uses session.
       'useFrozenRegistrationMarks': !isCustom,
       ...geometry.toNativeMap(),

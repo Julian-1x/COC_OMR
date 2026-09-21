@@ -40,7 +40,7 @@ export default async function AdminSecurityPage({
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-slate-800">Sign-in activity</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Recent sign-in attempts, lockouts, and two-factor events. Use this to spot unusual activity.
+          Failed logins, lockouts, and two-factor events
         </p>
         <p className="mt-2 text-sm">
           <Link href="/dashboard/admin" className="font-semibold text-emerald-700 hover:underline">

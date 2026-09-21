@@ -12,17 +12,26 @@ export async function fetchProfile(
 }
 
 export type SectionListFilter = {
+  /** Active vs archived. Defaults to active (`false`) unless [includeAll] is set. */
   archived?: boolean;
   schoolYear?: string;
+  /** Return both active and archived (omit the archived query filter). */
+  includeAll?: boolean;
 };
 
 export async function fetchSections(
   api: ApiClient,
   filter: SectionListFilter = {},
 ): Promise<DbSection[]> {
+  // Desk workflows (print, prepare, OMR IDs) must not list archived sections.
+  // Classes / Results pass archived explicitly; sync diagnostics uses includeAll.
+  const archivedParam = filter.includeAll
+    ? undefined
+    : (filter.archived ?? false);
+
   const { sections } = await api.get<{ sections: DbSection[] }>("/sections", {
     params: {
-      archived: filter.archived,
+      archived: archivedParam,
       school_year: filter.schoolYear,
     },
   });

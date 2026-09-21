@@ -24,8 +24,11 @@ constexpr double kBubbleBorder = 1.2;
 constexpr double kDefaultFillThresh = 0.28;
 constexpr double kMultiMarkClearSep = 0.12;
 constexpr double kMinAnswerAreaCoverage = 0.18;
+constexpr double kMinAnswerAreaCoverageDense = 0.15;
 constexpr double kLightMarkAreaCoverage = 0.28;
+constexpr double kLightMarkAreaCoverageDense = 0.22;
 constexpr double kMinWinnerSeparation = 0.08;
+constexpr double kMinWinnerSeparationDense = 0.06;
 constexpr int kOmrCols = 4;
 constexpr int kOmrRows = 10;
 constexpr double kOmrIdTop = 114.0;
@@ -36,7 +39,8 @@ constexpr double kOmrFirstRowY = 134.0;
 constexpr double kCalY = 810.0;
 constexpr double kCalFillX = 80.0;
 constexpr double kCalEmptyX = 110.0;
-constexpr int kAnswerOpts = 5;
+constexpr int kAnswerOpts = 5;      // Frozen presets are A-E; must match OmrPageConstants.
+constexpr int kMaxAnswerOpts = 6;   // Custom sheets may request A-F; clamp ceiling only.
 constexpr double kAnsGridTop = 276.0;
 constexpr double kAnsGridBot = 770.0;
 constexpr double kAnsGridL = 28.0;
@@ -62,7 +66,7 @@ struct Corners {
     double h1 = dist(tl, bl), h2 = dist(tr, br);
     double wr = std::min(w1, w2) / std::max(w1, w2);
     double hr = std::min(h1, h2) / std::max(h1, h2);
-    return wr > 0.8 && hr > 0.8;
+    return wr > 0.72 && hr > 0.72;
   }
 };
 
@@ -112,6 +116,7 @@ struct QrLayout {
   double qrCodeX = 470.0;
   double qrCodeY = 20.0;
   double qrCodeSize = 80.0;
+  std::string subjectId;
 };
 
 Corners *assignCorners(std::vector<cv::Point2f> &cand, double w, double h) {
@@ -185,6 +190,7 @@ QrLayout fallbackLayout(int totalQ) {
   double gw = kAnsGridR - kAnsGridL;
   L.rowHeight = gh / rows;
   L.columnWidth = gw / cols;
+  L.optionsCount = 5; // Frozen presets are A–E only.
   return L;
 }
 
@@ -268,7 +274,10 @@ bool checkTimingMark(const cv::Mat &bin, double x, double y, double markSize = k
 
 double validateTimingMarks(const cv::Mat &warped, const QrLayout *layout) {
   cv::Mat bin;
-  cv::threshold(warped, bin, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+  cv::adaptiveThreshold(warped, bin, 255, cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv::THRESH_BINARY_INV, 15, 8.0);
+  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2));
+  cv::dilate(bin, bin, kernel);
   bool frozen = layout == nullptr || layout->useFrozenRegistrationMarks;
   double startX = frozen ? 60.0 : layout->timingMarkStartX;
   double endX = frozen ? 535.0 : layout->timingMarkEndX;
@@ -470,14 +479,24 @@ void assessQuality(const cv::Mat &gray, double &blurVar, double &contrastScore, 
   noise = cv::mean(df)[0];
 }
 
-NSString *detectQR(const cv::Mat &warped) {
+NSString *detectQR(const cv::Mat &warped, const QrLayout *layout) {
   cv::QRCodeDetector qr;
-  cv::Rect qrR((int)(kOutputW * 0.7), (int)kMarginTop, (int)(kOutputW * 0.25), 100);
+  const double qrLeft = layout ? layout->qrCodeX : (kOutputW * 0.62);
+  const double qrTop = layout ? layout->qrCodeY : kMarginTop;
+  const double qrSize = layout ? layout->qrCodeSize : 80.0;
+  const double pad = 10.0;
+  cv::Rect qrR(
+      (int)std::max(0.0, qrLeft - pad),
+      (int)std::max(0.0, qrTop - pad),
+      (int)std::min(qrSize + 2.0 * pad, (double)warped.cols),
+      (int)std::min(qrSize + 2.0 * pad, (double)warped.rows));
   qrR &= cv::Rect(0, 0, warped.cols, warped.rows);
-  cv::Mat roi = warped(qrR);
-  std::string decoded = qr.detectAndDecode(roi);
-  if (!decoded.empty()) return [NSString stringWithUTF8String:decoded.c_str()];
-  decoded = qr.detectAndDecode(warped);
+  if (qrR.width >= 40 && qrR.height >= 40) {
+    cv::Mat roi = warped(qrR);
+    std::string decoded = qr.detectAndDecode(roi);
+    if (!decoded.empty()) return [NSString stringWithUTF8String:decoded.c_str()];
+  }
+  std::string decoded = qr.detectAndDecode(warped);
   if (!decoded.empty()) return [NSString stringWithUTF8String:decoded.c_str()];
   return nil;
 }
@@ -558,7 +577,7 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
       layout->bubbleSpacingX = [sessionLayout[@"bubbleSpacingX"] doubleValue];
       if (layout->bubbleSpacingX <= 0) layout->bubbleSpacingX = 17.0;
       int opts = [sessionLayout[@"optionsCount"] intValue];
-      layout->optionsCount = (opts >= 2 && opts <= kAnswerOpts) ? opts : kAnswerOpts;
+      layout->optionsCount = (opts >= 2 && opts <= kMaxAnswerOpts) ? opts : kAnswerOpts;
       double pw = [sessionLayout[@"pageWidth"] doubleValue];
       double ph = [sessionLayout[@"pageHeight"] doubleValue];
       layout->pageWidth = pw > 0 ? pw : kOutputW;
@@ -620,13 +639,105 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
       double qrY = [sessionLayout[@"qrCodeY"] doubleValue];
       layout->qrCodeY = qrY >= 0 ? qrY : 20.0;
       layout->qrCodeSize = readD(@"qrCodeSize", 80.0);
+      NSString *sid = [sessionLayout[@"subjectId"] isKindOfClass:[NSString class]]
+          ? (NSString *)sessionLayout[@"subjectId"]
+          : @"";
+      layout->subjectId = sid.length > 0 ? [sid UTF8String] : "";
       cornerSize = layout->cornerMarkerSize;
       cornerOffset = layout->cornerMarkerOffset;
       warpW = (int)llround(layout->contentBlockWidth);
       warpH = (int)llround(layout->contentBlockHeight);
       if (warpW < 100) warpW = kOutputW;
       if (warpH < 100) warpH = kOutputH;
+      // Upscale half/¼ warps so bubble sampling density stays near full-page scans.
+      double area = (double)warpW * (double)warpH;
+      double minArea = (double)kOutputW * (double)kOutputH * 0.65;
+      if (area > 0 && area < minArea) {
+        double s = std::sqrt(minArea / area);
+        auto sc = [&](double &v) { v *= s; };
+        sc(layout->gridTop);
+        sc(layout->gridBottom);
+        sc(layout->rowHeight);
+        sc(layout->columnWidth);
+        sc(layout->bubbleSpacingX);
+        sc(layout->contentBlockWidth);
+        sc(layout->contentBlockHeight);
+        sc(layout->answerGridLeft);
+        sc(layout->answerColumnInset);
+        sc(layout->answerNumberBubbleGap);
+        sc(layout->questionNumberWidth);
+        sc(layout->cornerMarkerSize);
+        sc(layout->cornerMarkerOffset);
+        sc(layout->timingMarkSize);
+        sc(layout->timingMarkSpacing);
+        sc(layout->timingMarkEdgeOffset);
+        sc(layout->timingMarkStartX);
+        sc(layout->timingMarkEndX);
+        sc(layout->timingMarkStartY);
+        sc(layout->timingMarkEndY);
+        sc(layout->rowMarkX);
+        sc(layout->rowMarkSize);
+        sc(layout->omrIdFirstColumnX);
+        sc(layout->omrIdFirstRowY);
+        sc(layout->omrIdColumnSpacing);
+        sc(layout->omrIdRowSpacing);
+        sc(layout->calibrationY);
+        sc(layout->calibrationFilledX);
+        sc(layout->calibrationEmptyX);
+        sc(layout->calibrationBubbleSize);
+        sc(layout->answerBubbleDiameter);
+        sc(layout->omrIdBubbleDiameter);
+        sc(layout->qrCodeX);
+        sc(layout->qrCodeY);
+        sc(layout->qrCodeSize);
+        warpW = (int)llround(layout->contentBlockWidth);
+        warpH = (int)llround(layout->contentBlockHeight);
+        cornerSize = layout->cornerMarkerSize;
+        cornerOffset = layout->cornerMarkerOffset;
+        if (warpW < 100) warpW = kOutputW;
+        if (warpH < 100) warpH = kOutputH;
+      }
       debug[@"layoutFromSession"] = @YES;
+    }
+  }
+  // Half/¼: reject captures that framed the whole bond page (wrong aspect).
+  if (layout &&
+      (layout->contentBlockWidth < layout->pageWidth * 0.98 ||
+       layout->contentBlockHeight < layout->pageHeight * 0.98)) {
+    auto dist = [](cv::Point2f a, cv::Point2f b) {
+      return std::hypot(a.x - b.x, a.y - b.y);
+    };
+    double avgW = (dist(corners->tl, corners->tr) + dist(corners->bl, corners->br)) / 2.0;
+    double avgH = (dist(corners->tl, corners->bl) + dist(corners->tr, corners->br)) / 2.0;
+    if (avgH > 1.0) {
+      double expectedAspect =
+          layout->contentBlockWidth / std::max(layout->contentBlockHeight, 1.0);
+      double pageAspect = layout->pageWidth / std::max(layout->pageHeight, 1.0);
+      double capturedAspect = avgW / avgH;
+      double aspectError = std::fabs(capturedAspect - expectedAspect) / expectedAspect;
+      double errVsContent = std::fabs(capturedAspect - expectedAspect);
+      double errVsPage = std::fabs(capturedAspect - pageAspect);
+      bool pageDiffers = std::fabs(expectedAspect - pageAspect) / pageAspect > 0.12;
+      bool looksLikeWholePage =
+          pageDiffers && errVsPage < errVsContent * 0.85 && aspectError > 0.18;
+      bool badlyMismatched = aspectError > 0.28;
+      debug[@"tileFrameAspectError"] = @(aspectError);
+      if (looksLikeWholePage || badlyMismatched) {
+        delete corners;
+        if (layout) delete layout;
+        NSDictionary *err = @{
+          @"success": @NO,
+          @"omrId": [NSNull null],
+          @"answers": @{},
+          @"confidence": @0,
+          @"qrData": [NSNull null],
+          @"errorMessage":
+              @"Camera captured more than one printed sheet (or the whole bond page). "
+              @"Frame ONE printed sheet only so its corner squares fill the green brackets.",
+          @"debugInfo": debug
+        };
+        return err;
+      }
     }
   }
   cv::Mat warped = warpGray(gray, *corners, warpW, warpH, cornerSize, cornerOffset);
@@ -635,8 +746,65 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   debug[@"contentBlockWarp"] = [NSString stringWithFormat:@"%dx%d", warpW, warpH];
   double timingScore = validateTimingMarks(warped, layout);
   debug[@"timingMarkScore"] = @(timingScore);
-  NSString *qrStr = detectQR(warped);
+  int timingExpectedApprox = 0;
+  if (layout) {
+    double spacing = layout->useFrozenRegistrationMarks ? kTimingSpacing : layout->timingMarkSpacing;
+    if (spacing > 1.0) {
+      double sx = layout->useFrozenRegistrationMarks ? 60.0 : layout->timingMarkStartX;
+      double ex = layout->useFrozenRegistrationMarks ? 535.0 : layout->timingMarkEndX;
+      double sy = layout->useFrozenRegistrationMarks ? 60.0 : layout->timingMarkStartY;
+      double ey = layout->useFrozenRegistrationMarks ? 780.0 : layout->timingMarkEndY;
+      for (double x = sx; x < ex; x += spacing) timingExpectedApprox += 2;
+      for (double y = sy; y < ey; y += spacing) timingExpectedApprox += 2;
+    }
+  }
+  double timingFailThreshold = 0.40;
+  if (timingExpectedApprox > 0 && timingExpectedApprox <= 7) timingFailThreshold = 0.60;
+  else if (timingExpectedApprox > 0 && timingExpectedApprox <= 11) timingFailThreshold = 0.50;
+  debug[@"timingFailThreshold"] = @(timingFailThreshold);
+  if (timingScore < timingFailThreshold) {
+    if (layout) delete layout;
+    NSDictionary *err = @{
+      @"success": @NO,
+      @"omrId": [NSNull null],
+      @"answers": @{},
+      @"confidence": @0,
+      @"qrData": [NSNull null],
+      @"errorMessage":
+          @"Could not find enough timing marks. Hold the phone steady, fill the frame with ONE "
+          @"printed sheet, and try again in brighter light.",
+      @"debugInfo": debug
+    };
+    return err;
+  }
+  NSString *qrStr = detectQR(warped, layout);
   debug[@"qrDetected"] = @(qrStr != nil);
+  if (layout && !layout->subjectId.empty() && qrStr.length > 0) {
+    NSData *qd = [qrStr dataUsingEncoding:NSUTF8StringEncoding];
+    id qobj = qd ? [NSJSONSerialization JSONObjectWithData:qd options:0 error:nil] : nil;
+    if ([qobj isKindOfClass:[NSDictionary class]]) {
+      NSString *qrSi = qobj[@"si"] ?: qobj[@"subjectId"];
+      if ([qrSi isKindOfClass:[NSString class]] && qrSi.length > 0) {
+        NSString *expected = [NSString stringWithUTF8String:layout->subjectId.c_str()];
+        if ([qrSi caseInsensitiveCompare:expected] != NSOrderedSame) {
+          if (layout) delete layout;
+          debug[@"failureReason"] = @"SUBJECT_MISMATCH";
+          NSDictionary *err = @{
+            @"success": @NO,
+            @"omrId": [NSNull null],
+            @"answers": @{},
+            @"confidence": @0,
+            @"qrData": qrStr,
+            @"errorMessage":
+                @"This sheet is from a different subject. Open Scan from the matching subject, "
+                @"then try again.",
+            @"debugInfo": debug
+          };
+          return err;
+        }
+      }
+    }
+  }
   if (sessionWantsCustom && !layout) {
     NSDictionary *err = @{
       @"success": @NO,
@@ -676,7 +844,12 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   debug[@"calibrationFilledSample"] = @(ff);
   debug[@"calibrationEmptySample"] = @(ef);
   bool calibrated = ff > ef + 0.10;
-  if (calibrated) fillTh = (ff + ef) / 2.0;
+  if (calibrated) {
+    double gap = ff - ef;
+    fillTh = ef + gap * 0.40;
+    if (fillTh < 0.28) fillTh = 0.28;
+    if (fillTh > 0.42) fillTh = 0.42;
+  }
   debug[@"fillThreshold"] = @(fillTh);
   debug[@"calibrationSuccess"] = @(calibrated);
   cv::Mat th;
@@ -684,11 +857,17 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   NSMutableString *omr = [NSMutableString string];
   NSMutableArray *digitConf = [NSMutableArray array];
   bool omrOk = YES;
+  int omrNearZero = 0;
+  int omrAmbiguous = 0;
   double omrFirstX = layout->useFrozenRegistrationMarks ? kOmrFirstColX : layout->omrIdFirstColumnX;
   double omrFirstY = layout->useFrozenRegistrationMarks ? kOmrFirstRowY : layout->omrIdFirstRowY;
   double omrColSpc = layout->useFrozenRegistrationMarks ? kOmrColSpc : layout->omrIdColumnSpacing;
   double omrRowSpc = layout->useFrozenRegistrationMarks ? kOmrRowSpc : layout->omrIdRowSpacing;
-  for (int col = 0; col < kOmrCols && omrOk; col++) {
+  // Softer cut than answers — small digit bubbles + pencil often read light.
+  double omrCut = std::max(fillTh * 0.45, fillTh - 0.14);
+  debug[@"omrIdFillCut"] = @(omrCut);
+  unichar digitGuess[4] = {'?', '?', '?', '?'};
+  for (int col = 0; col < kOmrCols; col++) {
     double colX = omrFirstX + col * omrColSpc;
     int bestD = -1;
     double bestF = 0, secondF = 0;
@@ -698,11 +877,34 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
       if (a.fill > bestF) { secondF = bestF; bestF = a.fill; bestD = d; }
       else if (a.fill > secondF) secondF = a.fill;
     }
-    if (bestD < 0 || bestF <= fillTh) { omrOk = NO; break; }
-    [omr appendFormat:@"%d", bestD];
     double sep = bestF - secondF;
-    double conf = std::min(sep / 0.2, 1.0);
-    [digitConf addObject:@(conf)];
+    if (bestD >= 0 && bestF > omrCut && sep >= 0.10) {
+      digitGuess[col] = (unichar)('0' + bestD);
+      [digitConf addObject:@(std::min(sep / 0.2, 1.0))];
+    } else if (bestF < omrCut * 0.5) {
+      omrNearZero++;
+      omrOk = NO;
+    } else {
+      omrAmbiguous++;
+      omrOk = NO;
+      if (bestD >= 0) digitGuess[col] = (unichar)('0' + bestD);
+    }
+  }
+  debug[@"omrIdNearZeroColumns"] = @(omrNearZero);
+  debug[@"omrIdAmbiguousColumns"] = @(omrAmbiguous);
+  int problemCols = omrNearZero + omrAmbiguous;
+  if (problemCols == 0) {
+    for (int i = 0; i < 4; i++) [omr appendFormat:@"%c", digitGuess[i]];
+  } else if (problemCols == 1) {
+    // Match Android: 3 clean digits + 1 guess → continue with review flag.
+    for (int i = 0; i < 4; i++) {
+      if (digitGuess[i] == '?') [omr appendString:@"0"];
+      else [omr appendFormat:@"%c", digitGuess[i]];
+    }
+    debug[@"omrIdNeedsReview"] = @YES;
+    omrOk = YES;
+  } else {
+    omrOk = NO;
   }
   if (!omrOk || omr.length != 4) {
     delete layout;
@@ -726,10 +928,27 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
   NSMutableArray *lightMarks = [NSMutableArray array];
   NSMutableArray *scratchRejected = [NSMutableArray array];
   NSMutableArray *weakWinnerRejected = [NSMutableArray array];
-  const char *opts = "ABCDE";
+  const char *opts = "ABCDEF";
   int optionCount = layout->optionsCount;
   if (optionCount < 2) optionCount = 2;
-  if (optionCount > kAnswerOpts) optionCount = kAnswerOpts;
+  if (optionCount > kMaxAnswerOpts) optionCount = kMaxAnswerOpts;
+  const bool denseCustom =
+      layout->isCustom &&
+      (layout->rows >= 18 || layout->rowHeight < 22.0 || layout->bubbleSpacingX < 14.5);
+  const double minArea =
+      denseCustom ? kMinAnswerAreaCoverageDense : kMinAnswerAreaCoverage;
+  const double lightArea =
+      denseCustom ? kLightMarkAreaCoverageDense : kLightMarkAreaCoverage;
+  const double minSep =
+      denseCustom ? kMinWinnerSeparationDense : kMinWinnerSeparation;
+  debug[@"denseCustomAnswerGrid"] = @(denseCustom);
+  debug[@"minAnswerAreaCoverage"] = @(minArea);
+  debug[@"lightMarkAreaCoverage"] = @(lightArea);
+  auto isMarginalAccepted = [&](double bestF, double bestArea) -> bool {
+    const bool nearFill = bestF < fillTh + 0.07;
+    const bool nearArea = bestArea < lightArea && bestArea < minArea + 0.06;
+    return nearFill || nearArea;
+  };
   for (int qn = 1; qn <= totalQuestions; qn++) {
     int col = (qn - 1) / layout->rows;
     int row = (qn - 1) % layout->rows;
@@ -747,7 +966,7 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     for (int oi = 0; oi < optionCount; oi++) {
       double bx = bubbleLeft + oi * layout->bubbleSpacingX;
       BubbleAn a = analyzeBubble(th, warped, bx, rowY, layout->answerBubbleDiameter);
-      bool marked = a.fill > fillTh && a.area >= kMinAnswerAreaCoverage;
+      bool marked = a.fill > fillTh && a.area >= minArea;
       if (marked) filledCnt++;
       if (a.fill > bestF) {
         secondF = bestF;
@@ -760,22 +979,39 @@ NSDictionary *processCore(NSData *data, int totalQuestions, NSMutableDictionary 
     }
     double sep = bestF - secondF;
     if (filledCnt > 1) {
-      multi++;
-      [ambig addObject:@(qn)];
+      // Clear winner among multiple threshold crosses (misalignment graze / erase+rewrite).
+      bool clearMulti =
+          bestIdx >= 0 && bestF > fillTh && bestArea >= minArea &&
+          sep >= kMultiMarkClearSep && secondF < bestF - kMultiMarkClearSep + 0.02;
+      if (clearMulti) {
+        NSString *letter = [NSString stringWithFormat:@"%c", opts[bestIdx]];
+        answers[[NSString stringWithFormat:@"%d", qn]] = letter;
+        [qconf addObject:@(std::min(sep / 0.15, 1.0) * 0.85)];
+        if (isMarginalAccepted(bestF, bestArea)) {
+          [lightMarks addObject:@(qn)];
+        }
+      } else {
+        multi++;
+        [ambig addObject:@(qn)];
+      }
       continue;
     }
     if (filledCnt == 0) none++;
-    bool clearWinner = sep >= kMinWinnerSeparation && secondF < fillTh;
-    if (bestIdx >= 0 && bestF > fillTh && bestArea >= kMinAnswerAreaCoverage && clearWinner) {
+    const bool strongFill = bestF >= fillTh + 0.06;
+    bool clearWinner = denseCustom && strongFill
+        ? (sep >= minSep && secondF < bestF - 0.05)
+        : (sep >= minSep && secondF < fillTh);
+    if (bestIdx >= 0 && bestIdx < optionCount && bestF > fillTh &&
+        bestArea >= minArea && clearWinner) {
       NSString *letter = [NSString stringWithFormat:@"%c", opts[bestIdx]];
       answers[[NSString stringWithFormat:@"%d", qn]] = letter;
       [qconf addObject:@(std::min(sep / 0.15, 1.0))];
-      if (bestArea < kLightMarkAreaCoverage) {
+      if (isMarginalAccepted(bestF, bestArea)) {
         [lightMarks addObject:@(qn)];
       }
-    } else if (bestIdx >= 0 && bestF > fillTh && bestArea < kMinAnswerAreaCoverage) {
+    } else if (bestIdx >= 0 && bestF > fillTh && bestArea < minArea) {
       [scratchRejected addObject:@(qn)];
-    } else if (bestIdx >= 0 && bestF > fillTh && bestArea >= kMinAnswerAreaCoverage && !clearWinner) {
+    } else if (bestIdx >= 0 && bestF > fillTh && bestArea >= minArea && !clearWinner) {
       [weakWinnerRejected addObject:@(qn)];
     }
   }
@@ -890,10 +1126,12 @@ NSString *jsonFromDict(NSDictionary *d) {
   double cov = ((maxX - minX) / w + (maxY - minY) / h) / 2.0;
   cov = std::min(cov, 1.0);
   double align = ((topTilt + botTilt + leftTilt + rightTilt) / 4.0 * 0.65 + cov * 0.35);
-  bool aligned = align >= 0.60;
+  bool aligned = align >= 0.68;
   delete c;
   double conf = aligned && light ? std::min(0.65 + cov * 0.35, 1.0) : align * 0.8;
-  NSString *hint = aligned ? (NSString *)nil : @"Align sheet edges with frame";
+  NSString *hint = nil;
+  if (!aligned) hint = @"Align sheet edges with frame";
+  else if (conf < 0.75) hint = @"Hold steady — almost ready";
   NSMutableDictionary *m = [NSMutableDictionary dictionaryWithDictionary:@{
     @"sheetDetected": @YES,
     @"isAligned": @(aligned),

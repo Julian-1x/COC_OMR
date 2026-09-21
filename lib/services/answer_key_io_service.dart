@@ -19,7 +19,7 @@ class AnswerKeyIOService {
     final firstLine = lines.first.trim();
     
     // Check for compact format (just letters)
-    if (RegExp(r'^[A-Ea-e]+$').hasMatch(firstLine) && lines.length == 1) {
+    if (RegExp(r'^[A-Fa-f]+$').hasMatch(firstLine) && lines.length == 1) {
       return _parseCompactFormat(firstLine);
     }
     
@@ -40,11 +40,11 @@ class AnswerKeyIOService {
     
     for (int i = 0; i < normalized.length; i++) {
       final letter = normalized[i];
-      if ('ABCDE'.contains(letter)) {
+      if ('ABCDEF'.contains(letter)) {
         answers[i + 1] = [letter];
       } else {
         return AnswerKeyImportResult.error(
-          'Invalid character "$letter" at position ${i + 1}. Only A-E allowed.'
+          'Invalid character "$letter" at position ${i + 1}. Only A-F allowed.'
         );
       }
     }
@@ -76,7 +76,7 @@ class AnswerKeyIOService {
       if (questionNum == null || questionNum < 1) {
         // Maybe it's just answers without question numbers
         // Try to parse as answer-only format
-        if (parts.every((p) => RegExp(r'^[A-Ea-e]$').hasMatch(p))) {
+        if (parts.every((p) => RegExp(r'^[A-Fa-f]$').hasMatch(p))) {
           final q = lineNum + 1;
           answers[q] = parts.map((p) => p.toUpperCase()).toList();
           if (q > maxQuestion) maxQuestion = q;
@@ -91,7 +91,7 @@ class AnswerKeyIOService {
       for (int i = 1; i < parts.length; i++) {
         final letter = parts[i].toUpperCase();
         if (letter.isEmpty) continue;
-        if (RegExp(r'^[A-E]$').hasMatch(letter)) {
+        if (RegExp(r'^[A-F]$').hasMatch(letter)) {
           answerLetters.add(letter);
         } else {
           errors.add('Line ${lineNum + 1}: Invalid answer "$letter" for Q$questionNum');
@@ -145,7 +145,7 @@ class AnswerKeyIOService {
         } else if (entry.value is List) {
           answerList = (entry.value as List)
               .map((v) => v.toString().toUpperCase())
-              .where((v) => RegExp(r'^[A-E]$').hasMatch(v))
+              .where((v) => RegExp(r'^[A-F]$').hasMatch(v))
               .toList();
         } else {
           continue;

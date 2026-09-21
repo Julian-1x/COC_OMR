@@ -36,47 +36,29 @@ if (-not $apiUrl) {
   throw "API_BASE_URL is required in secrets.json or omr_web/.env.local"
 }
 
-Write-Host "Building omr_web..."
-Push-Location $web
+# Project Root Directory on Vercel is `omr_web`. Deploy from the monorepo root
+# so that folder exists in the upload (deploying from inside omr_web fails).
+# .vercelignore keeps the upload small (omr_web only).
+$vercelDir = Join-Path $root ".vercel"
+$webVercel = Join-Path $web ".vercel\project.json"
+if (-not (Test-Path $webVercel)) {
+  throw "Missing omr_web\.vercel\project.json — run: cd omr_web; npx vercel link"
+}
+New-Item -ItemType Directory -Force $vercelDir | Out-Null
+Copy-Item -Force $webVercel (Join-Path $vercelDir "project.json")
+
+Write-Host "Deploying omr_web to Vercel (production) from monorepo root..."
+Push-Location $root
 try {
-  npm run build
-  if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-
-  $vercel = "npx"
-  $vercelArgs = @("vercel@latest")
-
-  function Set-VercelEnv([string]$name, [string]$value) {
-    Write-Host "Setting Vercel env: $name (production)"
-    # npx may write warnings to stderr; do not treat that as a hard failure.
-    $prev = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-      $value | & $vercel @vercelArgs env add $name production --force 2>$null
-      if ($LASTEXITCODE -ne 0) {
-        $value | & $vercel @vercelArgs env add $name production
-      }
-    } finally {
-      $ErrorActionPreference = $prev
-    }
-  }
-
-  # Env vars are usually already set on Vercel; skip if update fails.
-  try {
-    Set-VercelEnv "API_BASE_URL" $apiUrl
-    Set-VercelEnv "NEXT_PUBLIC_API_BASE_URL" $apiUrl
-  } catch {
-    Write-Warning "Could not update Vercel env vars (continuing deploy): $_"
-  }
-
-  Write-Host "Deploying to Vercel (production)..."
   $ErrorActionPreference = "Continue"
-  & $vercel @vercelArgs deploy --prod --yes
+  & npx vercel@latest deploy --prod --yes
   if ($LASTEXITCODE -ne 0) { throw "vercel deploy failed" }
   $ErrorActionPreference = "Stop"
 
   Write-Host ""
-  Write-Host "Done. Set FRONTEND_URL on the Laravel API to your Vercel URL so email verification redirects work:"
-  Write-Host "  https://YOUR-VERCEL-URL/auth/callback"
+  Write-Host "Done. Portal: https://omrweb.vercel.app"
+  Write-Host "Confirm API_BASE_URL / NEXT_PUBLIC_API_BASE_URL on Vercel still point at:"
+  Write-Host "  $apiUrl"
 }
 finally {
   Pop-Location

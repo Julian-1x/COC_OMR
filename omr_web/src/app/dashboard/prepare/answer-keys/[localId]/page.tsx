@@ -21,6 +21,9 @@ import {
   isAnswerSelected,
   toggleQuestionAnswer,
 } from "@/lib/omr/answer-key";
+import { answerKeyScopeOf } from "@/lib/omr/answer-key-scope";
+import { AnswerKeyScopeBadge } from "@/components/answer-key-scope-badge";
+import { SyncLoopNotice } from "@/components/desk-notices";
 import type { AnswerKeyMap } from "@/lib/types/database";
 
 const ITEM_COUNTS = [30, 40, 50, 60, 70, 80, 90, 100];
@@ -49,7 +52,7 @@ export default function AnswerKeyEditorPage() {
     async function load() {
       try {
         const api = createBrowserApiClient();
-        const sectionRows = await fetchSections(api);
+        const sectionRows = await fetchSections(api, { archived: false });
         setAllSections(sectionRows.map((s) => s.name));
 
         if (localIdParam) {
@@ -106,6 +109,18 @@ export default function AnswerKeyEditorPage() {
     setSaving(true);
     setError(null);
     try {
+      if (!name.trim()) {
+        throw new Error("Enter a subject name.");
+      }
+      if (sections.length === 0) {
+        throw new Error(
+          "Link at least one section before saving. Unassigned keys cannot be printed or scanned safely.",
+        );
+      }
+      const multiCount = Object.values(answerKey).filter((v) => Array.isArray(v) && v.length > 1).length;
+      if (multiCount > 0 && !usePartialCredit && !allowMultiAnswer) {
+        throw new Error("Multi-answer items need “Allow two correct answers” enabled.");
+      }
       const api = createBrowserApiClient();
       const existing = await fetchSubjects(api);
       const localId = localIdParam ?? generateSubjectLocalId(existing);
@@ -146,6 +161,13 @@ export default function AnswerKeyEditorPage() {
         </h1>
       </div>
 
+      <SyncLoopNotice className="mb-4" />
+      <AnswerKeyScopeBadge
+        subject={{ name, section_names: sections }}
+        showSubtitle
+        className="mb-4"
+      />
+
       <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
         <Card title="Subject details">
           <div className="space-y-3">
@@ -166,6 +188,9 @@ export default function AnswerKeyEditorPage() {
                   </option>
                 ))}
               </Select>
+              <p className="mt-1 text-xs text-slate-500">
+                Standard 30–100, or custom layouts synced from the phone
+              </p>
             </div>
             <div>
               <Label htmlFor="pass">Minimum score to pass (points)</Label>
@@ -185,24 +210,46 @@ export default function AnswerKeyEditorPage() {
               <Label htmlFor="exam">Exam date</Label>
               <Input id="exam" type="date" value={examDate} onChange={(e) => setExamDate(e.target.value)} />
             </div>
-            <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
               <input
                 type="checkbox"
-                checked={usePartialCredit}
-                onChange={(e) => setUsePartialCredit(e.target.checked)}
-              />
-              Partial credit
-            </label>
-            <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-              <input
-                type="checkbox"
+                className="mt-1"
                 checked={allowMultiAnswer}
                 onChange={(e) => setAllowMultiAnswer(e.target.checked)}
               />
-              Allow two correct answers per item
+              <span>
+                Allow two correct answers per item
+                <span className="mt-0.5 block text-xs font-medium text-slate-500">
+                  Without this, each question has one correct letter.
+                </span>
+              </span>
             </label>
+            <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={usePartialCredit}
+                onChange={(e) => setUsePartialCredit(e.target.checked)}
+              />
+              <span>
+                Use partial credit for multi-answer items
+                <span className="mt-0.5 block text-xs font-medium text-slate-500">
+                  Off = student must mark every correct option for full credit. On = partial points
+                  when some correct options are marked.
+                </span>
+              </span>
+            </label>
+            {allowMultiAnswer && !usePartialCredit ? (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+                Multi-answer is on without partial credit: students need every correct bubble for
+                full credit on those items.
+              </p>
+            ) : null}
             <div>
-              <Label>Sections</Label>
+              <Label>Sections for this key</Label>
+              <p className="mt-1 text-xs text-slate-500">
+                One section = section-only. Two or more = shared key.
+              </p>
               <div className="mt-2 flex flex-wrap gap-2">
                 {allSections.length === 0 ? (
                   <p className="text-xs text-slate-500">Import a roster first.</p>
@@ -223,9 +270,19 @@ export default function AnswerKeyEditorPage() {
                   ))
                 )}
               </div>
+              {sections.length === 0 ? (
+                <p className="mt-2 text-xs font-semibold text-amber-800">
+                  No section linked yet ({answerKeyScopeOf({ section_names: sections }).shortBadge}).
+                </p>
+              ) : null}
             </div>
             {error ? <p className="text-sm font-semibold text-red-600">{error}</p> : null}
-            <Button type="button" className="w-full" disabled={saving || !name.trim()} onClick={() => void save()}>
+            <Button
+              type="button"
+              className="w-full"
+              disabled={saving || !name.trim() || sections.length === 0}
+              onClick={() => void save()}
+            >
               {saving ? "Saving…" : "Save answer key"}
             </Button>
           </div>

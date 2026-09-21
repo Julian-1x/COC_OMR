@@ -2,10 +2,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/services/scan_confidence_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/theme/app_shadows.dart';
 import 'package:omr_app/theme/app_spacing.dart';
 import 'package:omr_app/theme/app_typography.dart';
+import 'package:omr_app/widgets/scan_confidence_card.dart';
 
 /// Flagged scan row in the dashboard review queue sheet.
 class ReviewQueueCard extends StatelessWidget {
@@ -26,8 +28,8 @@ class ReviewQueueCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final confidencePercent = (scan.confidence * 100).round();
-    final isLowConfidence = scan.isLowConfidence;
+    final confidence = ScanConfidenceService.fromScanResult(scan);
+    final isMust = confidence.level == ScanConfidenceLevel.mustReview;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.sm),
@@ -48,7 +50,7 @@ class ReviewQueueCard extends StatelessWidget {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    color: isLowConfidence
+                    color: isMust
                         ? AppColors.statusDangerBg
                         : AppColors.statusWarningBg,
                     borderRadius: BorderRadius.circular(10),
@@ -57,7 +59,7 @@ class ReviewQueueCard extends StatelessWidget {
                   child: Text(
                     scan.studentOmrId,
                     style: AppTypography.chipLabel.copyWith(
-                      color: isLowConfidence
+                      color: isMust
                           ? AppColors.statusDanger
                           : AppColors.statusWarning,
                     ),
@@ -71,6 +73,8 @@ class ReviewQueueCard extends StatelessWidget {
                       Text(studentName, style: AppTypography.listTitle),
                       const SizedBox(height: 2),
                       Text(scan.subjectName, style: AppTypography.captionMuted),
+                      const SizedBox(height: 6),
+                      ScanConfidenceBadge(level: confidence.level),
                     ],
                   ),
                 ),
@@ -81,73 +85,14 @@ class ReviewQueueCard extends StatelessWidget {
                       '${scan.scoreDisplay}/${scan.totalQuestions}',
                       style: AppTypography.cardTitle,
                     ),
-                    const SizedBox(height: 2),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isLowConfidence
-                              ? Icons.warning_rounded
-                              : Icons.flag_rounded,
-                          size: 14,
-                          color: isLowConfidence
-                              ? AppColors.statusDanger
-                              : AppColors.statusWarning,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          isLowConfidence ? '$confidencePercent%' : 'Flagged',
-                          style: AppTypography.captionMuted.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: isLowConfidence
-                                ? AppColors.statusDanger
-                                : AppColors.statusWarning,
-                          ),
-                        ),
-                      ],
-                    ),
                   ],
                 ),
               ],
             ),
-            if (scan.reviewReasons.isNotEmpty ||
-                scan.flaggedQuestions.isNotEmpty) ...[
+            if (confidence.reasons.isNotEmpty ||
+                confidence.flaggedQuestions.isNotEmpty) ...[
               const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.statusWarningBg,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.statusWarningBorder),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (scan.reviewReasons.isNotEmpty)
-                      ...scan.reviewReasons.map(
-                        (reason) => Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Text(
-                            '• $reason',
-                            style: AppTypography.captionMuted.copyWith(
-                              color: AppColors.warningText,
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (scan.flaggedQuestions.isNotEmpty)
-                      Text(
-                        'Check question${scan.flaggedQuestions.length == 1 ? '' : 's'}: '
-                        '${(scan.flaggedQuestions.toList()..sort()).join(', ')}',
-                        style: AppTypography.captionMuted.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.warningText,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+              ScanConfidenceCard(report: confidence, compact: true),
             ],
             if (scan.scannedImagePath != null &&
                 scan.scannedImagePath!.isNotEmpty &&

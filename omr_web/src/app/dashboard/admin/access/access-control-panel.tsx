@@ -92,10 +92,10 @@ export function AccessControlPanel({
   }
 
   const scopeHint = viewerIsSuperAdmin
-    ? "All COC departments."
+    ? null
     : viewerDepartment
-      ? `Your department: ${viewerDepartment}.`
-      : "Your department only.";
+      ? `Dept: ${viewerDepartment}`
+      : "Your department only";
 
   return (
     <div className="space-y-6">
@@ -106,29 +106,16 @@ export function AccessControlPanel({
       ) : null}
 
       <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
-        <h2 className="text-lg font-extrabold text-slate-800">Pending approval</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          These teachers registered and confirmed email. Approve them to unlock the app and web
-          dashboard. {scopeHint}
-        </p>
+        <h2 className="text-lg font-extrabold text-slate-800">Pending</h2>
+        {scopeHint ? (
+          <p className="mt-1 text-sm text-slate-600">{scopeHint}</p>
+        ) : null}
         {pending.length === 0 ? (
-          <div className="mt-3 space-y-2 text-sm text-slate-500">
-            <p>No pending requests in your view right now.</p>
-            {!viewerIsSuperAdmin ? (
-              <p>
-                As a <strong>department admin</strong>, you only see instructors who registered under{" "}
-                <strong>{viewerDepartment ?? "your department"}</strong>. If someone registered under
-                another college (COE, CIT, CMA, etc.), ask a <strong>super admin</strong> to approve
-                them.
-              </p>
-            ) : (
-              <p>
-                If someone says they are waiting but you do not see them here, refresh after the school
-                server wakes up, or confirm they finished email confirmation and registered with the
-                correct department.
-              </p>
-            )}
-          </div>
+          <p className="mt-3 text-sm text-slate-500">
+            {!viewerIsSuperAdmin
+              ? `None in ${viewerDepartment ?? "your department"}. Other departments need a super admin.`
+              : "No pending requests."}
+          </p>
         ) : (
           <ul className="mt-4 space-y-3">
             {pending.map((teacher) => (
@@ -169,13 +156,7 @@ export function AccessControlPanel({
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4">
-        <h2 className="text-lg font-extrabold text-slate-800">Approved teachers</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Revoke to cut off app and web access immediately. Admin accounts are managed separately.
-          {viewerIsSuperAdmin
-            ? " Super admins can permanently delete an account — that also signs them out on the phone."
-            : null}
-        </p>
+        <h2 className="text-lg font-extrabold text-slate-800">Approved</h2>
         {approved.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No approved teachers yet.</p>
         ) : (
@@ -248,7 +229,7 @@ export function AccessControlPanel({
       {revoked.length > 0 ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-4">
           <h2 className="text-lg font-extrabold text-slate-800">Revoked</h2>
-          <p className="mt-1 text-sm text-slate-600">You can approve again to restore access.</p>
+          <p className="mt-1 text-sm text-slate-600">Approve again to restore access.</p>
           <ul className="mt-4 space-y-3">
             {revoked.map((teacher) => (
               <li

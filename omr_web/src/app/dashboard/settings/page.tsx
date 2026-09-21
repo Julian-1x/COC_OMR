@@ -5,6 +5,8 @@ import { isSchoolAdmin } from "@/lib/api/admin";
 import { fetchCloudLastUpdated, fetchDashboardStats } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
 import { workspaceName } from "@/lib/theme";
+import { SyncLoopNotice } from "@/components/desk-notices";
+import { apiBaseUrlMismatch } from "@/lib/api/env";
 
 export default async function SettingsPage() {
   const { user, profile, api } = await requireTeacherSession();
@@ -26,7 +28,6 @@ export default async function SettingsPage() {
     stats = nextStats;
     lastUpdated = nextStats.lastUpdated ?? (await fetchCloudLastUpdated(api));
   } catch {
-    // Render free tier often times out mid-page; keep Settings usable.
     cloudSlow = true;
   }
 
@@ -44,12 +45,21 @@ export default async function SettingsPage() {
     <>
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-slate-800">Settings</h1>
-        <p className="mt-1 text-sm text-slate-500">Your account and how the phone app connects to this desk.</p>
+        <p className="mt-1 text-sm text-slate-500">Account and phone sync</p>
       </div>
+
+      <SyncLoopNotice className="mb-4" />
+
+      {apiBaseUrlMismatch() ? (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+          Deploy config error: <code className="font-mono text-xs">API_BASE_URL</code> and{" "}
+          <code className="font-mono text-xs">NEXT_PUBLIC_API_BASE_URL</code> must match.
+        </div>
+      ) : null}
 
       {cloudSlow ? (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          School server is slow or waking up. Account details below are still correct — refresh in a minute for class counts.
+          School server is busy — refresh in a minute for class counts.
         </div>
       ) : null}
 
@@ -79,7 +89,7 @@ export default async function SettingsPage() {
           </dl>
         </Card>
 
-        <Card title="Your data on this desk">
+        <Card title="Data on this desk">
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between gap-4">
               <dt className="font-bold text-slate-500">Classes</dt>
@@ -105,49 +115,37 @@ export default async function SettingsPage() {
             ) : null}
           </dl>
           {!hasData ? (
-            <p className="mt-3 text-sm leading-relaxed text-amber-800">
-              Nothing here yet. Use <strong>Prepare</strong> on this desk, or open the phone app →{" "}
-              <strong>Settings</strong> → <strong>Sync Now</strong> while on Wi‑Fi (same email as above).
+            <p className="mt-3 text-sm text-amber-800">
+              Nothing here yet — import a roster or sync from the phone.
             </p>
           ) : stats.pendingReview > 0 ? (
-            <p className="mt-3 text-sm leading-relaxed text-amber-800">
-              <strong>{stats.pendingReview}</strong> sheet{stats.pendingReview === 1 ? "" : "s"} still need
-              review on your phone before they count here.
+            <p className="mt-3 text-sm text-amber-800">
+              {stats.pendingReview} sheet{stats.pendingReview === 1 ? "" : "s"} still need phone review.
             </p>
           ) : null}
         </Card>
 
-        <Card title="Connect your phone" subtitle="Same email on both">
-          <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-slate-700">
+        <Card title="Phone sync" subtitle={`Sign in as ${user.email}`}>
+          <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-700">
+            <li>Connect to Wi‑Fi</li>
             <li>
-              Sign in on the phone as <strong>{user.email}</strong>.
+              App → <strong>Settings</strong> → <strong>Sync Now</strong>
             </li>
-            <li>Connect to Wi‑Fi.</li>
-            <li>
-              Open the app → <strong>Settings</strong> → <strong>Sync Now</strong>.
-            </li>
-            <li>Refresh this page — classes and results should match.</li>
+            <li>Refresh this page</li>
           </ol>
-        </Card>
-
-        <Card title="Exam day">
-          <p className="text-sm leading-relaxed text-slate-600">
-            Scanning happens on your <strong>phone</strong> with your offline PIN — no Wi‑Fi needed during
-            the exam. Afterward, sync on Wi‑Fi so results appear here for export and review.
+          <p className="mt-3 text-sm text-slate-600">
+            Scan offline with your PIN. Sync afterward so results show here.
           </p>
         </Card>
 
         {admin ? (
-          <Card title="School admin" className="lg:col-span-2">
-            <p className="text-sm text-slate-600">
-              Monitor teachers across COC, and approve or revoke who may use the phone app and this portal.
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
+          <Card title="School admin">
+            <div className="flex flex-wrap gap-2">
               <Link
                 href="/dashboard/admin"
                 className="inline-block rounded-xl bg-emerald-500 px-4 py-2 text-sm font-extrabold text-white hover:bg-emerald-600"
               >
-                Open school overview
+                School overview
               </Link>
               <Link
                 href="/dashboard/admin/access"

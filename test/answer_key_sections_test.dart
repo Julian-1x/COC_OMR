@@ -53,7 +53,7 @@ void main() {
 
     expect(updated, isNotNull);
     expect(updated!.sectionNames, ['BSIT-01', 'BSIT-02']);
-    expect(updated.sectionQrData?['BSIT-01'], isNotEmpty);
+    expect(updated.sectionQrData['BSIT-01'], isNotEmpty);
     expect(updated.syncStatus, SyncStatus.pending);
   });
 

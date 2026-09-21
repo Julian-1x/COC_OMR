@@ -60,8 +60,11 @@ class SubjectController extends Controller
             'passing_score' => ['required', 'integer'],
             'use_partial_credit' => ['nullable', 'boolean'],
             'use_custom_layout' => ['nullable', 'boolean'],
-            'options_count' => ['nullable', 'integer', 'min:2', 'max:5'],
+            'options_count' => ['nullable', 'integer', 'min:2', 'max:6'],
             'layout_shape' => ['nullable', 'string', 'max:64'],
+            'custom_layout_id' => ['nullable', 'string', 'max:64'],
+            'custom_grid_columns' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'custom_grid_rows' => ['nullable', 'integer', 'min:1', 'max:31'],
         ]);
 
         $subject = Subject::query()->updateOrCreate(
@@ -83,6 +86,9 @@ class SubjectController extends Controller
                 'use_custom_layout' => $validated['use_custom_layout'] ?? false,
                 'options_count' => $validated['options_count'] ?? 5,
                 'layout_shape' => $validated['layout_shape'] ?? 'lengthwise_full',
+                'custom_layout_id' => $validated['custom_layout_id'] ?? null,
+                'custom_grid_columns' => $validated['custom_grid_columns'] ?? null,
+                'custom_grid_rows' => $validated['custom_grid_rows'] ?? null,
                 'sync_status' => 'synced',
                 'updated_at' => now(),
             ],
@@ -106,8 +112,11 @@ class SubjectController extends Controller
             'passing_score' => ['sometimes', 'integer'],
             'use_partial_credit' => ['nullable', 'boolean'],
             'use_custom_layout' => ['nullable', 'boolean'],
-            'options_count' => ['nullable', 'integer', 'min:2', 'max:5'],
+            'options_count' => ['nullable', 'integer', 'min:2', 'max:6'],
             'layout_shape' => ['nullable', 'string', 'max:64'],
+            'custom_layout_id' => ['nullable', 'string', 'max:64'],
+            'custom_grid_columns' => ['nullable', 'integer', 'min:1', 'max:10'],
+            'custom_grid_rows' => ['nullable', 'integer', 'min:1', 'max:31'],
         ]);
 
         if (isset($validated['exam_date'])) {

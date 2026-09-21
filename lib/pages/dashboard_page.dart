@@ -8,6 +8,7 @@ import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/models/exam_data.dart' as persisted;
 import 'package:omr_app/pages/custom_sheet_layouts_page.dart';
+import 'package:omr_app/pages/custom_sheet_layout_editor_page.dart';
 import 'package:omr_app/pages/answer_key_page.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
 import 'package:omr_app/pages/exam_day_board_page.dart';
@@ -17,15 +18,18 @@ import 'package:omr_app/pages/omr_id_list_page.dart';
 import 'package:omr_app/pages/scanner_page.dart';
 import 'package:omr_app/pages/section_detail_page.dart';
 import 'package:omr_app/pages/welcome_onboarding_page.dart';
+import 'package:omr_app/pages/phone_archive_page.dart';
 import 'package:flutter/services.dart';
 import 'package:omr_app/services/app_update_service.dart';
 import 'package:omr_app/services/cloud_auth_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:omr_app/services/backup_compare.dart';
 import 'package:omr_app/services/backup_service.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/local_auth_service.dart';
+import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/auto_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
@@ -34,6 +38,8 @@ import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/utils/answer_key_sections.dart';
+import 'package:omr_app/utils/answer_key_scope.dart';
+import 'package:omr_app/widgets/answer_key_scope_badge.dart';
 import 'package:omr_app/services/scanner_engine.dart';
 import 'package:omr_app/theme/app_page_transitions.dart';
 import 'package:omr_app/utils/scanner_launch.dart';
@@ -99,8 +105,8 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   int _classesStatusFilter = 0;
   String? _classesProgramFilter;
   final Set<String> _expandedSettingsSections = <String>{};
-  // Roster tools open by default so Add Student is not buried under a tap.
-  final Set<String> _expandedPrepareSections = <String>{'roster_results'};
+  // Both Prepare sections start collapsed; expand on tap.
+  final Set<String> _expandedPrepareSections = <String>{};
 
   int _selectedIndex = 0;
   bool _isImporting = false;
@@ -462,13 +468,26 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
   String _normalizeSubjectName(String value) => value.trim().toUpperCase();
 
-  String _subjectLabel(Subject subject) => subject.displayName;
+  String _subjectLabel(Subject subject) =>
+      AnswerKeyScope.of(subject).describeSubject(subject);
 
   List<_SubjectGroup> get _subjectGroups {
     return _subjectGroupsForSheetMode(null);
   }
 
   bool get _hasCustomSheetLayouts => globalCustomSheetLayouts.isNotEmpty;
+
+  /// Standard print is only for non-custom keys with exact 30–100 sizes.
+  /// Custom keys (e.g. 200 Q) must not fall back to the 100-bubble preset.
+  bool _canPrintAsStandardSheet(Subject subject) {
+    if (subject.useCustomLayout ||
+        (subject.customLayoutId != null &&
+            subject.customLayoutId!.trim().isNotEmpty)) {
+      return false;
+    }
+    const standardCounts = {30, 40, 50, 60, 70, 80, 90, 100};
+    return standardCounts.contains(subject.totalQuestions);
+  }
 
   List<_SubjectGroup> _subjectGroupsForSheetMode(AnswerKeySheetMode? mode) {
     final grouped = <String, List<Subject>>{};
@@ -760,18 +779,34 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         ),
       ];
 
-  Future<void> _openNewAnswerKey(AnswerKeySheetMode mode) async {
-    if (mode == AnswerKeySheetMode.custom && !_hasCustomSheetLayouts) {
-      _showSnackBar(
-        'Create a custom sheet layout first under Prepare → Custom sheet layouts.',
-        backgroundColor: AppColors.warningAccent,
-      );
-      return;
+  Future<void> _openNewAnswerKey(
+    AnswerKeySheetMode mode, {
+    String? initialCustomLayoutId,
+  }) async {
+    var layoutId = initialCustomLayoutId;
+    if (mode == AnswerKeySheetMode.custom) {
+      if (!_hasCustomSheetLayouts) {
+        _showSnackBar(
+          'Create a custom sheet layout first under Prepare → Custom sheet layouts.',
+          backgroundColor: AppColors.warningAccent,
+        );
+        return;
+      }
+      if (layoutId == null) {
+        final picked = await _pickCustomSheetLayoutForAnswerKey();
+        if (picked == null || !mounted) {
+          return;
+        }
+        layoutId = picked.id;
+      }
     }
     final result = await Navigator.push<dynamic>(
       context,
       MaterialPageRoute(
-        builder: (context) => AnswerKeyPage(sheetMode: mode),
+        builder: (context) => AnswerKeyPage(
+          sheetMode: mode,
+          initialCustomLayoutId: layoutId,
+        ),
       ),
     );
     if (!mounted) {
@@ -787,6 +822,101 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         backgroundColor: AppColors.brandGreen,
       );
     }
+  }
+
+  /// After "Custom sheet quiz", show saved layouts immediately so the teacher
+  /// picks one before filling answers (Q count + choices come from the layout).
+  Future<CustomSheetLayout?> _pickCustomSheetLayoutForAnswerKey() async {
+    final layouts = CustomSheetLayout.sortedByRecency();
+    if (layouts.isEmpty) {
+      _showSnackBar(
+        'Create a custom sheet layout first under Prepare → Custom sheet layouts.',
+        backgroundColor: AppColors.warningAccent,
+      );
+      return null;
+    }
+    return AppBottomSheet.showScrollable<CustomSheetLayout>(
+      context: context,
+      builder: (context) {
+        return Padding(
+          padding: AppBottomSheet.contentPadding,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AppBottomSheet.header(
+                title: 'Pick a custom sheet',
+                subtitle:
+                    'Choose the layout you created. Question count and choices '
+                    'are set automatically — then fill the answer key.',
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: layouts.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final layout = layouts[index];
+                    return Material(
+                      color: AppColors.brandSurface,
+                      borderRadius: BorderRadius.circular(14),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => Navigator.pop(context, layout),
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: AppColors.brandBorder),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.dashboard_customize_outlined,
+                                color: AppColors.brandGreenDark,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      layout.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 15,
+                                        color: AppColors.brandText,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      layout.previewSubtitle,
+                                      style: const TextStyle(
+                                        fontSize: 12.5,
+                                        height: 1.35,
+                                        color: AppColors.brandMuted,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(
+                                Icons.chevron_right_rounded,
+                                color: AppColors.brandMuted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _promptNewAnswerKeyType() async {
@@ -818,7 +948,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                 color: AppColors.brandGreenDark),
             title: const Text('Custom sheet quiz'),
             subtitle: const Text(
-              'Uses a layout you saved under Custom sheet layouts.',
+              'Pick a layout you saved, then fill answers only.',
             ),
             onTap: () => Navigator.pop(context, AnswerKeySheetMode.custom),
           ),
@@ -1129,20 +1259,44 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                             setModalState(() {
                               selectedSubject = choice.subject;
                               selectedSection = choice.sectionName;
-                              useStandardLayout = true;
                               selectedCustomLayout = null;
-                              final linkedId = choice.subject.customLayoutId;
+                              layoutError = null;
+
+                              final subject = choice.subject;
+                              final standardAllowed =
+                                  _canPrintAsStandardSheet(subject);
+                              useStandardLayout = standardAllowed;
+                              selectedCustomLayout = null;
+
+                              final linkedId = subject.customLayoutId;
                               if (linkedId != null) {
-                                for (final layout in globalCustomSheetLayouts) {
+                                for (final layout
+                                    in globalCustomSheetLayouts) {
                                   if (layout.id == linkedId) {
                                     selectedCustomLayout = layout;
-                                    useStandardLayout = false;
                                     break;
                                   }
                                 }
-                              } else if (choice.subject.useCustomLayout) {
+                              }
+
+                              if (!standardAllowed) {
+                                useStandardLayout = false;
+                                if (selectedCustomLayout == null) {
+                                  final matches = globalCustomSheetLayouts
+                                      .where(
+                                        (layout) =>
+                                            layout.totalQuestions ==
+                                            subject.totalQuestions,
+                                      )
+                                      .toList();
+                                  if (matches.isNotEmpty) {
+                                    selectedCustomLayout = matches.first;
+                                  }
+                                }
+                              } else if (subject.useCustomLayout) {
                                 useStandardLayout = false;
                               }
+
                               layoutError = null;
                               step = 2;
                             });
@@ -1158,6 +1312,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   .where((layout) => layout.totalQuestions == subject.totalQuestions)
                   .toList()
                 ..sort((a, b) => a.name.compareTo(b.name));
+              final standardAllowed = _canPrintAsStandardSheet(subject);
 
               body = ListView(
                 children: [
@@ -1170,22 +1325,87 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     'Section: $selectedSection',
                     style: const TextStyle(color: AppColors.brandMuted),
                   ),
+                  const SizedBox(height: 8),
+                  Builder(
+                    builder: (context) {
+                      final scope = AnswerKeyScope.of(subject);
+                      final printed = selectedSection?.trim() ?? '';
+                      final others = scope.sections
+                          .where(
+                            (s) =>
+                                normalizeSectionName(s) !=
+                                normalizeSectionName(printed),
+                          )
+                          .join(', ');
+                      final message = scope.isShared
+                          ? 'Shared key — sheets for $printed use the same '
+                              'answers as $others. Header will say SHARED KEY.'
+                          : scope.isSectionOnly
+                              ? 'Section-only key — this print is for '
+                                  '${scope.sections.first} only. Header will '
+                                  'say THIS SECTION ONLY. Do not use these '
+                                  'sheets for another section\'s key.'
+                              : scope.listSubtitle;
+                      return Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: scope.isShared
+                              ? AppColors.brandGreen.withValues(alpha: 0.08)
+                              : AppColors.warningBg,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: scope.isShared
+                                ? AppColors.brandBorder
+                                : AppColors.warningBorder,
+                          ),
+                        ),
+                        child: Text(
+                          message,
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: scope.isShared
+                                ? AppColors.brandText
+                                : AppColors.warningText,
+                            height: 1.35,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
                   const SizedBox(height: 16),
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: AppColors.brandGreen.withValues(alpha: 0.08),
+                      color: standardAllowed
+                          ? AppColors.brandGreen.withValues(alpha: 0.08)
+                          : AppColors.warningBg,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.brandBorder),
+                      border: Border.all(
+                        color: standardAllowed
+                            ? AppColors.brandBorder
+                            : AppColors.warningBorder,
+                      ),
                     ),
-                    child: const Text(
-                      'Most exams: keep Standard sheet selected. '
-                      'Custom sheets are only for short quizzes or special paper sizes you saved earlier.',
+                    child: Text(
+                      standardAllowed
+                          ? 'Most exams: keep Standard sheet selected. '
+                              'Custom sheets are only for layouts you saved earlier.'
+                          : subject.useCustomLayout ||
+                                  subject.customLayoutId != null
+                              ? 'This answer key uses a saved custom sheet '
+                                  '(${subject.totalQuestions} questions). '
+                                  'Standard sheets only support 30–100 and cannot be used here.'
+                              : 'This answer key has ${subject.totalQuestions} questions. '
+                                  'Standard sheets only support 30–100 — pick a saved custom sheet.',
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.brandText,
+                        color: standardAllowed
+                            ? AppColors.brandText
+                            : AppColors.warningText,
                       ),
                     ),
                   ),
@@ -1198,26 +1418,33 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   RadioListTile<bool>(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Standard sheet'),
-                    subtitle: const Text(
-                      'Regular exam — use this unless you made a custom sheet.',
+                    subtitle: Text(
+                      standardAllowed
+                          ? 'Regular exam — use this unless you made a custom sheet.'
+                          : 'Not available for this answer key (custom / not 30–100).',
                     ),
                     value: true,
                     groupValue: useStandardLayout,
-                    onChanged: (value) {
-                      setModalState(() {
-                        useStandardLayout = true;
-                        selectedCustomLayout = null;
-                        layoutError = null;
-                      });
-                    },
+                    onChanged: standardAllowed
+                        ? (value) {
+                            setModalState(() {
+                              useStandardLayout = true;
+                              selectedCustomLayout = null;
+                              layoutError = null;
+                            });
+                          }
+                        : null,
                   ),
                   RadioListTile<bool>(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Saved custom sheet'),
                     subtitle: Text(
                       matchingLayouts.isEmpty
-                          ? 'No saved sheet for ${subject.totalQuestions} questions yet. '
-                              'Create one under Prepare → Custom sheet layouts.'
+                          ? (standardAllowed
+                              ? 'Optional — only if you need a non-standard layout. '
+                                  'Your ${subject.totalQuestions}-question key can print as Standard.'
+                              : 'No saved sheet for ${subject.totalQuestions} questions yet. '
+                                  'Create a custom layout first, then return here.')
                           : 'Choose a sheet you saved earlier (must match ${subject.totalQuestions} questions).',
                     ),
                     value: false,
@@ -1269,21 +1496,37 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                       );
                     }),
                   ],
-                  if (matchingLayouts.isEmpty) ...[
+                  // Only when Standard cannot print this key and no matching custom layout exists.
+                  if (!standardAllowed && matchingLayouts.isEmpty) ...[
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
-                      onPressed: () {
+                      onPressed: () async {
                         Navigator.pop(context);
-                        Navigator.push(
+                        final layout = await Navigator.push<CustomSheetLayout>(
                           context,
                           MaterialPageRoute(
                             builder: (context) =>
-                                const CustomSheetLayoutsPage(),
+                                const CustomSheetLayoutEditorPage(),
                           ),
                         );
+                        if (!mounted || layout == null) {
+                          return;
+                        }
+                        await Navigator.push<void>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AnswerKeyPage(
+                              sheetMode: AnswerKeySheetMode.custom,
+                              initialCustomLayoutId: layout.id,
+                            ),
+                          ),
+                        );
+                        if (mounted) {
+                          setState(() {});
+                        }
                       },
                       icon: const Icon(Icons.dashboard_customize_rounded),
-                      label: const Text('Create custom layout'),
+                      label: const Text('Create custom layout + answer key'),
                     ),
                   ],
                   if (layoutError != null) ...[
@@ -1355,6 +1598,15 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                 final subject = selectedSubject!;
                 Subject printSubject;
                 if (useStandardLayout) {
+                  if (!_canPrintAsStandardSheet(subject)) {
+                    setModalState(() {
+                      layoutError =
+                          'This answer key cannot use a Standard sheet. '
+                          'Pick a saved custom sheet that matches '
+                          '${subject.totalQuestions} questions.';
+                    });
+                    return;
+                  }
                   printSubject = subject.copyWith(
                     useCustomLayout: false,
                     optionsCount: OmrPageConstants.answerOptionsCount,
@@ -1387,8 +1639,11 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   }
                 } catch (error) {
                   if (mounted) {
+                    final detail = error.toString().replaceFirst('Exception: ', '');
                     _showSnackBar(
-                      'Unable to generate the answer sheets.',
+                      detail.isNotEmpty
+                          ? detail
+                          : 'Unable to generate the answer sheets.',
                       backgroundColor: Colors.red,
                     );
                   }
@@ -1702,8 +1957,10 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           'Online on mobile data. $count item${count == 1 ? '' : 's'} waiting — connect to Wi-Fi or tap Sync now.',
         ),
         behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 6),
-        dismissDirection: DismissDirection.down,
+        // SnackBars with an action default to persist:true (stay forever).
+        persist: false,
+        duration: const Duration(seconds: 5),
+        dismissDirection: DismissDirection.horizontal,
         action: SnackBarAction(
           label: 'Sync now',
           onPressed: _handleSyncNow,
@@ -2014,7 +2271,16 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
             Future<void> openEditor({
               Subject? subject,
               String? sectionFocus,
+              String? initialCustomLayoutId,
             }) async {
+              var layoutId = initialCustomLayoutId;
+              if (isCustom && subject == null && layoutId == null) {
+                final picked = await _pickCustomSheetLayoutForAnswerKey();
+                if (picked == null || !mounted) {
+                  return;
+                }
+                layoutId = picked.id;
+              }
               final result = await Navigator.push<dynamic>(
                 this.context,
                 MaterialPageRoute(
@@ -2022,6 +2288,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     subjectToEdit: subject,
                     editSectionFocus: sectionFocus,
                     sheetMode: mode,
+                    initialCustomLayoutId: layoutId,
                   ),
                 ),
               );
@@ -2131,7 +2398,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     Text(
                       isCustom
                           ? 'Each key uses a custom sheet layout you saved earlier.'
-                          : 'Need different answers per section? Create one key per section — same subject name is OK.',
+                          : 'Shared key = same answers for every section you pick. '
+                              'Different answers per section? Create one key per section '
+                              '(same subject name is OK) — look for the One section badge.',
                       style: const TextStyle(
                         color: AppColors.brandMuted,
                         fontSize: 12,
@@ -2245,18 +2514,19 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                                 ..._answerKeyRowsForGroup(group).map(
                                   (row) {
                                     final sectionName = row.sectionName;
-                                    final isShared = sectionName != null &&
-                                        (row.subject.sectionNames?.length ??
-                                                0) >
-                                            1;
+                                    final scope = AnswerKeyScope.of(row.subject);
                                     final title = sectionName == null
                                         ? group.name
-                                        : '${group.name} - $sectionName';
+                                        : '${group.name} · $sectionName';
+                                    final itemBit =
+                                        '${row.subject.totalQuestions} items';
                                     final subtitle = sectionName == null
-                                        ? 'No sections assigned · ${row.subject.totalQuestions} items'
-                                        : isShared
-                                            ? '${row.subject.totalQuestions} items · same key for ${row.subject.sectionNames!.length} sections'
-                                            : '${row.subject.totalQuestions} items';
+                                        ? '$itemBit · ${scope.listSubtitle}'
+                                        : scope.isShared
+                                            ? '$itemBit · same answers for ${scope.sections.join(', ')}'
+                                            : scope.isSectionOnly
+                                                ? '$itemBit · grades this section only'
+                                                : '$itemBit · ${scope.listSubtitle}';
 
                                     return Container(
                                       width: double.infinity,
@@ -2283,34 +2553,10 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                                                 ),
                                               ),
                                             ),
-                                            if (isShared)
-                                              Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                  horizontal: 8,
-                                                  vertical: 3,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: AppColors.brandGreen
-                                                      .withValues(alpha: 0.1),
-                                                  borderRadius:
-                                                      BorderRadius.circular(
-                                                          999),
-                                                  border: Border.all(
-                                                    color:
-                                                        AppColors.brandBorder,
-                                                  ),
-                                                ),
-                                                child: const Text(
-                                                  'Shared',
-                                                  style: TextStyle(
-                                                    color:
-                                                        AppColors.brandGreenDark,
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.w800,
-                                                  ),
-                                                ),
-                                              ),
+                                            AnswerKeyScopeBadge(
+                                              subject: row.subject,
+                                              compact: true,
+                                            ),
                                           ],
                                         ),
                                         subtitle: Text(
@@ -3055,91 +3301,122 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
   }
 
   Future<void> _handleRestoreBackup() async {
-    final confirmed = await showDialog<bool>(
+    final decoded = await BackupService.pickBackupMap(context);
+    if (decoded == null || !mounted) {
+      return;
+    }
+
+    final report = BackupService.comparePickedBackup(decoded);
+    final mode = await showDialog<BackupRestoreMode>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Load this backup file?'),
-        content: const SingleChildScrollView(
+        title: const Text('How should we load this backup?'),
+        content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'This will replace your answer keys, class lists, and grades on this device '
-                'with the information from the file you pick.',
-                style: TextStyle(height: 1.4),
-              ),
-              SizedBox(height: 14),
-              Text(
-                'Before you continue:',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              SizedBox(height: 8),
-              Text(
-                '• Make sure you chose the correct backup file.',
-                style: TextStyle(height: 1.4),
-              ),
-              Text(
-                '• Your current work on this device will be replaced.',
-                style: TextStyle(height: 1.4),
-              ),
-              Text(
-                '• Other teachers who use this tablet will keep their own data.',
-                style: TextStyle(height: 1.4),
-              ),
-              Text(
-                '• Scanned paper photos are not in backup files—they stay on this device.',
-                style: TextStyle(height: 1.4),
-              ),
-              SizedBox(height: 14),
-              Text(
-                'Only tap Load if you are sure this is the file you want.',
-                style: TextStyle(
-                  color: Colors.orange,
-                  fontWeight: FontWeight.w600,
-                  height: 1.35,
+              if (report.exportedAt != null && report.exportedAt!.isNotEmpty)
+                Text(
+                  'Backup from ${report.exportedAt}',
+                  style: const TextStyle(fontSize: 12.5, color: AppColors.brandMuted),
                 ),
+              const SizedBox(height: 10),
+              Text(
+                'Compared with this phone:\n'
+                '• Students — same ${report.students.same}, different ${report.students.conflict}, '
+                'only in backup ${report.students.backupOnly}, only on phone ${report.students.phoneOnly}\n'
+                '• Classes — same ${report.sections.same}, different ${report.sections.conflict}, '
+                'only in backup ${report.sections.backupOnly}, only on phone ${report.sections.phoneOnly}\n'
+                '• Answer keys — same ${report.subjects.same}, different ${report.subjects.conflict}, '
+                'only in backup ${report.subjects.backupOnly}, only on phone ${report.subjects.phoneOnly}\n'
+                '• Scores — same ${report.scans.same}, different ${report.scans.conflict}, '
+                'only in backup ${report.scans.backupOnly}, only on phone ${report.scans.phoneOnly}',
+                style: const TextStyle(height: 1.45, fontSize: 13.5),
               ),
+              const SizedBox(height: 12),
+              if (report.hasConflicts)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+                  ),
+                  child: Text(
+                    '${report.totalConflicts} item(s) exist on both but are not the same. '
+                    'Choose carefully so you do not overwrite newer work.',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      height: 1.35,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                )
+              else
+                const Text(
+                  'No overlapping conflicts found. You can safely add missing items, '
+                  'or replace everything from the backup.',
+                  style: TextStyle(height: 1.4, fontSize: 13),
+                ),
             ],
           ),
         ),
+        actionsAlignment: MainAxisAlignment.start,
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
           ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, BackupRestoreMode.addMissingOnly),
+            child: const Text('Add missing only'),
+          ),
+          if (report.hasConflicts)
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(context, BackupRestoreMode.mergePreferBackup),
+              child: const Text('Backup wins on overlaps'),
+            ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Load backup'),
+            onPressed: () =>
+                Navigator.pop(context, BackupRestoreMode.replaceAll),
+            child: const Text('Replace all'),
           ),
         ],
       ),
     );
 
-    if (confirmed != true || !mounted) {
+    if (mode == null || !mounted) {
       return;
     }
 
-    final restored = await BackupService.importFromPick(context);
+    final restored = await BackupService.applyBackupMap(decoded, mode: mode);
     if (!mounted) {
       return;
     }
 
     if (restored) {
       await _loadDashboardData();
+      if (!mounted) return;
       await _refreshSyncStatus();
+      if (!mounted) return;
+      final label = switch (mode) {
+        BackupRestoreMode.replaceAll => 'Backup loaded (replaced phone data).',
+        BackupRestoreMode.addMissingOnly =>
+          'Backup loaded (kept phone data; added missing items).',
+        BackupRestoreMode.mergePreferBackup =>
+          'Backup loaded (overlaps used backup; phone-only items kept).',
+      };
+      _showSnackBar(label, backgroundColor: AppColors.brandGreen);
+    } else {
+      _showSnackBar(
+        'Could not load that backup file. Pick a valid OMR backup .json.',
+        backgroundColor: Colors.red,
+      );
     }
-
-    if (!mounted) {
-      return;
-    }
-
-    _showSnackBar(
-      restored
-          ? 'Your data was loaded from the backup file.'
-          : 'Backup load was cancelled or could not finish.',
-      backgroundColor: restored ? AppColors.brandGreen : Colors.red,
-    );
   }
 
   void _startScanning() {
@@ -3640,23 +3917,20 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Delete ${section.name} permanently?'),
+        title: Text('Move ${section.name} to Phone Archive?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Delete ${section.name} and all ${section.totalStudents} student${section.totalStudents == 1 ? '' : 's'} '
-              'from this phone and the cloud.',
+              'Move ${section.name} and ${section.totalStudents} student${section.totalStudents == 1 ? '' : 's'} '
+              'to Phone Archive with their scores.',
             ),
             const SizedBox(height: 12),
             const Text(
-              'To keep scores online but remove from this phone, use Settings → End of term → Archive.',
-              style: TextStyle(color: AppColors.brandMuted, fontSize: 13),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Permanent delete cannot be undone. Export a backup first if unsure.',
+              'Restore offline from Settings → Phone Archive. '
+              'When online, Sync Now uploads to the web and frees phone storage. '
+              'Delete forever is only inside Phone Archive.',
               style: TextStyle(color: AppColors.brandMuted, fontSize: 13),
             ),
           ],
@@ -3666,17 +3940,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context, false);
-              await BackupService.exportAndShare();
-            },
-            child: const Text('Back up first'),
-          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Delete class'),
+            child: const Text('Move to Archive'),
           ),
         ],
       ),
@@ -3688,15 +3954,17 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
     try {
       final summary =
-          await LocalDataStore.instance.deleteSectionCascade(section.name);
+          await PhoneArchiveService.instance.archiveSection(section.name);
       await _loadDashboardData();
       await _afterLocalDataChanged();
       if (!mounted) {
         return;
       }
       _showSnackBar(
-        'Deleted ${section.name}. Removed ${summary.removedStudents} student${summary.removedStudents == 1 ? '' : 's'} and ${summary.removedScans} scan${summary.removedScans == 1 ? '' : 's'}.',
-        backgroundColor: Colors.red,
+        'Moved ${section.name} to Phone Archive '
+        '(${summary.removedStudents} student${summary.removedStudents == 1 ? '' : 's'}, '
+        '${summary.removedScans} score${summary.removedScans == 1 ? '' : 's'}).',
+        backgroundColor: AppColors.brandGreen,
       );
     } catch (error) {
       if (mounted) {
@@ -5676,16 +5944,53 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           ),
         ),
         _buildCollapsibleSettingsSection(
-          sectionId: 'archive',
+          sectionId: 'phone_archive',
           icon: Icons.inventory_2_outlined,
+          title: 'Phone Archive',
+          summary: 'Restore removed students/classes offline; upload to free space',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSettingsTipBox(
+                'Remove student or class → lands here with scores. '
+                'Restore while still on this phone. When online, Sync Now (or Upload & clear) '
+                'moves items to the web portal and clears phone storage. '
+                'Delete forever is only available inside Phone Archive.',
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    await Navigator.push<void>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const PhoneArchivePage(),
+                      ),
+                    );
+                    if (mounted) {
+                      await _loadDashboardData();
+                    }
+                  },
+                  icon: const Icon(Icons.inventory_2_outlined),
+                  label: const Text('Open Phone Archive'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        _buildCollapsibleSettingsSection(
+          sectionId: 'archive',
+          icon: Icons.school_outlined,
           title: 'End of term',
           summary: 'Archive finished classes to free phone space',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildSettingsTipBox(
-                'When a semester ends, archive a section here. Scores stay in the cloud and on the web portal. '
-                'The section is removed from this phone only — sync first so nothing is lost.',
+                'When a semester ends and you are online, archive a section here. '
+                'Scores stay on the web portal and the section leaves this phone. '
+                'For accidental removes, use Phone Archive instead.',
               ),
               const SizedBox(height: 16),
               SizedBox(
@@ -5754,8 +6059,13 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               const SizedBox(height: 22),
               _buildSettingsSubheading('How to load a backup'),
               const SizedBox(height: 8),
-              _buildSettingsBullet('Only use this if you need to recover from a file you saved earlier.'),
-              _buildSettingsBullet('It replaces your grades and keys on this device—not other teachers\' data.'),
+              _buildSettingsBullet(
+                'Loading a backup first compares it with this phone, then you choose: '
+                'add missing only, let backup win on overlaps, or replace everything.',
+              ),
+              _buildSettingsBullet(
+                'It changes data for your account on this device—not other teachers\' data.',
+              ),
               const SizedBox(height: 10),
               Container(
                 width: double.infinity,

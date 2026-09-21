@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:barcode/barcode.dart';
 import 'package:flutter/material.dart';
-import 'package:meta/meta.dart';
+import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/omr_template_specs.dart';
 import 'package:omr_app/services/api_service.dart';
@@ -12,6 +12,7 @@ import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/scanner_session_layout.dart';
 import 'package:omr_app/theme/app_colors.dart';
+import 'package:omr_app/utils/answer_key_scope.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -20,6 +21,26 @@ class AnswerSheetGenerator {
   static const PdfColor _panelBorder = PdfColors.grey400;
   static const double _panelBorderWidth = 0.55;
   static const PdfColor _mutedInk = PdfColors.grey700;
+
+  /// Custom sheets show the saved layout name on the header when linked;
+  /// otherwise the exam / subject name.
+  static String _sheetHeaderTitle(Subject subject) {
+    if (subject.useCustomLayout) {
+      final layoutId = subject.customLayoutId?.trim();
+      if (layoutId != null && layoutId.isNotEmpty) {
+        for (final layout in globalCustomSheetLayouts) {
+          if (layout.id == layoutId) {
+            final layoutName = layout.name.trim();
+            if (layoutName.isNotEmpty) {
+              return layoutName;
+            }
+            break;
+          }
+        }
+      }
+    }
+    return subject.displayName;
+  }
 
   static String? _qrOwnerTeacherId(Subject subject) {
     final fromSubject = subject.ownerTeacherId?.trim();
@@ -128,9 +149,17 @@ class AnswerSheetGenerator {
     );
   }
 
-  /// Block printing Custom sheets that do not fit — wrong density risks bad grades.
+  /// Block prints that would silently use the wrong bubble grid (bad grades).
   static void _ensureCustomLayoutPrintable(Subject subject) {
     if (!subject.useCustomLayout) {
+      const standardCounts = {30, 40, 50, 60, 70, 80, 90, 100};
+      if (!standardCounts.contains(subject.totalQuestions)) {
+        throw Exception(
+          'This answer key has ${subject.totalQuestions} questions, so it '
+          'cannot use a Standard sheet (30–100 only). '
+          'Pick a saved custom sheet under Print Sheets.',
+        );
+      }
       return;
     }
     final examReadyError =
@@ -161,6 +190,7 @@ class AnswerSheetGenerator {
             rows: subject.customGridRows!,
             optionsCount: subject.optionsCount,
             form: subject.layoutForm,
+            itemCount: subject.totalQuestions,
           )
         : OmrLayoutProfile.tryCompute(
             itemCount: subject.totalQuestions,
@@ -349,7 +379,7 @@ class AnswerSheetGenerator {
     return Uint8List.fromList(await pdf.save());
   }
 
-  /// Batch generate class set (1 sheet per student, pre-filled OMR)
+  /// Batch generate class set (1 sheet per student; OMR ID bubbles left blank for students).
   static Future<void> batchGenerate({
     required Subject subject,
     required String sectionName,
@@ -727,14 +757,14 @@ class AnswerSheetGenerator {
               subject, qrPayload, student, sectionName, g),
         ),
       ),
-      // Pre-filled OMR ID section at fixed position
+      // OMR ID section at fixed position (students shade their own ID)
       pw.Positioned(
         left: g.marginLeft,
         top: g.omrIdTop,
         child: pw.SizedBox(
           width: g.answerGridWidth,
           height: g.omrIdHeight,
-          child: _idSectionPreFilled(student.omrId, g),
+          child: _idSection(g),
         ),
       ),
       // Answer grid at fixed position
@@ -839,7 +869,7 @@ class AnswerSheetGenerator {
     required OmrSheetGeometry g,
     int optionsCount = OmrPageConstants.answerOptionsCount,
   }) {
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     final bubbleAreaWidth = bubbleSpacingX * (opts - 1);
     final usableWidth = columnWidth - (g.answerColumnInset * 2);
     final rowContentWidth = g.questionNumberWidth +
@@ -888,7 +918,7 @@ class AnswerSheetGenerator {
     required OmrSheetGeometry g,
     int optionsCount = OmrPageConstants.answerOptionsCount,
   }) {
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     final questionCount = endQuestion - startQuestion + 1;
     final bubbleAreaWidth = bubbleSpacingX * (opts - 1);
     final usableWidth = columnWidth - (g.answerColumnInset * 2);
@@ -1063,14 +1093,17 @@ class AnswerSheetGenerator {
       Student student,
       String sectionName,
       OmrSheetGeometry g) {
+    final scopeTag = AnswerKeyScope.of(subject).printScopeTag(
+      printedSection: sectionName,
+    );
     return _buildHeader(
       subject: subject,
       qrPayload: qrPayload,
       g: g,
       subtitleLine1: _fitHeaderText('STUDENT: ${student.name}', maxChars: 42),
       subtitleLine2: _fitHeaderText(
-        'OMR: ${student.omrId}   SECTION: $sectionName',
-        maxChars: 42,
+        'OMR: ${student.omrId} · $sectionName · $scopeTag',
+        maxChars: 48,
       ),
     );
   }
@@ -1083,16 +1116,20 @@ class AnswerSheetGenerator {
         (qrPayload.sectionName == null || qrPayload.sectionName!.trim().isEmpty)
             ? 'ALL'
             : qrPayload.sectionName!;
+    final scopeTag = AnswerKeyScope.of(subject).printScopeTag(
+      printedSection: sectionLabel,
+    );
     final examDate = subject.examDate == null
         ? ''
-        : '   DATE: ${_formatDate(subject.examDate!)}';
+        : ' · ${_formatDate(subject.examDate!)}';
     return _buildHeader(
       subject: subject,
       qrPayload: qrPayload,
       g: g,
       subtitleLine1: _fitHeaderText(
-        'SECTION: $sectionLabel$examDate   ITEMS: ${subject.totalQuestions}',
-        maxChars: 42,
+        'SECTION: $sectionLabel · $scopeTag$examDate · '
+        '${subject.totalQuestions}Q',
+        maxChars: 48,
       ),
       // Fixed label + underline; not truncated so the write-in stays usable.
       subtitleLine2: 'NAME: _______________________________',
@@ -1126,7 +1163,7 @@ class AnswerSheetGenerator {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               pw.Text(
-                _fitHeaderText(subject.displayName, maxChars: 28),
+                _fitHeaderText(_sheetHeaderTitle(subject), maxChars: 28),
                 style: pw.TextStyle(
                   fontSize: titleFontSize,
                   fontWeight: pw.FontWeight.bold,
@@ -1171,15 +1208,6 @@ class AnswerSheetGenerator {
           ),
         ),
       ],
-    );
-  }
-
-  /// Pre-filled OMR for batch
-  static pw.Widget _idSectionPreFilled(String omrId, OmrSheetGeometry g) {
-    final digits = omrId.padLeft(4, '0').split('').map(int.parse).toList();
-    return _idSectionBase(
-      g: g,
-      fillResolver: (columnIndex, digit) => digits[columnIndex] == digit,
     );
   }
 

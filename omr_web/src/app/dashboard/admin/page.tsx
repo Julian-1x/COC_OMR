@@ -59,36 +59,21 @@ export default async function AdminDashboardPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-slate-800">School overview</h1>
         <p className="mt-1 text-sm text-slate-500">
-          See how teachers at <strong>{schoolLabel}</strong>
-          {viewerIsSuperAdmin
-            ? ""
-            : profile.department
-              ? ` (${profile.department})`
-              : ""}{" "}
-          are using COC OMR. View only — teachers manage their own classes on their phones.
+          {schoolLabel}
+          {!viewerIsSuperAdmin && profile.department ? ` · ${profile.department}` : ""}
         </p>
       </div>
 
       {cloudSlow ? (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          School server is slow or waking up. Open{" "}
-          <a
-            className="font-semibold underline"
-            href="https://coc-omr-api.onrender.com/up"
-            target="_blank"
-            rel="noreferrer"
-          >
-            API status
-          </a>
-          , wait for Application up, then refresh.
+          School server is busy — refresh in a minute.
         </div>
       ) : null}
 
       {!schoolName ? (
         <Card className="mb-4 border-amber-200 bg-amber-50">
           <p className="text-sm text-amber-900">
-            Your account is not linked to a school yet. Ask your IT coordinator to connect your admin profile
-            to your school so teacher lists appear here.
+            Your admin profile is not linked to a school yet.
           </p>
         </Card>
       ) : null}
@@ -112,43 +97,28 @@ export default async function AdminDashboardPage() {
         </p>
       ) : null}
 
-      <Card title="Teachers" className="mt-6" subtitle="Open a teacher to see their classes and rosters">
-        <div className="mb-4 flex flex-wrap gap-3">
-          <div>
-            <Link
-              href="/dashboard/admin/access"
-              className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-800"
-            >
-              Open access control
-            </Link>
-            <p className="mt-2 text-xs text-slate-500">
-              Approve or revoke which teachers can use the app and web portal.
-            </p>
-          </div>
+      <Card title="Teachers" className="mt-6">
+        <div className="mb-4 flex flex-wrap gap-2">
+          <Link
+            href="/dashboard/admin/access"
+            className="inline-flex rounded-xl bg-emerald-700 px-3 py-2 text-sm font-bold text-white hover:bg-emerald-800"
+          >
+            Access control
+          </Link>
           {viewerIsSuperAdmin ? (
             <>
-              <div>
-                <Link
-                  href="/dashboard/admin/departments"
-                  className="inline-flex rounded-xl border border-emerald-700 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-50"
-                >
-                  Department admins
-                </Link>
-                <p className="mt-2 text-xs text-slate-500">
-                  Assign who can approve instructors in each department.
-                </p>
-              </div>
-              <div>
-                <Link
-                  href="/dashboard/admin/security"
-                  className="inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                >
-                  Sign-in activity
-                </Link>
-                <p className="mt-2 text-xs text-slate-500">
-                  Review failed logins, lockouts, and two-factor events.
-                </p>
-              </div>
+              <Link
+                href="/dashboard/admin/departments"
+                className="inline-flex rounded-xl border border-emerald-700 px-3 py-2 text-sm font-bold text-emerald-800 hover:bg-emerald-50"
+              >
+                Department admins
+              </Link>
+              <Link
+                href="/dashboard/admin/security"
+                className="inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50"
+              >
+                Sign-in activity
+              </Link>
             </>
           ) : null}
         </div>

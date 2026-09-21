@@ -107,8 +107,8 @@ class OmrPageConstants {
   // Answer bubble specifications
   static const double answerBubbleDiameter = 11.5;
   static const double answerBubbleBorder = 1.2;
-  static const int answerOptionsCount = 5; // A, B, C, D, E
-  static const List<String> answerOptionLabels = ['A', 'B', 'C', 'D', 'E'];
+  static const int answerOptionsCount = 5; // Standard presets stay at A-E.
+  static const List<String> answerOptionLabels = ['A', 'B', 'C', 'D', 'E', 'F'];
   static const double answerColumnInset = 6.0;
   static const double answerNumberBubbleGap = 6.0;
 
@@ -234,7 +234,7 @@ class OmrTemplateSpec {
     int optionIndex, {
     int optionsCount = OmrPageConstants.answerOptionsCount,
   }) {
-    final optionSpan = (optionsCount.clamp(2, 5) - 1);
+    final optionSpan = (optionsCount.clamp(2, 6) - 1);
     final columnLeft =
         OmrPageConstants.answerGridLeft + (colIndex * columnWidth);
     final bubbleAreaWidth = bubbleSpacingX * optionSpan;
@@ -687,10 +687,91 @@ class OmrSheetGeometry {
     );
   }
 
+  /// Dense full-page geometry for high question counts that still stay
+  /// phone-scannable (row pitch ≥ [OmrLayoutProfile.minRowHeightDense]).
+  ///
+  /// Keeps the same registration marks / OMR ID / QR as [standardPortrait],
+  /// but reclaims footer strip and uses slightly smaller answer bubbles.
+  /// Half/¼ sheets never use this. Counts that would violate scan floors are
+  /// rejected — we do not force 200 questions when bubbles would be unsafe.
+  factory OmrSheetGeometry.denseFullPortrait() {
+    const bubble = 9.5;
+    const footer = 8.0;
+    const inset = bubble / 2 + 1.0; // 5.75 — outer edge stays inside column
+    return const OmrSheetGeometry(
+      pageWidth: OmrPageConstants.pageWidth,
+      pageHeight: OmrPageConstants.pageHeight,
+      contentBlockWidth: OmrPageConstants.pageWidth,
+      contentBlockHeight: OmrPageConstants.pageHeight,
+      marginLeft: OmrPageConstants.marginLeft,
+      marginTop: OmrPageConstants.marginTop,
+      marginRight: OmrPageConstants.marginRight,
+      marginBottom: OmrPageConstants.marginBottom,
+      cornerMarkerSize: OmrPageConstants.cornerMarkerSize,
+      cornerMarkerOffset: OmrPageConstants.cornerMarkerOffset,
+      timingMarkSize: OmrPageConstants.timingMarkSize,
+      timingMarkSpacing: OmrPageConstants.timingMarkSpacing,
+      timingMarkEdgeOffset: OmrPageConstants.timingMarkEdgeOffset,
+      timingMarkStartX: OmrPageConstants.timingMarkStartX,
+      timingMarkEndX: OmrPageConstants.timingMarkEndX,
+      timingMarkStartY: OmrPageConstants.timingMarkStartY,
+      timingMarkEndY: OmrPageConstants.timingMarkEndY,
+      headerTop: OmrPageConstants.headerTop,
+      headerHeight: OmrPageConstants.headerHeight,
+      omrIdTop: OmrPageConstants.omrIdTop,
+      omrIdHeight: OmrPageConstants.omrIdHeight,
+      omrIdFirstColumnX: OmrPageConstants.omrIdFirstColumnX,
+      omrIdFirstRowY: OmrPageConstants.omrIdFirstRowY,
+      omrIdColumnSpacing: OmrPageConstants.omrIdColumnSpacing,
+      omrIdRowSpacing: OmrPageConstants.omrIdRowSpacing,
+      omrIdBubbleDiameter: OmrPageConstants.omrIdBubbleDiameter,
+      answerGridTop: OmrPageConstants.answerGridTop,
+      answerGridBottom: OmrPageConstants.answerGridBottom,
+      answerGridLeft: OmrPageConstants.answerGridLeft,
+      answerGridRight: OmrPageConstants.answerGridRight,
+      answerOptionIndicatorHeight: OmrPageConstants.answerOptionIndicatorHeight,
+      answerGridFooterHeight: footer,
+      answerBubbleDiameter: bubble,
+      answerColumnInset: inset,
+      answerNumberBubbleGap: 4.0,
+      questionNumberWidth: 13.0,
+      calibrationY: OmrPageConstants.calibrationY,
+      calibrationFilledX: OmrPageConstants.calibrationFilledX,
+      calibrationEmptyX: OmrPageConstants.calibrationEmptyX,
+      calibrationBubbleSize: OmrPageConstants.calibrationBubbleSize,
+      rowMarkX: OmrRowMarks.markX,
+      rowMarkSize: OmrRowMarks.markSize,
+      qrCodeSize: OmrPageConstants.qrCodeSize,
+      qrCodeX: OmrPageConstants.qrCodeX,
+      qrCodeY: OmrPageConstants.qrCodeY,
+    );
+  }
+
+  /// Row marks sit left of the answer grid but must not overlap left-edge timing marks.
+  /// Clearance reserves the scanner's row-mark sample half-width (native uses ~markSize).
+  static double _rowMarkX({
+    required double contentLeft,
+    required double timingEdge,
+    required double timingSize,
+    required double rowMarkSize,
+    required double scale,
+  }) {
+    final leftOfContent = contentLeft - (10 * scale).clamp(6.0, 10.0);
+    final sampleHalf = rowMarkSize.clamp(3.0, 6.0);
+    final clearOfTiming = timingEdge + timingSize + sampleHalf + 1.0;
+    return leftOfContent < clearOfTiming ? clearOfTiming : leftOfContent;
+  }
+
   /// Auto-place page size, content block, and registration marks for a form.
   factory OmrSheetGeometry.forForm(OmrLayoutForm form) {
     final lengthwise =
         form.orientation == OmrLayoutOrientation.lengthwise;
+    // Full portrait custom sheets must match the proven 30–100 geometry.
+    // Re-deriving OMR ID/footer on scale=1 used to steal answer-band height
+    // and block high question counts (including the advertised 200 cap).
+    if (lengthwise && form.pageFill == OmrLayoutPageFill.full) {
+      return OmrSheetGeometry.standardPortrait();
+    }
     final pageWidth =
         lengthwise ? OmrPageConstants.pageWidth : OmrPageConstants.pageHeight;
     final pageHeight =
@@ -722,9 +803,11 @@ class OmrSheetGeometry {
         break;
     }
 
-    final scale = (blockWidth / OmrPageConstants.pageWidth)
-        .clamp(0.48, 1.0)
-        .toDouble();
+    final scaleW = blockWidth / OmrPageConstants.pageWidth;
+    final scaleH = blockHeight / OmrPageConstants.pageHeight;
+    // Half sheets are full-width but half-height — scale must follow the short axis
+    // or OMR ID consumes the answer band (exam-day failure).
+    final scale = (scaleW < scaleH ? scaleW : scaleH).clamp(0.48, 1.0).toDouble();
     final marginLeft = (OmrPageConstants.marginLeft * scale).clamp(12.0, 28.0);
     final marginRight = (OmrPageConstants.marginRight * scale).clamp(12.0, 28.0);
     final marginTop = (OmrPageConstants.marginTop * scale).clamp(14.0, 34.0);
@@ -774,6 +857,11 @@ class OmrSheetGeometry {
     if (omrColSpacing > maxColSpacing) {
       omrColSpacing = maxColSpacing.clamp(18.0, 50.0);
     }
+    // Digit masks must not touch: spacing ≥ bubble diameter + 3 pt.
+    final minOmrRowSpacing = omrBubble + 3.0;
+    if (omrRowSpacing < minOmrRowSpacing) {
+      omrRowSpacing = minOmrRowSpacing;
+    }
     final omrBlockWidth =
         omrColSpacing * (OmrPageConstants.omrIdColumns - 1) + omrBubble;
     var omrIdHeight = omrIdTitleBand +
@@ -797,13 +885,16 @@ class OmrSheetGeometry {
     final answerGridRight = contentRight;
 
     // If the block is very tight, compress OMR row spacing before overlapping.
+    // Never go below digit-mask clearance — better to shrink answer area / reject.
     final minAnswerGridHeight = 48.0;
     final availableForAnswers =
         answerGridBottom - answerGridTop - optionBar - footerReserve;
     if (availableForAnswers < minAnswerGridHeight) {
       final deficit = minAnswerGridHeight - availableForAnswers;
       final spacingShrink = deficit / (omrIdDigitRows - 1);
-      omrRowSpacing = (omrRowSpacing - spacingShrink).clamp(7.0, 12.0);
+      final shrunk = omrRowSpacing - spacingShrink;
+      final upper = minOmrRowSpacing > 12.0 ? minOmrRowSpacing : 12.0;
+      omrRowSpacing = shrunk.clamp(minOmrRowSpacing, upper);
       omrIdHeight = omrIdTitleBand +
           omrBubble +
           (omrIdDigitRows - 1) * omrRowSpacing +
@@ -828,16 +919,34 @@ class OmrSheetGeometry {
     final timingStartY = gridBandTop;
     final timingEndY = gridBandBottom;
     final gridSpan = (timingEndY - timingStartY).clamp(40.0, blockHeight);
-    final timingSpacing = (OmrPageConstants.timingMarkSpacing * scale).clamp(
+    var timingSpacing = (OmrPageConstants.timingMarkSpacing * scale).clamp(
       24.0,
       (gridSpan / 3).clamp(24.0, 80.0),
     );
+    // Scanner needs ≥4 marks per edge; tighten spacing if the band is short.
+    final xSpan = (timingEndX - timingStartX).clamp(40.0, blockWidth);
+    final ySpan = (timingEndY - timingStartY).clamp(40.0, blockHeight);
+    final maxSpacingForFourX = xSpan / 3.0;
+    final maxSpacingForFourY = ySpan / 3.0;
+    if (timingSpacing > maxSpacingForFourX) {
+      timingSpacing = maxSpacingForFourX.clamp(16.0, timingSpacing);
+    }
+    if (timingSpacing > maxSpacingForFourY) {
+      timingSpacing = maxSpacingForFourY.clamp(16.0, timingSpacing);
+    }
 
     final answerBubble =
         (OmrPageConstants.answerBubbleDiameter * scale).clamp(8.0, 11.5);
-    final calY = contentBottom - (8 * scale).clamp(4.0, 8.0);
+    // Keep calibration fully inside the printable block (≈4 pt printer bleed).
     final calSize =
         (OmrPageConstants.calibrationBubbleSize * scale).clamp(7.0, 10.0);
+    const printerBleed = 4.0;
+    final calY = (contentBottom - (calSize / 2) - printerBleed)
+        .clamp(contentTop + 20.0, contentBottom - (calSize / 2));
+    final answerColumnInset = [
+      (OmrPageConstants.answerColumnInset * scale).clamp(3.0, 6.0),
+      answerBubble / 2 + 1.0,
+    ].reduce((a, b) => a > b ? a : b);
 
     return OmrSheetGeometry(
       pageWidth: pageWidth,
@@ -873,8 +982,7 @@ class OmrSheetGeometry {
       answerOptionIndicatorHeight: optionBar,
       answerGridFooterHeight: footerReserve,
       answerBubbleDiameter: answerBubble,
-      answerColumnInset:
-          (OmrPageConstants.answerColumnInset * scale).clamp(3.0, 6.0),
+      answerColumnInset: answerColumnInset,
       answerNumberBubbleGap:
           (OmrPageConstants.answerNumberBubbleGap * scale).clamp(3.0, 6.0),
       questionNumberWidth:
@@ -883,7 +991,13 @@ class OmrSheetGeometry {
       calibrationFilledX: contentLeft + (52 * scale).clamp(24.0, 52.0),
       calibrationEmptyX: contentLeft + (82 * scale).clamp(40.0, 82.0),
       calibrationBubbleSize: calSize,
-      rowMarkX: contentLeft - (10 * scale).clamp(6.0, 10.0),
+      rowMarkX: OmrSheetGeometry._rowMarkX(
+        contentLeft: contentLeft,
+        timingEdge: timingEdge,
+        timingSize: timingSize,
+        rowMarkSize: (OmrRowMarks.markSize * scale).clamp(3.0, 4.0),
+        scale: scale,
+      ),
       rowMarkSize: (OmrRowMarks.markSize * scale).clamp(3.0, 4.0),
       qrCodeSize: qrSize,
       qrCodeX: qrCodeX,
@@ -1060,6 +1174,24 @@ class OmrLayoutSuggestion {
   String get id => form.id;
 }
 
+/// A scan-safe columns × rows choice for a fixed question count.
+class OmrAvailableGridSize {
+  const OmrAvailableGridSize({
+    required this.columns,
+    required this.rows,
+  });
+
+  final int columns;
+  final int rows;
+
+  int get capacity => columns * rows;
+
+  String get label => '$columns × $rows';
+
+  String get detail =>
+      '$columns question columns · $rows rows each · $capacity questions';
+}
+
 /// A page/orientation combo that cannot fit the requested quiz.
 class OmrLayoutBlockedOption {
   const OmrLayoutBlockedOption({
@@ -1096,12 +1228,109 @@ class OmrLayoutProfile {
   final OmrSheetGeometry geometry;
 
   static const int minCustomItems = 5;
-  static const int maxCustomItems = 100;
-  /// Keep rows tall enough for phone fill detection (not just printable).
+  static const int maxCustomItems = 200;
+  /// Preferred row pitch for comfortable phone fill detection.
   static const double minRowHeight = 20.0;
-  /// Keep option bubbles far enough apart to avoid neighbor misreads.
+  /// Dense full-page absolute floor — still phone-scannable (not merely printable).
+  /// Kept well above bubble diameter so fill detection has vertical clearance.
+  static const double minRowHeightDense = 16.0;
+  /// Extra slack above [minRowHeightDense] so packs never pinch the floor
+  /// (printer scale + phone framing variance).
+  static const double densePackMargin = 0.5;
+  /// Preferred option-bubble gap for roomy packs.
   static const double minBubbleSpacingX = 12.5;
+  /// Dense full-page option gap — close to roomy floor so neighbors stay distinct.
+  static const double minBubbleSpacingXDense = 11.5;
+  /// Extra slack above dense option spacing (same rationale as [densePackMargin]).
+  static const double denseSpacingMargin = 0.5;
+  static const double minBubbleSpacingXQuarter = 14.0;
   static const double preferredMaxBubbleSpacingX = 26.0;
+  /// Minimum (rowHeight − bubbleDiameter) so stacked bubbles do not touch.
+  static const double minBubbleVerticalClearance = 4.0;
+  /// Cap rows per column so sheets stay frameable and row marks stay distinct.
+  /// Matches dense full-page height ÷ (minRowHeightDense + densePackMargin).
+  static const int maxRowsPerColumn = 31;
+  /// Preferred portrait column count — matches proven 30/60/100 family.
+  static const int maxColumnsLengthwise = 5;
+  /// Extra columns allowed only when Q count exceeds 5×[maxRowsPerColumn].
+  /// Still capped so packs stay tall (not 10-wide strips).
+  static const int absoluteMaxColumnsLengthwise = 8;
+  static const int maxColumnsQuarter = 4;
+  /// Prefer packs with at least this many rows when an even alternative exists.
+  static const int minBalancedRows = 6;
+
+  static bool _isFullLengthwise(OmrLayoutForm form) =>
+      form.orientation == OmrLayoutOrientation.lengthwise &&
+      form.pageFill == OmrLayoutPageFill.full;
+
+  /// Column cap so phone framing stays vertical like standard sheets.
+  /// [itemCount] may raise the cap slightly for very high Q counts only.
+  static int maxColumnsFor(OmrLayoutForm form, {int itemCount = 0}) {
+    if (form.orientation == OmrLayoutOrientation.crosswise) {
+      return 6;
+    }
+    if (form.pageFill == OmrLayoutPageFill.quarter) {
+      return maxColumnsQuarter;
+    }
+    if (itemCount <= 0) {
+      return maxColumnsLengthwise;
+    }
+    final preferredCapacity = maxColumnsLengthwise * maxRowsPerColumn;
+    if (itemCount <= preferredCapacity) {
+      return maxColumnsLengthwise;
+    }
+    final needed = (itemCount / maxRowsPerColumn).ceil();
+    if (needed <= maxColumnsLengthwise) {
+      return maxColumnsLengthwise;
+    }
+    return needed.clamp(maxColumnsLengthwise, absoluteMaxColumnsLengthwise);
+  }
+
+  /// Tighter sheets need wider bubble gaps to avoid neighbor misreads.
+  static double minBubbleSpacingXFor(OmrLayoutForm form) =>
+      form.pageFill == OmrLayoutPageFill.quarter
+          ? minBubbleSpacingXQuarter
+          : minBubbleSpacingX;
+
+  /// Scan floors for a resolved profile (dense sheets use smaller bubbles).
+  static double scanMinRowHeight(OmrSheetGeometry geometry) {
+    final clearanceFloor =
+        geometry.answerBubbleDiameter + minBubbleVerticalClearance;
+    final packFloor =
+        geometry.answerBubbleDiameter < OmrPageConstants.answerBubbleDiameter
+            ? minRowHeightDense + densePackMargin
+            : minRowHeight;
+    return clearanceFloor > packFloor ? clearanceFloor : packFloor;
+  }
+
+  static double scanMinBubbleSpacing(
+    OmrLayoutForm form,
+    OmrSheetGeometry geometry,
+  ) {
+    if (form.pageFill == OmrLayoutPageFill.quarter) {
+      return minBubbleSpacingXQuarter;
+    }
+    if (geometry.answerBubbleDiameter < OmrPageConstants.answerBubbleDiameter) {
+      return minBubbleSpacingXDense + denseSpacingMargin;
+    }
+    return minBubbleSpacingX;
+  }
+
+  /// True when a candidate grid is safe for phone fill detection.
+  static bool _rowPitchScannable({
+    required double rowHeight,
+    required OmrSheetGeometry geometry,
+    required double minRow,
+  }) {
+    if (rowHeight < minRow) {
+      return false;
+    }
+    if (rowHeight <
+        geometry.answerBubbleDiameter + minBubbleVerticalClearance) {
+      return false;
+    }
+    return true;
+  }
 
   /// Deprecated alias used by older UI code paths.
   OmrLayoutShape get shape => form.pageFill == OmrLayoutPageFill.full &&
@@ -1110,7 +1339,7 @@ class OmrLayoutProfile {
       : OmrLayoutShape.long;
 
   List<String> get optionLabels =>
-      OmrPageConstants.answerOptionLabels.take(optionsCount).toList();
+      OmrPageConstants.answerOptionLabels.take(optionsCount.clamp(2, 6)).toList();
 
   String get previewLabel => isCustom
       ? 'Custom $itemCount · $optionsCount opts · '
@@ -1160,7 +1389,7 @@ class OmrLayoutProfile {
     OmrLayoutForm? form,
     OmrLayoutShape? shape,
   }) {
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     final resolvedForm = form ??
         (shape != null
             ? OmrLayoutForm.fromId(shape.id)
@@ -1232,15 +1461,29 @@ class OmrLayoutProfile {
   static int safetyCapForForm(OmrLayoutForm form) {
     switch (form.pageFill) {
       case OmrLayoutPageFill.full:
-        return form.orientation == OmrLayoutOrientation.crosswise ? 80 : 100;
+        return 200;
       case OmrLayoutPageFill.half:
-        return form.orientation == OmrLayoutOrientation.crosswise ? 40 : 45;
+        return form.orientation == OmrLayoutOrientation.crosswise ? 70 : 90;
       case OmrLayoutPageFill.quarter:
-        return form.orientation == OmrLayoutOrientation.crosswise ? 15 : 20;
+        return form.orientation == OmrLayoutOrientation.crosswise ? 12 : 15;
     }
   }
 
+  /// Portrait forms the engine still understands, including legacy half/quarter
+  /// layouts that were already saved or printed.
   static const List<OmrLayoutForm> allCustomForms = _allCustomForms;
+
+  /// Forms offered when creating or changing a custom sheet.
+  ///
+  /// Full portrait only. Half and quarter print 2–4 sheets per bond page and
+  /// force teachers to tilt or zoom the camera to fill the frame — too hard
+  /// on exam day. Landscape/crosswise is also not offered.
+  static const List<OmrLayoutForm> teacherSelectableCustomForms = [
+    OmrLayoutForm(
+      orientation: OmrLayoutOrientation.lengthwise,
+      pageFill: OmrLayoutPageFill.full,
+    ),
+  ];
 
   static const List<OmrLayoutForm> _allCustomForms = [
     OmrLayoutForm(
@@ -1255,18 +1498,6 @@ class OmrLayoutProfile {
       orientation: OmrLayoutOrientation.lengthwise,
       pageFill: OmrLayoutPageFill.quarter,
     ),
-    OmrLayoutForm(
-      orientation: OmrLayoutOrientation.crosswise,
-      pageFill: OmrLayoutPageFill.full,
-    ),
-    OmrLayoutForm(
-      orientation: OmrLayoutOrientation.crosswise,
-      pageFill: OmrLayoutPageFill.half,
-    ),
-    OmrLayoutForm(
-      orientation: OmrLayoutOrientation.crosswise,
-      pageFill: OmrLayoutPageFill.quarter,
-    ),
   ];
 
   static OmrLayoutSuggestionTier _tierForForm(OmrLayoutForm form) {
@@ -1274,9 +1505,7 @@ class OmrLayoutProfile {
         form.pageFill == OmrLayoutPageFill.full) {
       return OmrLayoutSuggestionTier.recommended;
     }
-    if (form.pageFill == OmrLayoutPageFill.quarter ||
-        (form.orientation == OmrLayoutOrientation.crosswise &&
-            form.pageFill == OmrLayoutPageFill.half)) {
+    if (form.pageFill == OmrLayoutPageFill.quarter) {
       return OmrLayoutSuggestionTier.tight;
     }
     return OmrLayoutSuggestionTier.workable;
@@ -1314,18 +1543,15 @@ class OmrLayoutProfile {
   ) {
     switch (tier) {
       case OmrLayoutSuggestionTier.recommended:
-        return 'Best for scanning — same geometry family as standard sheets.';
+        return 'Best for scanning — one full portrait sheet, phone upright.';
       case OmrLayoutSuggestionTier.workable:
-        if (form.orientation == OmrLayoutOrientation.crosswise) {
-          return 'Wide layout — print landscape and do not rotate the page.';
-        }
         if (form.pageFill == OmrLayoutPageFill.half) {
-          return 'Fill the camera frame with the printed half (not blank paper).';
+          return 'Two sheets per bond page — fill the camera with the printed half only.';
         }
-        return 'Good for short quizzes — print portrait and do not rotate.';
+        return 'Good for short quizzes — keep the phone upright while scanning.';
       case OmrLayoutSuggestionTier.tight:
         if (form.pageFill == OmrLayoutPageFill.quarter) {
-          return 'Exit-ticket size — fill the frame with the printed ¼ only.';
+          return 'Four sheets per bond page — fill the frame with the printed ¼ only.';
         }
         return 'Compact layout — bubbles are closer together; scan carefully.';
     }
@@ -1337,7 +1563,7 @@ class OmrLayoutProfile {
     required int optionsCount,
   }) {
     final suggestions = <OmrLayoutSuggestion>[];
-    for (final form in _allCustomForms) {
+    for (final form in teacherSelectableCustomForms) {
       final fit = tryCompute(
         itemCount: itemCount,
         optionsCount: optionsCount,
@@ -1373,7 +1599,7 @@ class OmrLayoutProfile {
             .map((s) => s.id)
             .toSet();
     final blocked = <OmrLayoutBlockedOption>[];
-    for (final form in _allCustomForms) {
+    for (final form in teacherSelectableCustomForms) {
       if (validIds.contains(form.id)) {
         continue;
       }
@@ -1396,6 +1622,136 @@ class OmrLayoutProfile {
     return blocked;
   }
 
+  /// Print sizes that fit an instructor-chosen columns × rows grid.
+  static List<OmrLayoutSuggestion> suggestExplicitGridLayouts({
+    required int columns,
+    required int rows,
+    required int optionsCount,
+  }) {
+    final suggestions = <OmrLayoutSuggestion>[];
+    for (final form in teacherSelectableCustomForms) {
+      final fit = tryComputeExplicitGrid(
+        columns: columns,
+        rows: rows,
+        optionsCount: optionsCount,
+        form: form,
+      );
+      if (!fit.isOk || fit.profile == null) {
+        continue;
+      }
+      final tier = _tierForForm(form);
+      suggestions.add(
+        OmrLayoutSuggestion(
+          form: form,
+          profile: fit.profile!,
+          tier: tier,
+          title: _suggestionTitle(form, fit.profile!),
+          subtitle: _suggestionSubtitle(form, tier),
+        ),
+      );
+    }
+    suggestions.sort(
+      (a, b) => _formSortKey(a.form).compareTo(_formSortKey(b.form)),
+    );
+    return suggestions;
+  }
+
+  /// Print sizes blocked for an instructor-chosen columns × rows grid.
+  static List<OmrLayoutBlockedOption> blockedExplicitGridLayouts({
+    required int columns,
+    required int rows,
+    required int optionsCount,
+  }) {
+    final validIds = suggestExplicitGridLayouts(
+      columns: columns,
+      rows: rows,
+      optionsCount: optionsCount,
+    ).map((s) => s.id).toSet();
+    final blocked = <OmrLayoutBlockedOption>[];
+    for (final form in teacherSelectableCustomForms) {
+      if (validIds.contains(form.id)) {
+        continue;
+      }
+      final fit = tryComputeExplicitGrid(
+        columns: columns,
+        rows: rows,
+        optionsCount: optionsCount,
+        form: form,
+      );
+      blocked.add(
+        OmrLayoutBlockedOption(
+          form: form,
+          reason: fit.errorMessage ??
+              'This grid is not scannable on this page size.',
+        ),
+      );
+    }
+    blocked.sort(
+      (a, b) => _formSortKey(a.form).compareTo(_formSortKey(b.form)),
+    );
+    return blocked;
+  }
+
+  /// Even-fill grids (columns × rows = [itemCount]) that stay scan-safe
+  /// on at least one custom print size. Used when the teacher sets questions
+  /// first, then picks from available sizes only.
+  static List<OmrAvailableGridSize> availableGridSizes({
+    required int itemCount,
+    required int optionsCount,
+  }) {
+    final items = itemCount;
+    final opts = optionsCount.clamp(2, 6);
+    if (items < minCustomItems || items > maxCustomItems) {
+      return const [];
+    }
+
+    final out = <OmrAvailableGridSize>[];
+    final maxCols = maxColumnsFor(
+      const OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      ),
+      itemCount: items,
+    );
+    for (var columns = 1; columns <= maxCols; columns++) {
+      if (items % columns != 0) {
+        continue;
+      }
+      final rows = items ~/ columns;
+      if (rows < 1 || rows > maxRowsPerColumn) {
+        continue;
+      }
+      if (columns == 1 && items > 25) {
+        continue;
+      }
+      final fits = suggestExplicitGridLayouts(
+        columns: columns,
+        rows: rows,
+        optionsCount: opts,
+      );
+      if (fits.isEmpty) {
+        continue;
+      }
+      out.add(OmrAvailableGridSize(columns: columns, rows: rows));
+    }
+
+    // Prefer standard-like column counts (5, 4, 3…) — tall vertical packs.
+    const preferred = [5, 4, 3, 2, 6, 7, 8, 1];
+    int rank(int columns) {
+      final index = preferred.indexOf(columns);
+      return index >= 0 ? index : preferred.length + columns;
+    }
+
+    out.sort((a, b) {
+      final byPreferred = rank(a.columns).compareTo(rank(b.columns));
+      if (byPreferred != 0) {
+        return byPreferred;
+      }
+      return a.rows.compareTo(b.rows);
+    });
+    return out;
+  }
+
   static OmrLayoutFitResult tryCompute({
     required int itemCount,
     required int optionsCount,
@@ -1404,7 +1760,7 @@ class OmrLayoutProfile {
   }) {
     final resolvedForm = shape != null ? OmrLayoutForm.fromId(shape.id) : form;
     final items = itemCount;
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     if (items < minCustomItems) {
       return OmrLayoutFitResult.fail(
         'Custom sheets need at least $minCustomItems questions.',
@@ -1413,16 +1769,7 @@ class OmrLayoutProfile {
     if (items > maxCustomItems) {
       return OmrLayoutFitResult.fail(
         'Custom sheets support at most $maxCustomItems questions. '
-        'Use a standard 30–100 sheet for large exams.',
-      );
-    }
-
-    final geometry = OmrSheetGeometry.forForm(resolvedForm);
-    if (geometry.answerGridContentHeight < minRowHeight * 2 ||
-        geometry.answerGridWidth < 80) {
-      return const OmrLayoutFitResult.fail(
-        'This page size is too small for a scannable answer grid. '
-        'Try Full page or Half page.',
+        'Use a proven standard sheet when it matches, or fewer questions.',
       );
     }
 
@@ -1431,7 +1778,7 @@ class OmrLayoutProfile {
       return OmrLayoutFitResult.fail(
         'A ${resolvedForm.pageFill.teacherLabel.toLowerCase()} '
         '${resolvedForm.orientation.teacherLabel.toLowerCase()} sheet '
-        'is too small for scannable bubbles. Try Full or Half page.',
+        'is too small for scannable bubbles. Use a full portrait page.',
       );
     }
     if (items > maxFit) {
@@ -1443,80 +1790,232 @@ class OmrLayoutProfile {
       );
     }
 
-    return _packItemsForForm(
+    final packed = _packBestAcrossGeometries(
       items: items,
       opts: opts,
       form: resolvedForm,
-      geometry: geometry,
-      maxFitHint: maxFit,
+    );
+    if (packed.isOk) {
+      return packed;
+    }
+
+    return OmrLayoutFitResult.fail(
+      'A ${resolvedForm.pageFill.teacherLabel.toLowerCase()} '
+      '${resolvedForm.orientation.teacherLabel.toLowerCase()} sheet '
+      'with $opts choices can fit at most $maxFit questions. '
+      'You asked for $items — use Full page, fewer questions, or fewer choices.',
     );
   }
 
-  static OmrLayoutFitResult _packItemsForForm({
+  static List<({OmrSheetGeometry geometry, double minRow, double minSpacing})>
+      _packAttemptsFor(OmrLayoutForm form) {
+    final attempts = <({
+      OmrSheetGeometry geometry,
+      double minRow,
+      double minSpacing
+    })>[
+      (
+        geometry: OmrSheetGeometry.forForm(form),
+        minRow: minRowHeight,
+        minSpacing: minBubbleSpacingXFor(form),
+      ),
+    ];
+    if (_isFullLengthwise(form)) {
+      final denseGeometry = OmrSheetGeometry.denseFullPortrait();
+      attempts.add((
+        geometry: denseGeometry,
+        minRow: scanMinRowHeight(denseGeometry),
+        minSpacing: scanMinBubbleSpacing(form, denseGeometry),
+      ));
+    }
+    return attempts;
+  }
+
+  static OmrLayoutFitResult _packBestAcrossGeometries({
     required int items,
     required int opts,
     required OmrLayoutForm form,
-    required OmrSheetGeometry geometry,
-    required int maxFitHint,
   }) {
-    // Lengthwise prefers denser columns; Crosswise prefers fewer, wider columns.
-    final columnOrder =
-        form.orientation == OmrLayoutOrientation.crosswise
-            ? const [3, 4, 5, 2, 1]
-            : const [5, 4, 3, 2, 1];
+    OmrLayoutProfile? best;
+      var bestEven = false;
+    var bestEmpty = 1 << 30;
+    var bestShortfall = 1 << 30;
+    var bestDense = true;
+    var bestSlack = -1.0;
+    var bestRows = 0;
 
-    final gridHeight = geometry.answerGridContentHeight;
-    final gridWidth = geometry.answerGridWidth;
+    for (final attempt in _packAttemptsFor(form)) {
+      final geometry = attempt.geometry;
+      final minRow = attempt.minRow;
+      final minSpacing = attempt.minSpacing;
+      final dense = geometry.answerBubbleDiameter <
+          OmrPageConstants.answerBubbleDiameter;
+      if (geometry.answerGridContentHeight < minRow * 2 ||
+          geometry.answerGridWidth < 80) {
+        continue;
+      }
 
-    for (final columns in columnOrder) {
-      final rows = (items / columns).ceil();
-      if (rows < 1) continue;
-      final rowHeight = gridHeight / rows;
-      if (rowHeight < minRowHeight) continue;
+      final columnOrder = _columnPackOrder(items: items, form: form);
+      final gridHeight = geometry.answerGridContentHeight;
+      final gridWidth = geometry.answerGridWidth;
 
-      final columnWidth = gridWidth / columns;
-      final maxSpacing = _maxBubbleSpacing(
-        columnWidth,
-        opts,
-        geometry: geometry,
-      );
-      if (maxSpacing < minBubbleSpacingX) continue;
+      for (final columns in columnOrder) {
+        final rows = (items / columns).ceil();
+        if (rows < 1 || rows > maxRowsPerColumn) continue;
+        // One very tall column is hard to frame and weakens row-mark lock.
+        if (columns == 1 && items > 25) continue;
+        final rowHeight = gridHeight / rows;
+        if (!_rowPitchScannable(
+          rowHeight: rowHeight,
+          geometry: geometry,
+          minRow: minRow,
+        )) {
+          continue;
+        }
 
-      final bubbleSpacingX = maxSpacing < preferredMaxBubbleSpacingX
-          ? maxSpacing
-          : preferredMaxBubbleSpacingX;
+        final columnWidth = gridWidth / columns;
+        final maxSpacing = _maxBubbleSpacing(
+          columnWidth,
+          opts,
+          geometry: geometry,
+        );
+        if (maxSpacing < minSpacing) continue;
 
-      final templateId =
-          'custom_${items}_o${opts}_${form.id}_${columns}x$rows';
-      final grid = OmrTemplateSpec(
-        templateId: templateId,
-        maxItems: items,
-        columns: columns,
-        rows: rows,
-        rowHeight: rowHeight,
-        columnWidth: columnWidth,
-        bubbleSpacingX: bubbleSpacingX,
-        supportedItemCounts: [items],
-      );
+        final bubbleSpacingX = maxSpacing < preferredMaxBubbleSpacingX
+            ? maxSpacing
+            : preferredMaxBubbleSpacingX;
 
-      return OmrLayoutFitResult.ok(
-        OmrLayoutProfile(
+        final slack = [
+          rowHeight - minRow,
+          bubbleSpacingX - minSpacing,
+        ].reduce((a, b) => a < b ? a : b);
+
+        final evenFill = items % columns == 0;
+        final emptySlots = columns * rows - items;
+        final remInLastCol = items % rows;
+        final shortfall =
+            evenFill || remInLastCol == 0 ? 0 : rows - remInLastCol;
+
+        // Prefer: even fill → fewer empties → smaller shortfall →
+        // roomy (non-dense) geometry → taller pack when current is shallow →
+        // (uneven only) more slack.
+        // When two even packs tie, keep the earlier preferred column count
+        // (5,4,3…) — do not let max-capped bubble spacing favor 1–2 columns.
+        final better = best == null ||
+            (!bestEven && evenFill) ||
+            (evenFill == bestEven && emptySlots < bestEmpty) ||
+            (evenFill == bestEven &&
+                emptySlots == bestEmpty &&
+                shortfall < bestShortfall) ||
+            (evenFill == bestEven &&
+                emptySlots == bestEmpty &&
+                shortfall == bestShortfall &&
+                bestDense &&
+                !dense) ||
+            (evenFill == bestEven &&
+                emptySlots == bestEmpty &&
+                shortfall == bestShortfall &&
+                dense == bestDense &&
+                bestRows < minBalancedRows &&
+                rows > bestRows &&
+                // Stay standard-like: do not collapse to 1–2 skinny columns
+                // just to gain row count.
+                columns >= 3) ||
+            (evenFill == bestEven &&
+                emptySlots == bestEmpty &&
+                shortfall == bestShortfall &&
+                dense == bestDense &&
+                !evenFill &&
+                slack > bestSlack);
+        if (!better) continue;
+
+        final templateId =
+            'custom_${items}_o${opts}_${form.id}_${columns}x$rows';
+        final grid = OmrTemplateSpec(
+          templateId: templateId,
+          maxItems: items,
+          columns: columns,
+          rows: rows,
+          rowHeight: rowHeight,
+          columnWidth: columnWidth,
+          bubbleSpacingX: bubbleSpacingX,
+          supportedItemCounts: [items],
+        );
+
+        final candidate = OmrLayoutProfile(
           grid: grid,
           optionsCount: opts,
           isCustom: true,
           form: form,
           itemCount: items,
           geometry: geometry,
-        ),
-      );
+        );
+        if (!candidate.bubblesFitInsideColumns()) {
+          continue;
+        }
+        if (!candidate.hasAdequateTimingMarks()) {
+          continue;
+        }
+
+        bestEven = evenFill;
+        bestEmpty = emptySlots;
+        bestShortfall = shortfall;
+        bestDense = dense;
+        bestSlack = slack;
+        bestRows = rows;
+        best = candidate;
+      }
     }
 
+    if (best != null) {
+      return OmrLayoutFitResult.ok(best);
+    }
     return OmrLayoutFitResult.fail(
       'A ${form.pageFill.teacherLabel.toLowerCase()} '
       '${form.orientation.teacherLabel.toLowerCase()} sheet '
-      'with $opts choices can fit at most $maxFitHint questions. '
-      'You asked for $items — use Full page, fewer questions, or fewer choices.',
+      'with $opts choices cannot fit $items questions scannably.',
     );
+  }
+
+  static OmrLayoutFitResult _tryComputeWithoutRecursion({
+    required int itemCount,
+    required int optionsCount,
+    required OmrLayoutForm form,
+  }) {
+    return _packBestAcrossGeometries(
+      items: itemCount,
+      opts: optionsCount.clamp(2, 6),
+      form: form,
+    );
+  }
+
+  /// Prefers 5→4→3 columns for typical quizzes; small counts stay tall
+  /// (1–3 columns); allows 6–8 only when needed for high Q counts.
+  static List<int> _columnPackOrder({
+    required int items,
+    required OmrLayoutForm form,
+  }) {
+    final maxCols = maxColumnsFor(form, itemCount: items);
+    final List<int> preferred;
+    if (form.orientation == OmrLayoutOrientation.crosswise) {
+      preferred = const [4, 5, 3, 6, 2, 1];
+    } else if (items <= 12) {
+      // Tiny quizzes: one tall column (or 2–3), never a single wide row.
+      preferred = const [2, 3, 1, 4, 5, 6, 7, 8];
+    } else {
+      preferred = const [5, 4, 3, 2, 6, 7, 8, 1];
+    }
+    final allowed = preferred.where((c) => c <= maxCols).toList();
+    final divisors = <int>[];
+    final rest = <int>[];
+    for (final columns in allowed) {
+      if (items % columns == 0) {
+        divisors.add(columns);
+      } else {
+        rest.add(columns);
+      }
+    }
+    return [...divisors, ...rest];
   }
 
   /// Raw geometric upper bound before the column solver walk-down.
@@ -1524,29 +2023,44 @@ class OmrLayoutProfile {
     required OmrLayoutForm form,
     required int optionsCount,
   }) {
-    final opts = optionsCount.clamp(2, 5);
-    final geometry = OmrSheetGeometry.forForm(form);
+    final opts = optionsCount.clamp(2, 6);
+    final useDense = _isFullLengthwise(form);
+    final geometry = useDense
+        ? OmrSheetGeometry.denseFullPortrait()
+        : OmrSheetGeometry.forForm(form);
+    final minRow = scanMinRowHeight(geometry);
+    final minSpacing = scanMinBubbleSpacing(form, geometry);
     final gridHeight = geometry.answerGridContentHeight;
     final gridWidth = geometry.answerGridWidth;
-    if (gridHeight < minRowHeight || gridWidth < 80) {
+    if (gridHeight < minRow || gridWidth < 80) {
       return 0;
     }
 
-    final columnOrder = form.orientation == OmrLayoutOrientation.crosswise
-        ? const [3, 4, 5, 2, 1]
-        : const [5, 4, 3, 2, 1];
+    final columnOrder = _columnPackOrder(items: maxCustomItems, form: form);
+    final capacityOrder = columnOrder.isNotEmpty
+        ? columnOrder
+        : List<int>.generate(
+            maxColumnsFor(form, itemCount: maxCustomItems),
+            (i) => i + 1,
+          ).reversed.toList();
 
     var best = 0;
-    for (final columns in columnOrder) {
+    for (final columns in capacityOrder) {
       final columnWidth = gridWidth / columns;
       final maxSpacing = _maxBubbleSpacing(
         columnWidth,
         opts,
         geometry: geometry,
       );
-      if (maxSpacing < minBubbleSpacingX) continue;
+      if (maxSpacing < minSpacing) continue;
 
-      final maxRows = (gridHeight / minRowHeight).floor();
+      var maxRows = (gridHeight / minRow).floor();
+      if (maxRows > maxRowsPerColumn) {
+        maxRows = maxRowsPerColumn;
+      }
+      if (columns == 1 && maxRows > 25) {
+        maxRows = 25;
+      }
       if (maxRows < 1) continue;
       final capacity = columns * maxRows;
       if (capacity > best) {
@@ -1564,41 +2078,24 @@ class OmrLayoutProfile {
     return best;
   }
 
-  static OmrLayoutFitResult _tryComputeWithoutRecursion({
-    required int itemCount,
-    required int optionsCount,
-    required OmrLayoutForm form,
-  }) {
-    final opts = optionsCount.clamp(2, 5);
-    final geometry = OmrSheetGeometry.forForm(form);
-    if (geometry.answerGridContentHeight < minRowHeight * 2 ||
-        geometry.answerGridWidth < 80) {
-      return const OmrLayoutFitResult.fail('too small');
-    }
-    return _packItemsForForm(
-      items: itemCount,
-      opts: opts,
-      form: form,
-      geometry: geometry,
-      maxFitHint: itemCount,
-    );
-  }
-
   static OmrLayoutFitResult tryComputeExplicitGrid({
     required int columns,
     required int rows,
     required int optionsCount,
     required OmrLayoutForm form,
+    /// Actual question count. May be less than [columns]×[rows] when the
+    /// last column has empty slots (e.g. 200 questions on a 7×29 grid).
+    int? itemCount,
   }) {
     final cols = columns.clamp(1, 10);
-    final rowCount = rows.clamp(1, 100);
-    final items = cols * rowCount;
-    final opts = optionsCount.clamp(2, 5);
+    final rowCount = rows.clamp(1, 200);
+    final capacity = cols * rowCount;
+    final opts = optionsCount.clamp(2, 6);
+    final items = itemCount ?? capacity;
 
     if (items < minCustomItems) {
       return OmrLayoutFitResult.fail(
-        'Custom sheets need at least $minCustomItems questions '
-        '($cols×$rowCount = $items).',
+        'Custom sheets need at least $minCustomItems questions.',
       );
     }
     if (items > maxCustomItems) {
@@ -1606,14 +2103,48 @@ class OmrLayoutProfile {
         'Custom sheets support at most $maxCustomItems questions.',
       );
     }
-
-    final geometry = OmrSheetGeometry.forForm(form);
-    if (geometry.answerGridContentHeight < minRowHeight * 2 ||
-        geometry.answerGridWidth < 80) {
-      return const OmrLayoutFitResult.fail(
-        'This page size is too small for a scannable answer grid. '
-        'Try Full page or Half page.',
+    if (capacity < items) {
+      return OmrLayoutFitResult.fail(
+        'Grid $cols×$rowCount holds only $capacity questions, but this exam '
+        'has $items. Pick a larger grid or fewer questions.',
       );
+    }
+    // Allow a short empty tail in the last column; reject nearly-empty columns.
+    if (capacity - items >= cols) {
+      return OmrLayoutFitResult.fail(
+        'Grid $cols×$rowCount has too many empty slots for $items questions. '
+        'Use Automatic layout or a tighter grid.',
+      );
+    }
+
+    final roomy = _tryExplicitGridOnGeometry(
+      columns: cols,
+      rows: rowCount,
+      items: items,
+      opts: opts,
+      form: form,
+      geometry: OmrSheetGeometry.forForm(form),
+      minRow: minRowHeight,
+      minSpacing: minBubbleSpacingXFor(form),
+    );
+    if (roomy.isOk) {
+      return roomy;
+    }
+    if (_isFullLengthwise(form)) {
+      final denseGeometry = OmrSheetGeometry.denseFullPortrait();
+      final dense = _tryExplicitGridOnGeometry(
+        columns: cols,
+        rows: rowCount,
+        items: items,
+        opts: opts,
+        form: form,
+        geometry: denseGeometry,
+        minRow: scanMinRowHeight(denseGeometry),
+        minSpacing: scanMinBubbleSpacing(form, denseGeometry),
+      );
+      if (dense.isOk) {
+        return dense;
+      }
     }
 
     final maxFit = maxFitItems(form: form, optionsCount: opts);
@@ -1621,7 +2152,7 @@ class OmrLayoutProfile {
       return OmrLayoutFitResult.fail(
         'A ${form.pageFill.teacherLabel.toLowerCase()} '
         '${form.orientation.teacherLabel.toLowerCase()} sheet '
-        'is too small for scannable bubbles. Try Full or Half page.',
+        'is too small for scannable bubbles. Use a full portrait page.',
       );
     }
     if (items > maxFit) {
@@ -1629,30 +2160,74 @@ class OmrLayoutProfile {
         'A ${form.pageFill.teacherLabel.toLowerCase()} '
         '${form.orientation.teacherLabel.toLowerCase()} sheet '
         'with $opts choices can fit at most $maxFit questions. '
-        'Grid $cols×$rowCount = $items — use Full page, fewer rows/columns, '
-        'or fewer choices.',
+        'You asked for $items — use Full page, fewer questions, or fewer choices.',
+      );
+    }
+    return roomy;
+  }
+
+  static OmrLayoutFitResult _tryExplicitGridOnGeometry({
+    required int columns,
+    required int rows,
+    required int items,
+    required int opts,
+    required OmrLayoutForm form,
+    required OmrSheetGeometry geometry,
+    required double minRow,
+    required double minSpacing,
+  }) {
+    if (geometry.answerGridContentHeight < minRow * 2 ||
+        geometry.answerGridWidth < 80) {
+      return const OmrLayoutFitResult.fail(
+        'This page size is too small for a scannable answer grid. '
+        'Try Full page or Half page.',
       );
     }
 
     final gridHeight = geometry.answerGridContentHeight;
     final gridWidth = geometry.answerGridWidth;
-    final rowHeight = gridHeight / rowCount;
-    if (rowHeight < minRowHeight) {
+    final rowHeight = gridHeight / rows;
+    if (rows > maxRowsPerColumn) {
       return OmrLayoutFitResult.fail(
-        'Grid height $rowCount is too tall for this sheet — rows would be '
-        'too small to scan reliably. Try fewer rows or a larger page size.',
+        'Grid height $rows exceeds the scan-safe maximum of '
+        '$maxRowsPerColumn rows per column. Use more columns or fewer questions.',
+      );
+    }
+    final maxCols = maxColumnsFor(form, itemCount: items);
+    if (columns > maxCols) {
+      return OmrLayoutFitResult.fail(
+        'Grid width $columns is too wide to scan reliably on a phone. '
+        'Use at most $maxCols tall columns (like the standard sheets), '
+        'not a wide strip.',
+      );
+    }
+    if (columns == 1 && items > 25) {
+      return const OmrLayoutFitResult.fail(
+        'A single question column is not reliable for this many questions. '
+        'Use at least 2 columns.',
+      );
+    }
+    if (!_rowPitchScannable(
+      rowHeight: rowHeight,
+      geometry: geometry,
+      minRow: minRow,
+    )) {
+      return OmrLayoutFitResult.fail(
+        'Grid height $rows is too tall for this sheet — rows would be '
+        'too small to scan reliably. Try fewer rows, more columns, '
+        'or a larger page size.',
       );
     }
 
-    final columnWidth = gridWidth / cols;
+    final columnWidth = gridWidth / columns;
     final maxSpacing = _maxBubbleSpacing(
       columnWidth,
       opts,
       geometry: geometry,
     );
-    if (maxSpacing < minBubbleSpacingX) {
+    if (maxSpacing < minSpacing) {
       return OmrLayoutFitResult.fail(
-        'Grid width $cols is too wide for this sheet — bubbles would be '
+        'Grid width $columns is too wide for this sheet — bubbles would be '
         'too close together. Try fewer columns or fewer answer choices.',
       );
     }
@@ -1662,28 +2237,40 @@ class OmrLayoutProfile {
         : preferredMaxBubbleSpacingX;
 
     final templateId =
-        'custom_${items}_o${opts}_${form.id}_${cols}x$rowCount';
+        'custom_${items}_o${opts}_${form.id}_${columns}x$rows';
     final grid = OmrTemplateSpec(
       templateId: templateId,
       maxItems: items,
-      columns: cols,
-      rows: rowCount,
+      columns: columns,
+      rows: rows,
       rowHeight: rowHeight,
       columnWidth: columnWidth,
       bubbleSpacingX: bubbleSpacingX,
       supportedItemCounts: [items],
     );
 
-    return OmrLayoutFitResult.ok(
-      OmrLayoutProfile(
-        grid: grid,
-        optionsCount: opts,
-        isCustom: true,
-        form: form,
-        itemCount: items,
-        geometry: geometry,
-      ),
+    final profile = OmrLayoutProfile(
+      grid: grid,
+      optionsCount: opts,
+      isCustom: true,
+      form: form,
+      itemCount: items,
+      geometry: geometry,
     );
+    if (!profile.bubblesFitInsideColumns()) {
+      return const OmrLayoutFitResult.fail(
+        'Bubbles would spill past column edges on this grid. '
+        'Try fewer columns, fewer choices, or a larger page size.',
+      );
+    }
+    if (!profile.hasAdequateTimingMarks()) {
+      return const OmrLayoutFitResult.fail(
+        'This page size does not leave enough room for timing marks. '
+        'Use a full portrait page.',
+      );
+    }
+
+    return OmrLayoutFitResult.ok(profile);
   }
 
   /// Hard capacity for a form + option count (scannable min spacing).
@@ -1695,7 +2282,7 @@ class OmrLayoutProfile {
       form: form,
       optionsCount: optionsCount,
     );
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     while (capped >= minCustomItems) {
       if (_tryComputeWithoutRecursion(
         itemCount: capped,
@@ -1715,13 +2302,13 @@ class OmrLayoutProfile {
     required int optionsCount,
   }) {
     final maxFit = maxFitItems(form: form, optionsCount: optionsCount);
-    final opts = optionsCount.clamp(2, 5);
+    final opts = optionsCount.clamp(2, 6);
     final labels =
         OmrPageConstants.answerOptionLabels.take(opts).join('-');
     if (maxFit < minCustomItems) {
       return 'This ${form.pageFill.teacherLabel.toLowerCase()} '
           '${form.orientation.teacherLabel.toLowerCase()} sheet is too small '
-          'for a scannable quiz. Choose Full or Half page.';
+          'for a scannable quiz. Use a full portrait page.';
     }
     return 'This ${form.pageFill.teacherLabel.toLowerCase()} '
         '${form.orientation.teacherLabel.toLowerCase()} sheet with $labels '
@@ -1735,7 +2322,7 @@ class OmrLayoutProfile {
   }
 
   double bubbleCenterX(int colIndex, int optionIndex) {
-    final optionSpan = (optionsCount.clamp(2, 5) - 1);
+    final optionSpan = (optionsCount.clamp(2, 6) - 1);
     final columnLeft = geometry.answerGridLeft + (colIndex * grid.columnWidth);
     final bubbleAreaWidth = grid.bubbleSpacingX * optionSpan;
     final usableWidth =
@@ -1760,10 +2347,43 @@ class OmrLayoutProfile {
     final usableWidth = columnWidth - (geometry.answerColumnInset * 2);
     final fixed =
         geometry.questionNumberWidth + geometry.answerNumberBubbleGap;
-    final span = usableWidth - fixed;
-    final gaps = (optionsCount.clamp(2, 5) - 1);
+    // Reserve the full bubble diameter so the outer edge stays inside the column
+    // (centers alone would let radius spill past answerColumnInset on ¼ sheets).
+    final span = usableWidth - fixed - geometry.answerBubbleDiameter;
+    final gaps = (optionsCount.clamp(2, 6) - 1);
     if (gaps <= 0) return span;
+    if (span <= 0) return 0;
     return span / gaps;
+  }
+
+  /// True when every answer bubble stays inside its column (scan contract).
+  bool bubblesFitInsideColumns() {
+    final opts = optionsCount.clamp(2, 6);
+    for (var col = 0; col < grid.columns; col++) {
+      final leftEdge =
+          bubbleCenterX(col, 0) - (geometry.answerBubbleDiameter / 2);
+      final rightEdge = bubbleCenterX(col, opts - 1) +
+          (geometry.answerBubbleDiameter / 2);
+      final columnLeft =
+          geometry.answerGridLeft + (col * grid.columnWidth);
+      final columnRight = columnLeft + grid.columnWidth;
+      if (leftEdge < columnLeft - 0.05 || rightEdge > columnRight + 0.05) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Timing marks on each edge — scanner needs enough samples to trust alignment.
+  bool hasAdequateTimingMarks({int minPerEdge = 4}) {
+    final g = geometry;
+    final spacing = g.timingMarkSpacing;
+    if (spacing <= 0) return false;
+    final xCount =
+        ((g.timingMarkEndX - g.timingMarkStartX) / spacing).floor() + 1;
+    final yCount =
+        ((g.timingMarkEndY - g.timingMarkStartY) / spacing).floor() + 1;
+    return xCount >= minPerEdge && yCount >= minPerEdge;
   }
 }
 

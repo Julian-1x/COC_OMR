@@ -8,9 +8,16 @@ import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { exportResultsCsv, exportResultsPdf } from "@/lib/pdf/exports";
+import { downloadResultsPack } from "@/lib/omr/results-pack";
 import { scanPassed } from "@/lib/omr/passing-score";
 import { downloadBlob, downloadText } from "@/lib/utils";
 import { formatSectionTerm } from "@/lib/academic-term";
+import { createBrowserApiClient } from "@/lib/api/laravel-client";
+import { fetchScanResults } from "@/lib/api/data";
+import {
+  PendingReviewNotice,
+  SyncLoopNotice,
+} from "@/components/desk-notices";
 
 type ReviewFilter = "" | "pending" | "passed" | "failed";
 
@@ -40,6 +47,8 @@ export function ResultsContent({
   schoolYear,
   yearOptions = [],
   initialReviewFilter = "",
+  initialSectionFilter = "",
+  initialSubjectFilter = "",
 }: {
   scans: DbScanResult[];
   students: DbStudent[];
@@ -51,14 +60,17 @@ export function ResultsContent({
   schoolYear?: string;
   yearOptions?: string[];
   initialReviewFilter?: ReviewFilter;
+  initialSectionFilter?: string;
+  initialSubjectFilter?: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [sectionFilter, setSectionFilter] = useState("");
-  const [subjectFilter, setSubjectFilter] = useState("");
+  const [sectionFilter, setSectionFilter] = useState(initialSectionFilter);
+  const [subjectFilter, setSubjectFilter] = useState(initialSubjectFilter);
   const [nameSearch, setNameSearch] = useState("");
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>(initialReviewFilter);
   const [pdfNote, setPdfNote] = useState<string | null>(null);
+  const [packing, setPacking] = useState(false);
 
   const studentMap = new Map(students.map((s) => [s.omr_id, s]));
   const sectionOptions = [...sections].sort((a, b) => a.name.localeCompare(b.name));
@@ -92,6 +104,33 @@ export function ResultsContent({
     });
   }, [scans, studentMap, sectionFilter, subjectFilter, nameSearch, reviewFilter, subjects, allowedSectionNames]);
 
+  const filterSnapshot = useMemo(() => {
+    const approved = filtered.filter((s) => !s.needs_review);
+    if (approved.length === 0) {
+      return {
+        graded: 0,
+        pending: filtered.filter((s) => s.needs_review).length,
+        averagePercent: null as number | null,
+        passRate: null as number | null,
+        failCount: 0,
+      };
+    }
+    const pctSum = approved.reduce((sum, scan) => {
+      if (scan.total_questions <= 0) return sum;
+      return sum + (scan.score / scan.total_questions) * 100;
+    }, 0);
+    const passed = approved.filter((scan) =>
+      scanPassed(scan.score, scan.total_questions, passingPoints(scan, subjects)),
+    ).length;
+    return {
+      graded: approved.length,
+      pending: filtered.filter((s) => s.needs_review).length,
+      averagePercent: Math.round(pctSum / approved.length),
+      passRate: Math.round((passed / approved.length) * 100),
+      failCount: approved.length - passed,
+    };
+  }, [filtered, subjects]);
+
   function setReviewFilterAndUrl(next: ReviewFilter) {
     setReviewFilter(next);
     const params = new URLSearchParams(searchParams.toString());
@@ -105,6 +144,15 @@ export function ResultsContent({
   }
 
   async function downloadPdf() {
+    const pendingInExport = filtered.filter((s) => s.needs_review).length;
+    if (pendingInExport > 0) {
+      const proceed = window.confirm(
+        `${pendingInExport} row(s) in this export still need Review on the phone.\n\n` +
+          "Those scores are not final. Export anyway for a draft only?\n\n" +
+          "Cancel and filter to Passed/Failed, or finish Review on the phone first for official release.",
+      );
+      if (!proceed) return;
+    }
     const { bytes, truncated, total } = await exportResultsPdf(
       filtered,
       students,
@@ -115,16 +163,80 @@ export function ResultsContent({
     setPdfNote(
       truncated
         ? `PDF includes only the first 45 of ${total} rows. Download CSV for the full list.`
-        : null,
+        : pendingInExport > 0
+          ? `Draft export includes ${pendingInExport} pending-review scan(s). Confirm on the phone before official release.`
+          : null,
     );
   }
 
   function downloadCsv() {
+    const pendingInExport = filtered.filter((s) => s.needs_review).length;
+    if (pendingInExport > 0) {
+      const proceed = window.confirm(
+        `${pendingInExport} row(s) in this export still need Review on the phone.\n\n` +
+          "Those scores are not final. Export anyway for a draft only?",
+      );
+      if (!proceed) return;
+    }
     downloadText(
       exportResultsCsv(filtered, students, subjects, sectionFilter || undefined, subjectFilter || undefined),
       "omr_results.csv",
       "text/csv",
     );
+    if (pendingInExport > 0) {
+      setPdfNote(
+        `Draft CSV includes ${pendingInExport} pending-review scan(s). Confirm on the phone before official release.`,
+      );
+    }
+  }
+
+  async function downloadPack() {
+    if (filtered.length === 0) return;
+    const pendingInExport = filtered.filter((s) => s.needs_review).length;
+    if (pendingInExport > 0) {
+      const proceed = window.confirm(
+        `${pendingInExport} row(s) still need Review on the phone.\n\n` +
+          "Export a draft pack anyway?",
+      );
+      if (!proceed) return;
+    }
+    if (!subjectFilter) {
+      const proceed = window.confirm(
+        "Pick a subject for the full pack (scores + item analysis + student feedback).\n\n" +
+          "Continue with scores CSV/PDF only?",
+      );
+      if (!proceed) return;
+    }
+
+    setPacking(true);
+    setPdfNote(null);
+    try {
+      let scansWithAnswers = filtered;
+      if (subjectFilter) {
+        const api = createBrowserApiClient();
+        const allWithAnswers = await fetchScanResults(api, { includeAnswers: true });
+        const ids = new Set(filtered.map((s) => s.id));
+        scansWithAnswers = allWithAnswers.filter((s) => ids.has(s.id));
+      }
+      const result = await downloadResultsPack({
+        scans: filtered,
+        students,
+        subjects,
+        sectionFilter: sectionFilter || undefined,
+        subjectFilter: subjectFilter || undefined,
+        scansWithAnswers,
+      });
+      const skipNote =
+        result.skipped.length > 0 ? ` Skipped: ${result.skipped.join("; ")}.` : "";
+      setPdfNote(
+        `Downloaded ${result.files.length} file(s).${skipNote}` +
+          (result.pendingCount > 0 ? " Draft includes pending-review rows." : ""),
+      );
+    } catch (err) {
+      setPdfNote(err instanceof Error ? err.message : "Could not build results pack.");
+    } finally {
+      setPacking(false);
+    }
   }
 
   return (
@@ -133,10 +245,32 @@ export function ResultsContent({
         <div>
           <h1 className="text-2xl font-extrabold text-slate-800">Results</h1>
           <p className="mt-1 text-sm text-slate-500">
-            {showArchived
-              ? "Archived term results — read-only history."
-              : "Active term scores — export when you need them."}
+            {showArchived ? "Archived term history" : "Scores after phone sync"}
           </p>
+          {filterSnapshot.graded > 0 || filterSnapshot.pending > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+              {filterSnapshot.graded > 0 ? (
+                <>
+                  <span className="rounded-lg bg-emerald-50 px-2 py-1 text-emerald-800">
+                    Avg {filterSnapshot.averagePercent}%
+                  </span>
+                  <span className="rounded-lg bg-slate-100 px-2 py-1 text-slate-700">
+                    Pass {filterSnapshot.passRate}%
+                  </span>
+                  {filterSnapshot.failCount > 0 ? (
+                    <span className="rounded-lg bg-amber-50 px-2 py-1 text-amber-900">
+                      {filterSnapshot.failCount} failed
+                    </span>
+                  ) : null}
+                </>
+              ) : null}
+              {filterSnapshot.pending > 0 ? (
+                <span className="rounded-lg bg-amber-50 px-2 py-1 text-amber-900">
+                  {filterSnapshot.pending} pending review
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -187,29 +321,30 @@ export function ResultsContent({
           >
             Item analysis
           </Link>
-          <p className="w-full text-xs text-slate-500 sm:w-auto">
-            Per-student missed-question handouts:{" "}
-            <Link href="/dashboard/results/analysis" className="font-bold text-emerald-700 hover:underline">
-              Item analysis → Student feedback PDF
-            </Link>
-          </p>
         </div>
       </div>
 
+      <SyncLoopNotice className="mb-3" />
+      <PendingReviewNotice count={showArchived ? 0 : pendingCount} className="mb-4" />
+
       {pendingCount > 0 && !showArchived ? (
-        <Card className="mb-4 border-amber-200 bg-amber-50">
-          <p className="text-sm text-amber-950">
-            <strong>{pendingCount}</strong> scan{pendingCount === 1 ? "" : "s"} need review on your phone
-            before they count in exports and item analysis.{" "}
-            <button
-              type="button"
-              onClick={() => setReviewFilterAndUrl("pending")}
-              className="font-bold text-emerald-800 underline"
-            >
-              Show pending only
-            </button>
-          </p>
-        </Card>
+        <p className="mb-4 text-sm text-slate-600">
+          <button
+            type="button"
+            onClick={() => setReviewFilterAndUrl("pending")}
+            className="font-bold text-emerald-800 underline"
+          >
+            Show pending
+          </button>
+          {" · "}
+          <button
+            type="button"
+            onClick={() => setReviewFilterAndUrl("passed")}
+            className="font-bold text-emerald-800 underline"
+          >
+            Passed only
+          </button>
+        </p>
       ) : null}
 
       <Card className="mb-4">
@@ -266,12 +401,19 @@ export function ResultsContent({
           <p className="text-xs font-semibold text-slate-500">
             Showing {filtered.length} of {scans.length} scans
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" onClick={downloadCsv} disabled={filtered.length === 0}>
               CSV
             </Button>
-            <Button type="button" onClick={() => void downloadPdf()} disabled={filtered.length === 0}>
+            <Button type="button" variant="secondary" onClick={() => void downloadPdf()} disabled={filtered.length === 0}>
               PDF
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void downloadPack()}
+              disabled={filtered.length === 0 || packing}
+            >
+              {packing ? "Packing…" : "Results pack"}
             </Button>
           </div>
         </div>

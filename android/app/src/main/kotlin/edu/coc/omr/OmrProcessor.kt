@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 5. Auto-calibrate fill threshold using calibration marks
  * 6. Detect and decode QR code
  * 7. Read OMR ID (4-digit student ID)
- * 8. Read answer bubbles (A-E per question)
+ * 8. Read answer bubbles (A-F for custom, A-E for standard)
  * 9. Cross-validate and calculate confidence scores
  */
 class OmrProcessor(
@@ -86,11 +86,15 @@ class OmrProcessor(
         private const val CALIBRATION_BUBBLE_SIZE = 10.0
         
         // Answer section
-        private const val ANSWER_OPTIONS = 5  // A, B, C, D, E
+        private const val ANSWER_OPTIONS = 5  // Frozen presets are A-E; must match OmrPageConstants.
+        /** Custom sheets may request up to A-F; only ever used as a clamp ceiling. */
+        private const val MAX_ANSWER_OPTIONS = 6
+        /** Must match OmrPageConstants.answerOptionLabels — never truncate to A-E. */
+        private val ANSWER_OPTION_LETTERS = listOf("A", "B", "C", "D", "E", "F")
 
         // Fixed answer grid positions (from OmrPageConstants in omr_template_specs.dart)
         // These match the template specs exactly
-        private const val ANSWER_GRID_TOP = 276.0  // first answer row origin after A-E labels
+        private const val ANSWER_GRID_TOP = 276.0  // first answer row origin after answer labels
         private const val ANSWER_GRID_BOTTOM = 770.0  // bottom of answer rows before footer
         private const val ANSWER_GRID_LEFT = 28.0  // MARGIN_LEFT
         private const val ANSWER_GRID_RIGHT = 567.0  // PAGE_WIDTH - MARGIN_RIGHT
@@ -138,6 +142,12 @@ class OmrProcessor(
         private const val MIN_OMR_ID_AREA_COVERAGE = 0.12
         /** Accepted marks below this area coverage are flagged for teacher review. */
         private const val LIGHT_MARK_AREA_COVERAGE = 0.28
+        /** Dense custom sheets (tiny rows) — intentional pencil often lands under 0.28. */
+        private const val LIGHT_MARK_AREA_COVERAGE_DENSE = 0.22
+        /** Dense custom: slightly lower ink floor so true shades aren't left blank. */
+        private const val MIN_ANSWER_AREA_COVERAGE_DENSE = 0.15
+        /** Dense custom: allow a slightly softer lead when the winner is clearly dark. */
+        private const val MIN_WINNER_SEPARATION_DENSE = 0.06
         /** If fewer than this fraction of questions yield a mark, treat as grid misalignment. */
         private const val MIN_ANSWER_YIELD = 0.12
         /** Local refine radius (px on 595-wide warp) around predicted bubble centers. */
@@ -217,12 +227,71 @@ class OmrProcessor(
         val qrCodeX: Double = QR_BOX_LEFT,
         val qrCodeY: Double = QR_BOX_TOP,
         val qrCodeSize: Double = 80.0,
+        /** Locked subject id from Dart session — used to reject another subject's sheet. */
+        val subjectId: String = "",
     ) {
         fun warpWidth(): Int =
             (contentBlockWidth.takeIf { it > 0.0 } ?: pageWidth).roundToInt().coerceAtLeast(100)
 
         fun warpHeight(): Int =
             (contentBlockHeight.takeIf { it > 0.0 } ?: pageHeight).roundToInt().coerceAtLeast(100)
+
+        /** True when this form is a half/¼ tile that must fill the camera alone. */
+        fun isTiledContentBlock(): Boolean =
+            contentBlockWidth < pageWidth * 0.98 || contentBlockHeight < pageHeight * 0.98
+
+        /**
+         * Upscale half/¼ warps so bubble sampling density stays near full-page scans.
+         * Layout coordinates scale with the warp — corners still map to the printed tile.
+         */
+        fun withScanSamplingDensity(
+            minAreaFraction: Double = 0.65,
+            fullW: Double = OUTPUT_WIDTH.toDouble(),
+            fullH: Double = OUTPUT_HEIGHT.toDouble(),
+        ): QrLayoutMetadata {
+            val area = contentBlockWidth * contentBlockHeight
+            val minArea = fullW * fullH * minAreaFraction
+            if (area <= 0.0 || area >= minArea) return this
+            val s = kotlin.math.sqrt(minArea / area)
+            fun sc(v: Double) = v * s
+            return copy(
+                gridTop = sc(gridTop),
+                gridBottom = sc(gridBottom),
+                rowHeight = sc(rowHeight),
+                columnWidth = sc(columnWidth),
+                bubbleSpacingX = sc(bubbleSpacingX),
+                contentBlockWidth = sc(contentBlockWidth),
+                contentBlockHeight = sc(contentBlockHeight),
+                answerGridLeft = sc(answerGridLeft),
+                answerColumnInset = sc(answerColumnInset),
+                answerNumberBubbleGap = sc(answerNumberBubbleGap),
+                questionNumberWidth = sc(questionNumberWidth),
+                cornerMarkerSize = sc(cornerMarkerSize),
+                cornerMarkerOffset = sc(cornerMarkerOffset),
+                timingMarkSize = sc(timingMarkSize),
+                timingMarkSpacing = sc(timingMarkSpacing),
+                timingMarkEdgeOffset = sc(timingMarkEdgeOffset),
+                timingMarkStartX = sc(timingMarkStartX),
+                timingMarkEndX = sc(timingMarkEndX),
+                timingMarkStartY = sc(timingMarkStartY),
+                timingMarkEndY = sc(timingMarkEndY),
+                rowMarkX = sc(rowMarkX),
+                rowMarkSize = sc(rowMarkSize),
+                omrIdFirstColumnX = sc(omrIdFirstColumnX),
+                omrIdFirstRowY = sc(omrIdFirstRowY),
+                omrIdColumnSpacing = sc(omrIdColumnSpacing),
+                omrIdRowSpacing = sc(omrIdRowSpacing),
+                calibrationY = sc(calibrationY),
+                calibrationFilledX = sc(calibrationFilledX),
+                calibrationEmptyX = sc(calibrationEmptyX),
+                calibrationBubbleSize = sc(calibrationBubbleSize),
+                answerBubbleDiameter = sc(answerBubbleDiameter),
+                omrIdBubbleDiameter = sc(omrIdBubbleDiameter),
+                qrCodeX = sc(qrCodeX),
+                qrCodeY = sc(qrCodeY),
+                qrCodeSize = sc(qrCodeSize),
+            )
+        }
     }
 
     /** Nudge answer sampling when crumpled paper shifts row marks vs the corner warp. */
@@ -634,6 +703,16 @@ class OmrProcessor(
             )
             Log.d(TAG, "Corners detected and validated")
             debugInfo["cornersMs"] = System.currentTimeMillis() - cornersStartMs
+
+            // Half/¼ sheets: reject captures that framed the whole bond page (wrong aspect).
+            sessionLayout?.let { locked ->
+                val tileError = checkTileFrameConfusion(corners, locked, debugInfo)
+                if (tileError != null) {
+                    debugInfo["failureReason"] = "TILE_FRAME"
+                    debugInfo["pipelineStages"] = pipelineStages.toList()
+                    return stageFail("Sheet Framing", tileError)
+                }
+            }
             
             // Check timeout
             if (System.currentTimeMillis() - startTime > PROCESSING_TIMEOUT_MS * 2 / 3) {
@@ -683,7 +762,14 @@ class OmrProcessor(
             debugInfo["timingMarkScore"] = timingMarkScore
             val timingFound = (debugInfo["timingMarksFound"] as? Number)?.toInt() ?: 0
             val timingExpected = (debugInfo["timingMarksExpected"] as? Number)?.toInt() ?: 0
-            if (timingMarkScore < TIMING_MARK_FAIL_THRESHOLD) {
+            // Small quarter sheets have few expected marks — require a higher hit rate.
+            val timingFailThreshold = when {
+                timingExpected in 1..7 -> 0.60
+                timingExpected in 8..11 -> 0.50
+                else -> TIMING_MARK_FAIL_THRESHOLD
+            }
+            debugInfo["timingFailThreshold"] = timingFailThreshold
+            if (timingMarkScore < timingFailThreshold) {
                 debugInfo["failureReason"] = "TIMING_MARKS"
                 debugInfo["cornersDetected"] = true
                 attachDebugOverlay(
@@ -710,7 +796,7 @@ class OmrProcessor(
                 Log.d(TAG, "Skipping QR detection in FAST mode (no session layout)")
                 null
             } else {
-                detectQRCode(warpedMat, debugInfo)
+                detectQRCode(warpedMat, debugInfo, sessionLayout)
             }
             debugInfo["qrMs"] = System.currentTimeMillis() - qrStartMs
             debugInfo["qrDetected"] = qrData != null
@@ -719,6 +805,25 @@ class OmrProcessor(
 
             val qrIdentity = classifyQrIdentity(qrData, debugInfo)
             debugInfo["sheetQrIdentity"] = qrIdentity
+
+            // When QR names a subject, it must match the locked scanner session.
+            val expectedSubjectId = sessionLayout?.subjectId?.trim().orEmpty()
+            if (expectedSubjectId.isNotEmpty() &&
+                (qrIdentity == "coc" || qrIdentity == "coc_legacy")
+            ) {
+                val qrSubjectId = extractQrSubjectId(qrData)
+                if (!qrSubjectId.isNullOrBlank() &&
+                    !qrSubjectId.equals(expectedSubjectId, ignoreCase = true)
+                ) {
+                    debugInfo["failureReason"] = "SUBJECT_MISMATCH"
+                    debugInfo["expectedSubjectId"] = expectedSubjectId
+                    debugInfo["qrSubjectId"] = qrSubjectId
+                    return stageFail(
+                        "Sheet Identity",
+                        "This sheet is from a different subject. Open Scan from the matching subject, then try again.",
+                    )
+                }
+            }
             
             // Step 7.5: Layout from session, QR v2, or fallback.
             // Custom sheets MUST use session geometry — never guess from question count
@@ -861,21 +966,26 @@ class OmrProcessor(
             } else {
                 layout
             }
-            val bubbleRefineRadius = if (
-                timingMarkScore < 0.70 ||
-                rowMarkValidation < 0.70 ||
-                gridLock.applied
-            ) {
-                BUBBLE_REFINE_RADIUS_WEAK_PX
-            } else {
-                BUBBLE_REFINE_RADIUS_PX
-            }
+            val bubbleRefineRadius = spacingSafeRefineRadius(
+                lockedLayout,
+                if (
+                    timingMarkScore < 0.70 ||
+                    rowMarkValidation < 0.70
+                ) {
+                    BUBBLE_REFINE_RADIUS_WEAK_PX
+                } else {
+                    BUBBLE_REFINE_RADIUS_PX
+                },
+            )
             debugInfo["bubbleRefineRadiusPx"] = bubbleRefineRadius
             
+            // Do not tighten fill solely because grid-lock ran — the lock already
+            // corrected Y. Also: when timing marks are strong, do not arm strict
+            // mode from weak row-mark scores alone (short custom grids have few
+            // marks; 1 miss used to drop below 0.70 and invent multi-marks).
             val emptyGuardStrict =
                 timingMarkScore < 0.70 ||
-                    rowMarkValidation < 0.70 ||
-                    gridLock.applied
+                    (rowMarkValidation < 0.70 && timingMarkScore < 0.85)
             debugInfo["emptyGuardStrict"] = emptyGuardStrict
 
             // Step 10: Detect OMR ID with validation
@@ -1098,7 +1208,7 @@ class OmrProcessor(
                 grayMat.cols().toDouble(),
                 grayMat.rows().toDouble()
             )
-            val isAligned = alignmentScore >= 0.60
+            val isAligned = alignmentScore >= 0.68
 
             val confidence = (
                 0.45 +
@@ -1111,6 +1221,7 @@ class OmrProcessor(
             val hint = when {
                 !hasGoodLighting -> buildPreCaptureHint(imageQuality)
                 !isAligned -> "Align sheet edges"
+                confidence < 0.75 -> "Hold steady — almost ready"
                 else -> null
             }
 
@@ -2356,21 +2467,33 @@ class OmrProcessor(
         }
     }
 
-    private fun detectQRCode(warpedMat: Mat, debugInfo: MutableMap<String, Any>): String? {
+    private fun detectQRCode(
+        warpedMat: Mat,
+        debugInfo: MutableMap<String, Any>,
+        layout: QrLayoutMetadata? = null,
+    ): String? {
         try {
-            // Top-right header where the printed QR lives (≈80pt on 595-wide page).
+            val pageW = layout?.warpWidth()?.toDouble() ?: OUTPUT_WIDTH.toDouble()
+            val pageH = layout?.warpHeight()?.toDouble() ?: OUTPUT_HEIGHT.toDouble()
+            val qrLeft = layout?.qrCodeX ?: QR_BOX_LEFT
+            val qrTop = layout?.qrCodeY ?: QR_BOX_TOP
+            val qrSize = layout?.qrCodeSize ?: 80.0
+            val pad = 10.0
+
             val regions = listOf(
+                // Printed QR header — must use session geometry on ½/¼ custom sheets.
                 Rect(
-                    (OUTPUT_WIDTH * 0.62).toInt(),
-                    max(0, MARGIN_TOP.toInt() - 4),
-                    (OUTPUT_WIDTH * 0.36).toInt(),
-                    130,
+                    max(0, (qrLeft - pad).toInt()),
+                    max(0, (qrTop - pad).toInt()),
+                    min((qrSize + 2 * pad).toInt(), warpedMat.cols()),
+                    min((qrSize + 2 * pad).toInt(), warpedMat.rows()),
                 ),
+                // Fallback: top-right band (full-page presets).
                 Rect(
-                    (OUTPUT_WIDTH * 0.55).toInt(),
+                    max(0, (pageW * 0.55).toInt()),
                     0,
-                    (OUTPUT_WIDTH * 0.45).toInt(),
-                    160,
+                    min((pageW * 0.45).toInt(), warpedMat.cols()),
+                    min(160, warpedMat.rows()),
                 ),
             )
 
@@ -2529,7 +2652,52 @@ class OmrProcessor(
             return null
         }
 
-        return QrLayoutMetadata(
+        val isCustom = when (val v = raw["isCustom"]) {
+            is Boolean -> v
+            is Number -> v.toInt() != 0
+            else -> raw["layoutMode"]?.toString() == "custom"
+        }
+        val useFrozen = when (val v = raw["useFrozenRegistrationMarks"]) {
+            is Boolean -> v
+            is Number -> v.toInt() != 0
+            null -> !isCustom
+            else -> !isCustom
+        }
+
+        fun requireCustom(key: String): Double? {
+            val value = readDouble(key)
+            return if (value > 0.0) value else null
+        }
+
+        // Custom sessions must carry a complete geometry contract — never mix with
+        // frozen preset constants (that silently mis-registers every bubble).
+        if (isCustom || !useFrozen) {
+            val requiredKeys = listOf(
+                "gridTop", "gridBottom", "colWidth", "bubbleSpacingX",
+                "pageWidth", "pageHeight", "contentBlockWidth", "contentBlockHeight",
+                "answerGridLeft", "answerColumnInset", "answerNumberBubbleGap",
+                "questionNumberWidth", "cornerMarkerSize", "cornerMarkerOffset",
+                "timingMarkSize", "timingMarkSpacing", "timingMarkEdgeOffset",
+                "timingMarkStartX", "timingMarkEndX", "timingMarkStartY", "timingMarkEndY",
+                "rowMarkX", "rowMarkSize",
+                "omrIdFirstColumnX", "omrIdFirstRowY", "omrIdColumnSpacing", "omrIdRowSpacing",
+                "calibrationY", "calibrationFilledX", "calibrationEmptyX", "calibrationBubbleSize",
+                "answerBubbleDiameter", "omrIdBubbleDiameter", "qrCodeSize",
+            )
+            for (key in requiredKeys) {
+                if (requireCustom(key) == null && key != "answerGridLeft") {
+                    Log.e(TAG, "Custom session missing geometry field: $key")
+                    return null
+                }
+            }
+            // answerGridLeft may be 0 on some tiles — allow >= 0
+            if (raw["answerGridLeft"] == null) {
+                Log.e(TAG, "Custom session missing geometry field: answerGridLeft")
+                return null
+            }
+        }
+
+        val parsed = QrLayoutMetadata(
             templateId = templateId,
             columns = columns,
             rows = rows,
@@ -2538,7 +2706,7 @@ class OmrProcessor(
             rowHeight = rowHeight,
             columnWidth = columnWidth.takeIf { it > 0.0 } ?: (ANSWER_GRID_WIDTH / columns),
             bubbleSpacingX = bubbleSpacingX.takeIf { it > 0.0 } ?: 17.0,
-            optionsCount = readInt("optionsCount").takeIf { it in 2..ANSWER_OPTIONS } ?: ANSWER_OPTIONS,
+            optionsCount = readInt("optionsCount").takeIf { it in 2..MAX_ANSWER_OPTIONS } ?: ANSWER_OPTIONS,
             pageWidth = readDouble("pageWidth").takeIf { it > 0.0 } ?: OUTPUT_WIDTH.toDouble(),
             pageHeight = readDouble("pageHeight").takeIf { it > 0.0 } ?: OUTPUT_HEIGHT.toDouble(),
             contentBlockWidth = readDouble("contentBlockWidth").takeIf { it > 0.0 }
@@ -2551,25 +2719,12 @@ class OmrProcessor(
             answerColumnInset = readDouble("answerColumnInset").takeIf { it > 0.0 } ?: ANSWER_COLUMN_INSET,
             answerNumberBubbleGap = readDouble("answerNumberBubbleGap").takeIf { it > 0.0 } ?: ANSWER_NUMBER_BUBBLE_GAP,
             questionNumberWidth = readDouble("questionNumberWidth").takeIf { it > 0.0 } ?: QUESTION_NUMBER_WIDTH,
-            isCustom = when (val v = raw["isCustom"]) {
-                is Boolean -> v
-                is Number -> v.toInt() != 0
-                else -> raw["layoutMode"]?.toString() == "custom"
-            },
+            isCustom = isCustom,
             layoutMode = raw["layoutMode"]?.toString()?.trim().orEmpty().ifEmpty {
-                if (raw["isCustom"] == true) "custom" else "preset"
+                if (isCustom) "custom" else "preset"
             },
             layoutShape = raw["layoutShape"]?.toString()?.trim().orEmpty().ifEmpty { "lengthwise_full" },
-            useFrozenRegistrationMarks = when (val v = raw["useFrozenRegistrationMarks"]) {
-                is Boolean -> v
-                is Number -> v.toInt() != 0
-                null -> !when (val c = raw["isCustom"]) {
-                    is Boolean -> c
-                    is Number -> c.toInt() != 0
-                    else -> raw["layoutMode"]?.toString() == "custom"
-                }
-                else -> true
-            },
+            useFrozenRegistrationMarks = useFrozen,
             cornerMarkerSize = readDouble("cornerMarkerSize").takeIf { it > 0.0 } ?: CORNER_MARKER_SIZE,
             cornerMarkerOffset = readDouble("cornerMarkerOffset").takeIf { it > 0.0 } ?: CORNER_OFFSET,
             timingMarkSize = readDouble("timingMarkSize").takeIf { it > 0.0 } ?: TIMING_MARK_SIZE,
@@ -2602,7 +2757,100 @@ class OmrProcessor(
             qrCodeX = readDouble("qrCodeX").takeIf { it >= 0.0 } ?: QR_BOX_LEFT,
             qrCodeY = readDouble("qrCodeY").takeIf { it >= 0.0 } ?: QR_BOX_TOP,
             qrCodeSize = readDouble("qrCodeSize").takeIf { it > 0.0 } ?: 80.0,
+            subjectId = raw["subjectId"]?.toString()?.trim().orEmpty(),
         )
+        return parsed.withScanSamplingDensity()
+    }
+
+    /**
+     * Subject id from a COC sheet QR (`si` compact / `subjectId` legacy).
+     */
+    private fun extractQrSubjectId(qrData: String?): String? {
+        if (qrData.isNullOrBlank() || !qrData.trim().startsWith("{")) return null
+        return try {
+            val json = JSONObject(qrData.trim())
+            json.optString("si", "").trim().ifEmpty {
+                json.optString("subjectId", "").trim()
+            }.ifEmpty { null }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Reject captures that framed the whole bond page instead of one half/¼ tile.
+     * Aspect mismatch vs the locked content block is the strong signal for half sheets.
+     */
+    private fun checkTileFrameConfusion(
+        corners: DetectedCorners,
+        layout: QrLayoutMetadata,
+        debugInfo: MutableMap<String, Any>,
+    ): String? {
+        if (!layout.isTiledContentBlock()) return null
+        val expectedW = layout.contentBlockWidth.coerceAtLeast(1.0)
+        val expectedH = layout.contentBlockHeight.coerceAtLeast(1.0)
+        val expectedAspect = expectedW / expectedH
+        val pageAspect = layout.pageWidth.coerceAtLeast(1.0) / layout.pageHeight.coerceAtLeast(1.0)
+
+        fun dist(a: Point, b: Point): Double =
+            sqrt((b.x - a.x).pow(2) + (b.y - a.y).pow(2))
+
+        val avgW = (dist(corners.topLeft, corners.topRight) +
+            dist(corners.bottomLeft, corners.bottomRight)) / 2.0
+        val avgH = (dist(corners.topLeft, corners.bottomLeft) +
+            dist(corners.topRight, corners.bottomRight)) / 2.0
+        if (avgH < 1.0) return null
+        val capturedAspect = avgW / avgH
+        val aspectError = abs(capturedAspect - expectedAspect) / expectedAspect
+        val errVsContent = abs(capturedAspect - expectedAspect)
+        val errVsPage = abs(capturedAspect - pageAspect)
+        debugInfo["tileFrameExpectedAspect"] = expectedAspect
+        debugInfo["tileFrameCapturedAspect"] = capturedAspect
+        debugInfo["tileFrameAspectError"] = aspectError
+        debugInfo["tileFrameErrVsPage"] = errVsPage
+
+        val pageDiffers = abs(expectedAspect - pageAspect) / pageAspect > 0.12
+        val looksLikeWholePage =
+            pageDiffers && errVsPage < errVsContent * 0.85 && aspectError > 0.18
+        val badlyMismatched = aspectError > 0.28
+        if (!looksLikeWholePage && !badlyMismatched) return null
+
+        return "Camera captured more than one printed sheet (or the whole bond page). " +
+            "Frame ONE printed sheet only so its corner squares fill the green brackets."
+    }
+
+    /** Cap refine radius on dense custom rows so samples stay inside one bubble. */
+    private fun denseSafeRefineRadius(layout: QrLayoutMetadata, base: Int): Int {
+        if (layout.rowHeight >= 24.0) return base
+        return minOf(base, 1)
+    }
+
+    /**
+     * Tall custom packs (many short rows) need softer ink floors — pencil marks
+     * cover less of a tiny bubble mask and neighbors bleed into adjacent options.
+     */
+    private fun isDenseCustomAnswerGrid(layout: QrLayoutMetadata): Boolean {
+        if (!layout.isCustom) return false
+        return layout.rows >= 18 ||
+            layout.rowHeight < 22.0 ||
+            layout.bubbleSpacingX < 14.5
+    }
+
+    /**
+     * Cap refine by both row pitch and option gap so roomy custom sheets
+     * (large bubbles, wide A–E spacing) never walk into a neighbor.
+     */
+    private fun spacingSafeRefineRadius(layout: QrLayoutMetadata, base: Int): Int {
+        val denseCapped = denseSafeRefineRadius(layout, base)
+        val maxBySpacing = (layout.bubbleSpacingX * 0.22).toInt().coerceAtLeast(1)
+        val maxByRow = (layout.rowHeight * 0.20).toInt().coerceAtLeast(1)
+        return minOf(denseCapped, maxBySpacing, maxByRow)
+    }
+
+    /** Cap grid-lock search on dense custom rows to avoid neighboring row marks. */
+    private fun denseSafeGridLockRadius(layout: QrLayoutMetadata): Int {
+        if (layout.rowHeight >= 24.0) return GRID_LOCK_SEARCH_RADIUS_PX
+        return maxOf(3, (layout.rowHeight * 0.30).roundToInt())
     }
 
     /**
@@ -2720,7 +2968,8 @@ class OmrProcessor(
             gridBottom = ANSWER_GRID_BOTTOM,
             rowHeight = gridHeight / rows,
             columnWidth = gridWidth / columns,
-            bubbleSpacingX = bubbleSpacingX
+            bubbleSpacingX = bubbleSpacingX,
+            optionsCount = 5, // Frozen presets are A–E only.
         )
     }
     
@@ -2746,8 +2995,10 @@ class OmrProcessor(
                 // Sample the row mark position (small square on left edge)
                 val markY = rowCenterY
                 
-                // Sample a small region around the expected mark position
-                val sampleSize = (markSize * 2).toInt().coerceAtLeast(4)
+                // Keep the sample close to the printed mark. markSize*2 (8px on a 4pt
+                // mark) diluted ink with paper and dropped rowMarkValidation below 0.70
+                // on clean custom sheets, which wrongly armed emptyGuardStrict.
+                val sampleSize = maxOf(4, (markSize + 1).toInt())
                 val x = (markX - sampleSize / 2).toInt().coerceIn(0, warpedMat.cols() - sampleSize)
                 val y = (markY - sampleSize / 2).toInt().coerceIn(0, warpedMat.rows() - sampleSize)
                 
@@ -2756,8 +3007,8 @@ class OmrProcessor(
                     val meanIntensity = Core.mean(roi).`val`[0]
                     roi.release()
                     
-                    // Dark mark = low intensity (< 100)
-                    if (meanIntensity < 100) {
+                    // Dark mark = low intensity. 120 allows slight blur / soft pencil ink.
+                    if (meanIntensity < 120) {
                         detectedMarks++
                     }
                 }
@@ -2797,7 +3048,7 @@ class OmrProcessor(
                 warpedMat,
                 markX,
                 expectedY,
-                GRID_LOCK_SEARCH_RADIUS_PX,
+                denseSafeGridLockRadius(layout),
                 markSize = if (layout.useFrozenRegistrationMarks) ROW_MARK_SIZE else layout.rowMarkSize,
             ) ?: continue
             samples.add(expectedY to foundY)
@@ -2817,7 +3068,11 @@ class OmrProcessor(
         val offsets = samples.map { it.second - it.first }.sorted()
         val medianDy = offsets[offsets.size / 2]
         var scale = 1.0
-        if (samples.size >= 5) {
+        // Short custom grids (e.g. 15Q = 5 rows) do not have enough row-mark
+        // span to estimate scale safely — a 2–3% scale error drifts the last
+        // rows into neighboring ink and invents multi-marks on Q10–15 style packs.
+        val allowScale = samples.size >= 5 && layout.rows >= 8
+        if (allowScale) {
             val first = samples.first()
             val last = samples.last()
             val expectedSpan = last.first - first.first
@@ -2826,6 +3081,7 @@ class OmrProcessor(
                 scale = (foundSpan / expectedSpan).coerceIn(0.97, 1.03)
             }
         }
+        debugInfo["gridLockScaleAllowed"] = allowScale
 
         val cappedDy = medianDy.coerceIn(-GRID_LOCK_MAX_OFFSET_Y, GRID_LOCK_MAX_OFFSET_Y)
         val applied = kotlin.math.abs(cappedDy) >= 0.5 || kotlin.math.abs(scale - 1.0) >= 0.005
@@ -2836,7 +3092,7 @@ class OmrProcessor(
             Log.d(
                 TAG,
                 "Answer grid lock: dy=${"%.2f".format(cappedDy)}, scale=${"%.4f".format(scale)}, " +
-                    "marks=${samples.size}",
+                    "marks=${samples.size}, scaleAllowed=$allowScale",
             )
         }
         return AnswerGridLock(
@@ -2981,10 +3237,10 @@ class OmrProcessor(
         debugInfo["omrIdFrozen"] = frozen
         
         // Pencil fills often land below the solid-black calibration ceiling (0.42).
-        // Use a slightly lower cut for OMR ID only — answer bubbles keep fillThreshold.
+        // Soften further for OMR ID — digits are smaller than answer bubbles.
         val minSeparation = 0.10
-        val nearZeroLevel = fillThreshold * 0.5
-        val omrIdCut = maxOf(nearZeroLevel, fillThreshold - 0.10)
+        val nearZeroLevel = fillThreshold * 0.45
+        val omrIdCut = maxOf(nearZeroLevel, fillThreshold - 0.14)
         debugInfo["omrIdFillCut"] = omrIdCut
         
         val bestDigits = IntArray(OMR_ID_COLUMNS) { -1 }
@@ -3106,7 +3362,8 @@ class OmrProcessor(
         
         val answers = mutableMapOf<Int, String>()
         val confidences = mutableListOf<Double>()
-        val options = listOf("A", "B", "C", "D", "E")
+        val optionCount = legacyLayout.optionsCount.coerceIn(2, MAX_ANSWER_OPTIONS)
+        val options = ANSWER_OPTION_LETTERS.take(optionCount)
         val ambiguousQuestions = mutableListOf<Int>()
         
         var multipleSelections = 0
@@ -3123,7 +3380,7 @@ class OmrProcessor(
             
             // Bubble positions centered the same way as the shared layout.
             val bubbleSpacing = legacyLayout.bubbleSpacingX
-            val bubbleAreaWidth = bubbleSpacing * (ANSWER_OPTIONS - 1)
+            val bubbleAreaWidth = bubbleSpacing * (optionCount - 1)
             val usableWidth = columnWidth - (ANSWER_COLUMN_INSET * 2)
             val rowContentWidth = QUESTION_NUMBER_WIDTH +
                     ANSWER_NUMBER_BUBBLE_GAP +
@@ -3206,8 +3463,8 @@ class OmrProcessor(
         
         val answers = mutableMapOf<Int, String>()
         val confidences = mutableListOf<Double>()
-        val optionCount = layout.optionsCount.coerceIn(2, ANSWER_OPTIONS)
-        val options = listOf("A", "B", "C", "D", "E").take(optionCount)
+        val optionCount = layout.optionsCount.coerceIn(2, MAX_ANSWER_OPTIONS)
+        val options = ANSWER_OPTION_LETTERS.take(optionCount)
         val ambiguousQuestions = mutableListOf<Int>()
         
         var multipleSelections = 0
@@ -3217,13 +3474,24 @@ class OmrProcessor(
         val lightMarkQuestions = mutableListOf<Int>()
         val scratchRejectedQuestions = mutableListOf<Int>()
         val weakWinnerRejectedQuestions = mutableListOf<Int>()
+        val denseCustom = isDenseCustomAnswerGrid(layout)
         // Prefer blank over a guessed letter when alignment is shaky.
         val effectiveFillThreshold =
             if (emptyGuardStrict) (fillThreshold + 0.04).coerceAtMost(0.45) else fillThreshold
-        val minWinnerSeparation =
-            if (emptyGuardStrict) MIN_WINNER_SEPARATION_STRICT else MIN_WINNER_SEPARATION
+        val minWinnerSeparation = when {
+            emptyGuardStrict -> MIN_WINNER_SEPARATION_STRICT
+            denseCustom -> MIN_WINNER_SEPARATION_DENSE
+            else -> MIN_WINNER_SEPARATION
+        }
+        val minAreaCoverage =
+            if (denseCustom) MIN_ANSWER_AREA_COVERAGE_DENSE else MIN_ANSWER_AREA_COVERAGE
+        val lightMarkAreaCoverage =
+            if (denseCustom) LIGHT_MARK_AREA_COVERAGE_DENSE else LIGHT_MARK_AREA_COVERAGE
         debugInfo["effectiveFillThreshold"] = effectiveFillThreshold
         debugInfo["minWinnerSeparation"] = minWinnerSeparation
+        debugInfo["minAnswerAreaCoverage"] = minAreaCoverage
+        debugInfo["lightMarkAreaCoverage"] = lightMarkAreaCoverage
+        debugInfo["denseCustomAnswerGrid"] = denseCustom
         debugInfo["optionsCount"] = optionCount
         
         // Use fixed positions from layout metadata.
@@ -3281,7 +3549,7 @@ class OmrProcessor(
                     rowCenterY,
                     effectiveFillThreshold,
                     refineRadius = refineRadius,
-                    minAreaCoverage = MIN_ANSWER_AREA_COVERAGE,
+                    minAreaCoverage = minAreaCoverage,
                     bubbleDiameter = layout.answerBubbleDiameter,
                 )
                 optionMarked.add(result.filled)
@@ -3300,13 +3568,38 @@ class OmrProcessor(
             }
             bestFillSum += bestFill
             
-            // Two+ real marks: never auto-grade. Leave blank and flag for teacher
-            // (crossed-out + new shade, double shade, etc.).
+            // Two+ real marks: never auto-grade UNLESS one option is clearly darker
+            // (crossed-out + new shade with an obvious winner, or misalignment that
+            // barely grazes a neighbor). MULTI_MARK_CLEAR_SEPARATION was defined for
+            // this but unused — false multi-marks on custom Q10–15 packs were common.
             val filledCount = optionMarked.count { it }
             val separation = bestFill - secondBestFill
             if (filledCount > 1) {
-                multipleSelections++
-                ambiguousQuestions.add(questionNum)
+                val clearMultiWinner =
+                    bestOption.isNotEmpty() &&
+                        bestFill > effectiveFillThreshold &&
+                        bestAreaCoverage >= minAreaCoverage &&
+                        separation >= MULTI_MARK_CLEAR_SEPARATION &&
+                        secondBestFill < bestFill - MULTI_MARK_CLEAR_SEPARATION + 0.02
+                if (clearMultiWinner) {
+                    val confidence = minOf(separation / 0.15, 1.0)
+                    answers[questionNum] = bestOption
+                    confidences.add(confidence * 0.85)
+                    // Only nudge teacher when the winning mark itself is marginal.
+                    if (isMarginalAcceptedMark(
+                            bestFill = bestFill,
+                            bestAreaCoverage = bestAreaCoverage,
+                            fillThreshold = effectiveFillThreshold,
+                            lightMarkAreaCoverage = lightMarkAreaCoverage,
+                            minAreaCoverage = minAreaCoverage,
+                        )
+                    ) {
+                        lightMarkQuestions.add(questionNum)
+                    }
+                } else {
+                    multipleSelections++
+                    ambiguousQuestions.add(questionNum)
+                }
                 continue
             }
             if (filledCount == 0) {
@@ -3314,16 +3607,29 @@ class OmrProcessor(
             }
             
             val intensityLooksMarked = bestFill > effectiveFillThreshold
-            val areaLooksMarked = bestAreaCoverage >= MIN_ANSWER_AREA_COVERAGE
-            // Neighbors must look empty — otherwise crumple/noise invented a letter.
-            val clearWinner =
+            val areaLooksMarked = bestAreaCoverage >= minAreaCoverage
+            // Dense custom: neighbor bleed can lift secondBest slightly above empty.
+            // Accept a clearly darker winner instead of leaving a false blank.
+            val strongFill = bestFill >= effectiveFillThreshold + 0.06
+            val clearWinner = if (denseCustom && strongFill && !emptyGuardStrict) {
+                separation >= minWinnerSeparation &&
+                    secondBestFill < bestFill - 0.05
+            } else {
                 separation >= minWinnerSeparation &&
                     secondBestFill < effectiveFillThreshold
+            }
             if (bestOption.isNotEmpty() && intensityLooksMarked && areaLooksMarked && clearWinner) {
                 val confidence = minOf(separation / 0.15, 1.0)
                 answers[questionNum] = bestOption
                 confidences.add(confidence)
-                if (bestAreaCoverage < LIGHT_MARK_AREA_COVERAGE) {
+                if (isMarginalAcceptedMark(
+                        bestFill = bestFill,
+                        bestAreaCoverage = bestAreaCoverage,
+                        fillThreshold = effectiveFillThreshold,
+                        lightMarkAreaCoverage = lightMarkAreaCoverage,
+                        minAreaCoverage = minAreaCoverage,
+                    )
+                ) {
                     lightMarkQuestions.add(questionNum)
                 }
             } else if (bestOption.isNotEmpty() && intensityLooksMarked && !areaLooksMarked) {
@@ -3343,10 +3649,28 @@ class OmrProcessor(
         debugInfo["weakWinnerRejectedQuestions"] = weakWinnerRejectedQuestions.toList()
         debugInfo["meanBestOptionFill"] = if (totalQuestions > 0) bestFillSum / totalQuestions else 0.0
         debugInfo["maxOptionFill"] = maxOptionFill
-        debugInfo["minAnswerAreaCoverage"] = MIN_ANSWER_AREA_COVERAGE
         
         val avgConfidence = if (confidences.isNotEmpty()) confidences.average() else 0.0
         return Pair(answers, avgConfidence)
+    }
+
+    /**
+     * Flag for review only when an accepted mark is near the acceptance floor.
+     * Solid pencil on dense custom sheets often has area 0.18–0.27 — that is
+     * intentional, not "light," and must not flood the teacher with 100+ warnings.
+     */
+    private fun isMarginalAcceptedMark(
+        bestFill: Double,
+        bestAreaCoverage: Double,
+        fillThreshold: Double,
+        lightMarkAreaCoverage: Double,
+        minAreaCoverage: Double,
+    ): Boolean {
+        val nearFillFloor = bestFill < fillThreshold + 0.07
+        val nearAreaFloor =
+            bestAreaCoverage < lightMarkAreaCoverage &&
+                bestAreaCoverage < minAreaCoverage + 0.06
+        return nearFillFloor || nearAreaFloor
     }
     
     /**
@@ -3509,10 +3833,12 @@ class OmrProcessor(
             val green = Scalar(40.0, 180.0, 40.0)
             val red = Scalar(40.0, 40.0, 220.0)
             val cyan = Scalar(220.0, 180.0, 40.0)
-            val options = listOf("A", "B", "C", "D", "E")
-            val optionCount = layout.optionsCount.coerceIn(2, ANSWER_OPTIONS)
-            val activeOptions = options.take(optionCount)
-            val maxQ = minOf(layout.columns * layout.rows, 100)
+            val optionCount = layout.optionsCount.coerceIn(2, MAX_ANSWER_OPTIONS)
+            val activeOptions = ANSWER_OPTION_LETTERS.take(optionCount)
+            val maxQ = minOf(layout.columns * layout.rows, 200)
+            val bubbleRadius = (layout.answerBubbleDiameter / 2.0).coerceAtLeast(3.0).toInt()
+            val omrBubbleRadius = (layout.omrIdBubbleDiameter / 2.0).coerceAtLeast(3.0).toInt()
+            val calRadius = (layout.calibrationBubbleSize / 2.0).coerceAtLeast(3.0).toInt()
 
             for (questionNum in 1..maxQ) {
                 val col = (questionNum - 1) / layout.rows
@@ -3520,11 +3846,13 @@ class OmrProcessor(
                 if (col >= layout.columns) break
                 val rowCenterY = layout.gridTop + (row * layout.rowHeight) + (layout.rowHeight / 2)
                 val bubbleAreaWidth = layout.bubbleSpacingX * (optionCount - 1)
-                val usableWidth = layout.columnWidth - (ANSWER_COLUMN_INSET * 2)
-                val rowContentWidth = QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP + bubbleAreaWidth
-                val rowContentLeft = (ANSWER_GRID_LEFT + (col * layout.columnWidth)) +
-                    ANSWER_COLUMN_INSET + ((usableWidth - rowContentWidth) / 2)
-                val bubbleAreaLeft = rowContentLeft + QUESTION_NUMBER_WIDTH + ANSWER_NUMBER_BUBBLE_GAP
+                val usableWidth = layout.columnWidth - (layout.answerColumnInset * 2)
+                val rowContentWidth =
+                    layout.questionNumberWidth + layout.answerNumberBubbleGap + bubbleAreaWidth
+                val rowContentLeft = (layout.answerGridLeft + (col * layout.columnWidth)) +
+                    layout.answerColumnInset + ((usableWidth - rowContentWidth) / 2)
+                val bubbleAreaLeft =
+                    rowContentLeft + layout.questionNumberWidth + layout.answerNumberBubbleGap
                 val chosen = answers[questionNum]
                 for ((optIdx, option) in activeOptions.withIndex()) {
                     val bubbleX = bubbleAreaLeft + (optIdx * layout.bubbleSpacingX)
@@ -3536,7 +3864,7 @@ class OmrProcessor(
                     Imgproc.circle(
                         color,
                         Point(bubbleX, rowCenterY),
-                        (BUBBLE_DIAMETER / 2).toInt(),
+                        bubbleRadius,
                         colorScalar,
                         1,
                     )
@@ -3544,16 +3872,16 @@ class OmrProcessor(
             }
 
             // Timing mark expected sites (top edge sample)
-            var x = 60.0
-            while (x < 535) {
+            var x = layout.timingMarkStartX
+            while (x < layout.timingMarkEndX) {
                 Imgproc.circle(
                     color,
-                    Point(x, TIMING_MARK_EDGE_OFFSET),
-                    (TIMING_MARK_SIZE / 2).toInt(),
+                    Point(x, layout.timingMarkEdgeOffset),
+                    (layout.timingMarkSize / 2).toInt().coerceAtLeast(1),
                     Scalar(255.0, 128.0, 0.0),
                     1,
                 )
-                x += TIMING_MARK_SPACING
+                x += layout.timingMarkSpacing
             }
 
             // OMR ID digit ROIs — teachers need to see what was sampled when ID fails.
@@ -3564,9 +3892,9 @@ class OmrProcessor(
                 val colInfo = debugInfo["omrIdColumn$col"] as? Map<String, Any>
                 val bestDigit = (colInfo?.get("bestDigit") as? Number)?.toInt() ?: -1
                 val status = colInfo?.get("status")?.toString() ?: "unknown"
-                val columnX = OMR_ID_FIRST_COLUMN_X + col * OMR_ID_COLUMN_SPACING
+                val columnX = layout.omrIdFirstColumnX + col * layout.omrIdColumnSpacing
                 for (digit in 0 until OMR_ID_ROWS) {
-                    val bubbleY = OMR_ID_FIRST_ROW_Y + digit * OMR_ID_ROW_SPACING
+                    val bubbleY = layout.omrIdFirstRowY + digit * layout.omrIdRowSpacing
                     val ring = when {
                         digit == bestDigit && status == "ok" -> green
                         digit == bestDigit && status == "ambiguous" -> amber
@@ -3576,7 +3904,7 @@ class OmrProcessor(
                     Imgproc.circle(
                         color,
                         Point(columnX, bubbleY),
-                        4,
+                        omrBubbleRadius,
                         ring,
                         if (digit == bestDigit) 2 else 1,
                     )
@@ -3586,15 +3914,15 @@ class OmrProcessor(
             // Calibration reference bubbles
             Imgproc.circle(
                 color,
-                Point(CALIBRATION_FILLED_X, CALIBRATION_Y),
-                (BUBBLE_DIAMETER / 2).toInt(),
+                Point(layout.calibrationFilledX, layout.calibrationY),
+                calRadius,
                 green,
                 1,
             )
             Imgproc.circle(
                 color,
-                Point(CALIBRATION_EMPTY_X, CALIBRATION_Y),
-                (BUBBLE_DIAMETER / 2).toInt(),
+                Point(layout.calibrationEmptyX, layout.calibrationY),
+                calRadius,
                 cyan,
                 1,
             )

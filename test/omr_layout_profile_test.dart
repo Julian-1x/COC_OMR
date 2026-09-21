@@ -67,7 +67,7 @@ void main() {
 
     test('quarter places a smaller content block with marks inside it', () {
       final fit = OmrLayoutProfile.tryCompute(
-        itemCount: 20,
+        itemCount: 10,
         optionsCount: 3,
         form: const OmrLayoutForm(
           orientation: OmrLayoutOrientation.lengthwise,
@@ -121,7 +121,9 @@ void main() {
       );
 
       expect(OmrLayoutProfile.maxFitItems(form: half, optionsCount: 5),
-          lessThanOrEqualTo(45));
+          lessThanOrEqualTo(OmrLayoutProfile.maxCustomItems));
+      expect(OmrLayoutProfile.maxFitItems(form: half, optionsCount: 5),
+          greaterThanOrEqualTo(OmrLayoutProfile.minCustomItems));
       expect(
         OmrLayoutProfile.tryCompute(
           itemCount: 80,
@@ -133,15 +135,11 @@ void main() {
 
       expect(
         OmrLayoutProfile.maxFitItems(form: fullCross, optionsCount: 5),
-        lessThanOrEqualTo(80),
+        lessThanOrEqualTo(OmrLayoutProfile.maxCustomItems),
       );
       expect(
-        OmrLayoutProfile.tryCompute(
-          itemCount: 100,
-          optionsCount: 5,
-          form: fullCross,
-        ).isOk,
-        isFalse,
+        OmrLayoutProfile.maxFitItems(form: fullCross, optionsCount: 5),
+        greaterThanOrEqualTo(OmrLayoutProfile.minCustomItems),
       );
     });
 
@@ -190,6 +188,66 @@ void main() {
       expect(fit.profile!.itemCount, 6);
     });
 
+    test('packs even columns whenever a scan-safe divisor exists', () {
+      // Applies to every count — not a special case for 50.
+      const sampleCounts = <int>[
+        5, 6, 7, 8, 9, 10, 12, 15, 16, 18, 20, 21, 24, 25, 30, 32, 35, 36,
+        40, 42, 45, 48, 50, 51, 54, 55, 60, 63, 64, 70, 72, 75, 80, 90, 100,
+      ];
+      for (final form in OmrLayoutProfile.allCustomForms) {
+        for (var opts = 2; opts <= 6; opts++) {
+          final maxFit = OmrLayoutProfile.maxFitItems(
+            form: form,
+            optionsCount: opts,
+          );
+          if (maxFit < OmrLayoutProfile.minCustomItems) continue;
+
+          for (final items in sampleCounts) {
+            if (items > maxFit) continue;
+            final fit = OmrLayoutProfile.tryCompute(
+              itemCount: items,
+              optionsCount: opts,
+              form: form,
+            );
+            if (!fit.isOk) continue;
+            final profile = fit.profile!;
+            final grid = profile.grid;
+
+            // Always column-major.
+            expect(grid.questionPosition(1), (0, 0));
+            if (grid.rows >= 2 && items >= 2) {
+              expect(grid.questionPosition(2), (0, 1));
+            }
+
+            // If any scan-safe column count divides [items], packer must use one.
+            var divisorFits = false;
+            for (var columns = 1; columns <= 10; columns++) {
+              if (items % columns != 0) continue;
+              final rows = items ~/ columns;
+              final explicit = OmrLayoutProfile.tryComputeExplicitGrid(
+                columns: columns,
+                rows: rows,
+                optionsCount: opts,
+                form: form,
+              );
+              if (explicit.isOk) {
+                divisorFits = true;
+                break;
+              }
+            }
+            if (divisorFits) {
+              expect(
+                items % grid.columns,
+                0,
+                reason: '${form.id} · $items Q · $opts opts should pack evenly',
+              );
+              expect(grid.columns * grid.rows, items);
+            }
+          }
+        }
+      }
+    });
+
     test('explicit grid rejects overcrowded quarter sheet', () {
       final fit = OmrLayoutProfile.tryComputeExplicitGrid(
         columns: 5,
@@ -203,7 +261,7 @@ void main() {
       expect(fit.isOk, isFalse);
     });
 
-    test('suggestLayouts offers all fitting forms including landscape and half',
+    test('suggestLayouts offers full portrait only (no half, quarter, or landscape)',
         () {
       final suggestions = OmrLayoutProfile.suggestLayouts(
         itemCount: 10,
@@ -211,26 +269,225 @@ void main() {
       );
       expect(suggestions, isNotEmpty);
       expect(
-        suggestions.any((s) => s.form.id == 'lengthwise_full'),
+        suggestions.every((s) => s.form.id == 'lengthwise_full'),
         isTrue,
       );
       expect(
         suggestions.any((s) => s.form.id == 'lengthwise_half'),
-        isTrue,
+        isFalse,
+      );
+      expect(
+        suggestions.any((s) => s.form.id == 'lengthwise_quarter'),
+        isFalse,
       );
       expect(
         suggestions.any((s) => s.form.orientation == OmrLayoutOrientation.crosswise),
-        isTrue,
+        isFalse,
       );
-      // Nothing that fits should appear under blocked.
+      expect(
+        OmrLayoutProfile.teacherSelectableCustomForms,
+        hasLength(1),
+      );
+      expect(
+        OmrLayoutProfile.teacherSelectableCustomForms.single.id,
+        'lengthwise_full',
+      );
       final blocked = OmrLayoutProfile.blockedLayouts(
         itemCount: 10,
         optionsCount: 4,
       );
       expect(
-        blocked.any((b) => b.form.id == 'lengthwise_half'),
+        blocked.any((b) => b.form.pageFill != OmrLayoutPageFill.full),
         isFalse,
       );
+    });
+
+    test('suggestExplicitGridLayouts keeps A–F and even capacity', () {
+      final suggestions = OmrLayoutProfile.suggestExplicitGridLayouts(
+        columns: 2,
+        rows: 13,
+        optionsCount: 6,
+      );
+      expect(suggestions, isNotEmpty);
+      expect(suggestions.first.profile.itemCount, 26);
+      expect(suggestions.first.profile.optionLabels, ['A', 'B', 'C', 'D', 'E', 'F']);
+      expect(
+        suggestions.every(
+          (s) => s.form.orientation == OmrLayoutOrientation.lengthwise,
+        ),
+        isTrue,
+      );
+      final blocked = OmrLayoutProfile.blockedExplicitGridLayouts(
+        columns: 2,
+        rows: 13,
+        optionsCount: 6,
+      );
+      expect(
+        blocked.any((b) => suggestions.any((s) => s.form.id == b.form.id)),
+        isFalse,
+      );
+    });
+
+    test('availableGridSizes lists only even scan-safe splits', () {
+      final grids = OmrLayoutProfile.availableGridSizes(
+        itemCount: 20,
+        optionsCount: 5,
+      );
+      expect(grids, isNotEmpty);
+      expect(grids.every((g) => g.columns * g.rows == 20), isTrue);
+      expect(grids.any((g) => g.columns == 5 && g.rows == 4), isTrue);
+      expect(grids.any((g) => g.columns == 4 && g.rows == 5), isTrue);
+      // Non-divisor grids must not appear.
+      expect(grids.any((g) => g.columns == 3), isFalse);
+      // Wide pancake packs (6+ columns) are never offered.
+      expect(
+        grids.every((g) => g.columns <= OmrLayoutProfile.maxColumnsLengthwise),
+        isTrue,
+      );
+    });
+
+    test('200-question A–D uneven 7×29 grid prints (empty last-column slots OK)',
+        () {
+      const form = OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      );
+      final auto = OmrLayoutProfile.tryCompute(
+        itemCount: 200,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(auto.isOk, isTrue);
+      expect(auto.profile!.grid.columns, 7);
+      expect(auto.profile!.grid.rows, 29);
+
+      // Capacity 203 > 200 — must still accept with itemCount=200.
+      final explicit = OmrLayoutProfile.tryComputeExplicitGrid(
+        columns: 7,
+        rows: 29,
+        optionsCount: 4,
+        form: form,
+        itemCount: 200,
+      );
+      expect(explicit.isOk, isTrue, reason: explicit.errorMessage);
+      expect(explicit.profile!.itemCount, 200);
+
+      final withoutItemCount = OmrLayoutProfile.tryComputeExplicitGrid(
+        columns: 7,
+        rows: 29,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(withoutItemCount.isOk, isFalse);
+
+      final tooManyOpts = OmrLayoutProfile.tryCompute(
+        itemCount: 200,
+        optionsCount: 6,
+        form: form,
+      );
+      expect(tooManyOpts.isOk, isFalse);
+      expect(tooManyOpts.errorMessage, contains('at most'));
+    });
+
+    test('50-question full sheet packs tall like standard (5×10), not wide', () {
+      const form = OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      );
+      final fit = OmrLayoutProfile.tryCompute(
+        itemCount: 50,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(fit.isOk, isTrue);
+      expect(fit.profile!.grid.columns, 5);
+      expect(fit.profile!.grid.rows, 10);
+
+      final wide = OmrLayoutProfile.tryComputeExplicitGrid(
+        columns: 8,
+        rows: 7,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(wide.isOk, isFalse);
+      expect(wide.errorMessage, contains('too wide'));
+    });
+
+    test('every full-page Automatic pack from 5–200 stays vertically balanced', () {
+      const form = OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      );
+      for (var opts = 2; opts <= 6; opts++) {
+        final maxFit = OmrLayoutProfile.maxFitItems(form: form, optionsCount: opts);
+        for (var q = OmrLayoutProfile.minCustomItems; q <= maxFit; q++) {
+          final fit = OmrLayoutProfile.tryCompute(
+            itemCount: q,
+            optionsCount: opts,
+            form: form,
+          );
+          expect(fit.isOk, isTrue, reason: 'q=$q opts=$opts should pack');
+          final cols = fit.profile!.grid.columns;
+          final rows = fit.profile!.grid.rows;
+          final maxCols =
+              OmrLayoutProfile.maxColumnsFor(form, itemCount: q);
+          expect(cols, lessThanOrEqualTo(maxCols),
+              reason: 'q=$q opts=$opts cols=$cols');
+          expect(cols, lessThanOrEqualTo(OmrLayoutProfile.absoluteMaxColumnsLengthwise));
+          if (q >= 18) {
+            // Prefer tall packs; 5×5 for Q=25 is acceptable (no taller even split).
+            expect(rows, greaterThanOrEqualTo(5),
+                reason: 'q=$q opts=$opts too shallow (${cols}x$rows)');
+          }
+          // Never a wide shallow strip like the old 8×7.
+          expect(cols < 6 || rows >= 10, isTrue,
+              reason: 'q=$q opts=$opts pancake ${cols}x$rows');
+          // Through preferred capacity, stay within 5 columns.
+          if (q <= OmrLayoutProfile.maxColumnsLengthwise *
+              OmrLayoutProfile.maxRowsPerColumn) {
+            expect(cols, lessThanOrEqualTo(OmrLayoutProfile.maxColumnsLengthwise),
+                reason: 'q=$q should stay ≤5 cols');
+          }
+        }
+        if (maxFit < OmrLayoutProfile.maxCustomItems) {
+          final over = OmrLayoutProfile.tryCompute(
+            itemCount: maxFit + 1,
+            optionsCount: opts,
+            form: form,
+          );
+          expect(over.isOk, isFalse, reason: 'opts=$opts over maxFit');
+        }
+      }
+    });
+
+    test('20 questions prefers 4×5 (taller) over shallow 5×4', () {
+      const form = OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      );
+      final fit = OmrLayoutProfile.tryCompute(
+        itemCount: 20,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(fit.isOk, isTrue);
+      expect(fit.profile!.grid.columns, 4);
+      expect(fit.profile!.grid.rows, 5);
+    });
+
+    test('small quizzes pack tall (not a single wide row)', () {
+      const form = OmrLayoutForm(
+        orientation: OmrLayoutOrientation.lengthwise,
+        pageFill: OmrLayoutPageFill.full,
+      );
+      final five = OmrLayoutProfile.tryCompute(
+        itemCount: 5,
+        optionsCount: 4,
+        form: form,
+      );
+      expect(five.isOk, isTrue);
+      expect(five.profile!.grid.columns, lessThanOrEqualTo(2));
+      expect(five.profile!.grid.rows, greaterThanOrEqualTo(3));
     });
 
     test('suggestLayouts blocks only forms that cannot fit', () {

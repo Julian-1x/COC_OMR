@@ -52,19 +52,17 @@ class CustomSheetLayout {
 
   OmrLayoutProfile get layoutProfile => toProfile();
 
+  int get sheetsPerPage =>
+      OmrSheetTiling.forGeometry(layoutProfile.geometry)?.sheetsPerPage ?? 1;
+
   OmrLayoutProfile toProfile() {
-    final fit = inputMode == CustomSheetLayoutInputMode.byGrid
-        ? OmrLayoutProfile.tryComputeExplicitGrid(
-            columns: gridColumns,
-            rows: gridRows,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          )
-        : OmrLayoutProfile.tryCompute(
-            itemCount: totalQuestions,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          );
+    final fit = OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: gridColumns,
+      rows: gridRows,
+      optionsCount: optionsCount,
+      form: layoutForm,
+      itemCount: totalQuestions,
+    );
     if (fit.profile != null) {
       return fit.profile!;
     }
@@ -78,25 +76,40 @@ class CustomSheetLayout {
 
   String get previewSubtitle {
     final profile = layoutProfile;
-    return '${profile.itemCount} Q · ${profile.optionsCount} opts · '
+    final perPage = sheetsPerPage > 1 ? ' · $sheetsPerPage/page' : '';
+    return '${profile.itemCount} Q · ${profile.optionsCount} choices · '
         '${profile.geometry.printOrientationLabel} · ${layoutForm.pageFill.teacherLabel} '
-        '(${profile.grid.columns}×${profile.grid.rows})';
+        '(${profile.grid.columns}×${profile.grid.rows})$perPage';
+  }
+
+  /// Newest used/created first — for answer-key and print pickers.
+  static List<CustomSheetLayout> sortedByRecency([
+    List<CustomSheetLayout>? source,
+  ]) {
+    final layouts = List<CustomSheetLayout>.from(
+      source ?? globalCustomSheetLayouts,
+    );
+    layouts.sort((a, b) {
+      final aTime = a.lastUsedAt ?? a.createdAt;
+      final bTime = b.lastUsedAt ?? b.createdAt;
+      final byTime = bTime.compareTo(aTime);
+      if (byTime != 0) {
+        return byTime;
+      }
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    return layouts;
   }
 
   /// Null when this layout is allowed for print + scan grading.
   String? get examReadyScanError {
-    final fit = inputMode == CustomSheetLayoutInputMode.byGrid
-        ? OmrLayoutProfile.tryComputeExplicitGrid(
-            columns: gridColumns,
-            rows: gridRows,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          )
-        : OmrLayoutProfile.tryCompute(
-            itemCount: totalQuestions,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          );
+    final fit = OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: gridColumns,
+      rows: gridRows,
+      optionsCount: optionsCount,
+      form: layoutForm,
+      itemCount: totalQuestions,
+    );
     if (!fit.isOk) {
       return fit.errorMessage ?? 'This layout is no longer scannable.';
     }
@@ -110,18 +123,18 @@ class CustomSheetLayout {
           '${subject.displayName} has ${subject.totalQuestions}. '
           'Create a matching answer key or pick another layout.';
     }
-    final fit = inputMode == CustomSheetLayoutInputMode.byGrid
-        ? OmrLayoutProfile.tryComputeExplicitGrid(
-            columns: gridColumns,
-            rows: gridRows,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          )
-        : OmrLayoutProfile.tryCompute(
-            itemCount: totalQuestions,
-            optionsCount: optionsCount,
-            form: layoutForm,
-          );
+    if (subject.optionsCount != optionsCount) {
+      return 'This layout uses $optionsCount choices, but '
+          '${subject.displayName} is set to ${subject.optionsCount}. '
+          'Match the answer key choices to this layout, or pick another layout.';
+    }
+    final fit = OmrLayoutProfile.tryComputeExplicitGrid(
+      columns: gridColumns,
+      rows: gridRows,
+      optionsCount: optionsCount,
+      form: layoutForm,
+      itemCount: totalQuestions,
+    );
     if (!fit.isOk) {
       return fit.errorMessage ?? 'This layout is no longer scannable.';
     }
@@ -180,6 +193,7 @@ class CustomSheetLayout {
             rows: gridRows ?? 1,
             optionsCount: optionsCount,
             form: form,
+            itemCount: totalQuestions,
           )
         : OmrLayoutProfile.tryCompute(
             itemCount: totalQuestions,
@@ -192,7 +206,7 @@ class CustomSheetLayout {
       name: name.trim(),
       description: description?.trim(),
       totalQuestions: totalQuestions,
-      optionsCount: optionsCount.clamp(2, 5),
+      optionsCount: optionsCount.clamp(2, 6),
       layoutShape: form.id,
       gridColumns: profile?.grid.columns ?? gridColumns ?? 1,
       gridRows: profile?.grid.rows ?? gridRows ?? 1,

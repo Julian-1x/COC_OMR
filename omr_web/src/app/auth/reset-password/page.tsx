@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { isApiConfigured } from "@/lib/api/env";
+import { isApiConfigured, apiConfigHint } from "@/lib/api/env";
 import {
   PASSWORD_MIN_LENGTH,
   PASSWORD_REQUIREMENT_HINT,
@@ -57,7 +57,7 @@ function ResetPasswordForm() {
     setLoading(true);
     try {
       if (!isApiConfigured()) {
-        throw new Error("API URL missing. Contact your administrator.");
+        throw new Error(apiConfigHint());
       }
 
       const response = await fetch("/api/auth/reset-password", {

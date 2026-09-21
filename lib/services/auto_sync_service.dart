@@ -103,15 +103,19 @@ class AutoSyncService with WidgetsBindingObserver {
     }
   }
 
-  /// Debounced unless [immediate] is true (connectivity restore, app resume).
-  void scheduleSync({bool immediate = false}) {
+  /// Debounced unless [immediate] is true (connectivity restore, app resume,
+  /// or an explicit save that must reach the teacher desk right away).
+  ///
+  /// Background auto-sync stays Wi‑Fi/ethernet only. Explicit saves may set
+  /// [allowCellular] so a custom layout/answer key reaches the desk immediately.
+  void scheduleSync({bool immediate = false, bool allowCellular = false}) {
     _debounceTimer?.cancel();
     if (immediate) {
-      unawaited(_maybeSync());
+      unawaited(_maybeSync(allowCellular: allowCellular));
       return;
     }
     _debounceTimer = Timer(_debounceAfterLocalChange, () {
-      unawaited(_maybeSync());
+      unawaited(_maybeSync(allowCellular: allowCellular));
     });
   }
 
@@ -148,7 +152,7 @@ class AutoSyncService with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _maybeSync() async {
+  Future<void> _maybeSync({bool allowCellular = false}) async {
     if (_syncInProgress ||
         !ApiService.isReady ||
         !ApiService.hasActiveSession) {
@@ -164,7 +168,7 @@ class AutoSyncService with WidgetsBindingObserver {
     if (!_hasNetworkConnection(results)) {
       return;
     }
-    if (!_isWifiLikeConnection(results)) {
+    if (!allowCellular && !_isWifiLikeConnection(results)) {
       await _refreshPendingCount();
       return;
     }

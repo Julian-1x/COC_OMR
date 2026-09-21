@@ -13,7 +13,7 @@ export default async function PreparePage() {
   const { api } = await requireTeacherSession();
 
   const [sectionRows, students, subjects, lastUpdated] = await Promise.all([
-    fetchSections(api),
+    fetchSections(api, { archived: false }),
     fetchStudents(api),
     fetchSubjects(api),
     fetchCloudLastUpdated(api),

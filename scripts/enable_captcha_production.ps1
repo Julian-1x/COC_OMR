@@ -16,7 +16,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $web = Join-Path $root "omr_web"
 $envLocal = Join-Path $web ".env.local"
-$apiUrl = "https://coc-omr-api.onrender.com"
+$apiUrl = "https://coc-omr-api-sg.onrender.com"
 $webUrl = "https://omrweb.vercel.app"
 
 Write-Host ""

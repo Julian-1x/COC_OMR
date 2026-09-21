@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-label="Figure 4.11 Use Case Diagram">
+  <rect width="1280" height="900" fill="#ffffff"/>
+
+  <!-- System boundary -->
+  <rect x="240" y="50" width="800" height="740" fill="#ffffff" stroke="#000000" stroke-width="2.2" rx="6"/>
+  <text x="640" y="82" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" fill="#000000">Hybrid Offline-First OMR System</text>
+
+  <!-- Teacher actor -->
+  <g transform="translate(90,430)">
+    <circle cx="0" cy="-34" r="16" fill="none" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="-18" x2="0" y2="26" stroke="#000000" stroke-width="2.2"/>
+    <line x1="-22" y1="0" x2="22" y2="0" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="26" x2="-18" y2="54" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="26" x2="18" y2="54" stroke="#000000" stroke-width="2.2"/>
+    <text x="0" y="80" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700" fill="#000000">Teacher</text>
+    <text x="0" y="98" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#333333">(Instructor)</text>
+  </g>
+
+  <!-- School Administrator actor -->
+  <g transform="translate(1190,430)">
+    <circle cx="0" cy="-34" r="16" fill="none" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="-18" x2="0" y2="26" stroke="#000000" stroke-width="2.2"/>
+    <line x1="-22" y1="0" x2="22" y2="0" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="26" x2="-18" y2="54" stroke="#000000" stroke-width="2.2"/>
+    <line x1="0" y1="26" x2="18" y2="54" stroke="#000000" stroke-width="2.2"/>
+    <text x="0" y="80" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#000000">School</text>
+    <text x="0" y="98" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#000000">Administrator</text>
+  </g>
+
+  <!-- Shared use case at top center -->
+  <ellipse cx="640" cy="140" rx="130" ry="32" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="640" y="145" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Register / Sign in</text>
+
+  <!-- Teacher use cases (left column) -->
+  <ellipse cx="420" cy="230" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="235" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Set / Unlock offline PIN</text>
+
+  <ellipse cx="420" cy="300" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="305" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Manage roster / sections</text>
+
+  <ellipse cx="420" cy="370" rx="125" ry="30" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="367" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Create answer keys</text>
+  <text x="420" y="383" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" fill="#444444">(shared or section-only)</text>
+
+  <ellipse cx="420" cy="440" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="445" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Print OMR sheets / IDs</text>
+
+  <ellipse cx="420" cy="510" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="515" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Scan OMR sheets</text>
+
+  <ellipse cx="420" cy="580" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="585" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Review flagged scans</text>
+
+  <ellipse cx="420" cy="650" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="655" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">View Exam Day Board</text>
+
+  <ellipse cx="420" cy="720" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="420" y="725" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Sync records / export</text>
+
+  <!-- Teacher analysis (mid-right under shared) -->
+  <ellipse cx="640" cy="250" rx="125" ry="28" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="640" y="255" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">View item analysis</text>
+
+  <!-- Admin use cases (right column) -->
+  <ellipse cx="860" cy="360" rx="125" ry="32" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="860" y="357" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Approve teacher</text>
+  <text x="860" y="375" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">accounts</text>
+
+  <ellipse cx="860" cy="470" rx="125" ry="32" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="860" y="467" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">Manage access</text>
+  <text x="860" y="485" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">control</text>
+
+  <ellipse cx="860" cy="580" rx="125" ry="32" fill="#ffffff" stroke="#000000" stroke-width="1.7"/>
+  <text x="860" y="577" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">View school-level</text>
+  <text x="860" y="595" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#000000">records</text>
+
+  <!-- Teacher associations -->
+  <g stroke="#000000" stroke-width="1.25" fill="none">
+    <line x1="125" y1="400" x2="520" y2="155"/>
+    <line x1="125" y1="405" x2="295" y2="230"/>
+    <line x1="125" y1="410" x2="295" y2="300"/>
+    <line x1="125" y1="415" x2="295" y2="370"/>
+    <line x1="125" y1="420" x2="295" y2="440"/>
+    <line x1="125" y1="425" x2="295" y2="510"/>
+    <line x1="125" y1="430" x2="295" y2="580"/>
+    <line x1="125" y1="435" x2="295" y2="650"/>
+    <line x1="125" y1="440" x2="295" y2="720"/>
+    <line x1="125" y1="400" x2="520" y2="250"/>
+  </g>
+
+  <!-- Admin associations (clean right-side only + shared sign-in) -->
+  <g stroke="#000000" stroke-width="1.25" fill="none">
+    <line x1="1155" y1="400" x2="760" y2="155"/>
+    <line x1="1155" y1="410" x2="985" y2="360"/>
+    <line x1="1155" y1="420" x2="985" y2="470"/>
+    <line x1="1155" y1="430" x2="985" y2="580"/>
+  </g>
+
+  <text x="640" y="825" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#444444">
+    Actors: Teacher and School Administrator only. A student is an examinee on the roster/sheet, not a logged-in system actor.
+  </text>
+  <text x="640" y="865" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#000000">
+    Figure 4.11. Use Case Diagram modeling behavioral actors, system boundaries, and core functional triggers
+  </text>
+</svg>

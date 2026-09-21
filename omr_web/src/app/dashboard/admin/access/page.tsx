@@ -19,11 +19,8 @@ export default async function AdminAccessPage() {
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Access control</h1>
         <p className="mt-1 text-sm text-slate-500">
           {viewerIsSuperAdmin
-            ? "Approve or revoke any COC instructor."
+            ? "Approve or revoke instructors. Delete only when you are sure."
             : `Approve or revoke instructors in ${profile.department ?? "your department"}.`}
-        </p>
-        <p className="mt-2 text-xs text-slate-500">
-          Pending requests never expire — teachers can wait until an admin approves them.
         </p>
       </div>
 

@@ -1,7 +1,7 @@
 name: omr_app
 description: OMR Scanner App for Cagayan de Oro College
 publish_to: "none"
-version: 1.5.50+92
+version: 1.5.71+113
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -10,12 +10,8 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # UI
-  cupertino_icons: ^1.0.6
-
   # Camera & Image Processing
   camera: 0.11.0+2
-  image_picker: ^1.0.5
   image: ^4.1.3  # For image compression on low-end devices
 
   # File Handling
@@ -62,7 +58,7 @@ flutter_launcher_icons:
   android: true
   ios: false
   image_path: assets/app_icon.png
-  adaptive_icon_background: "#0A1428"
+  adaptive_icon_background: "#064E3B"
   adaptive_icon_foreground: assets/app_icon.png
 
 flutter:
@@ -70,7 +66,4 @@ flutter:
 
   assets:
     - assets/app_icon.png
-    - assets/app_icon_source.png
     - assets/coc_seal.png
-    - assets/logo.png
-    - assets/placeholder.png

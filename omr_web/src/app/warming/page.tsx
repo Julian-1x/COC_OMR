@@ -17,7 +17,7 @@ export default function WarmingPage() {
   const [busy, setBusy] = useState(false);
   const apiBase =
     process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-    "https://coc-omr-api.onrender.com";
+    "https://coc-omr-api-sg.onrender.com";
   const upUrl = `${apiBase}/up`;
 
   async function tryOpenDashboard(manual: boolean) {
@@ -83,7 +83,7 @@ export default function WarmingPage() {
     const timeoutId = window.setTimeout(() => {
       if (!cancelled) {
         setStatus(
-          "Still connecting. Confirm https://coc-omr-api.onrender.com/up says Application up, " +
+          "Still connecting. Confirm https://coc-omr-api-sg.onrender.com/up says Application up, " +
             "wake Neon (SQL Editor → SELECT 1), then tap Try dashboard. " +
             "If this keeps looping, check Render Logs for errors.",
         );

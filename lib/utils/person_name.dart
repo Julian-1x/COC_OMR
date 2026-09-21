@@ -67,6 +67,25 @@ class PersonName {
     return normalized.join(' ');
   }
 
+  /// Form fields: last name, first name, optional suffix (Jr., III, etc.).
+  static String normalizeFromParts({
+    required String lastName,
+    required String firstName,
+    String? suffix,
+  }) {
+    final family = lastName.trim();
+    final given = firstName.trim();
+    if (family.isEmpty || given.isEmpty) {
+      return '';
+    }
+    var combined = '$given $family';
+    final extra = suffix?.trim() ?? '';
+    if (extra.isNotEmpty) {
+      combined = '$combined $extra';
+    }
+    return normalize(combined);
+  }
+
   static String _titleWord(String word) {
     if (word.isEmpty) {
       return word;

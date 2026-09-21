@@ -120,10 +120,20 @@ Optional env override (comma-separated):
 COC_BOOTSTRAP_ADMIN_EMAILS=alex.balaba.coc@phinmaed.com
 ```
 
+**Approve teachers when Access control is slow (free Render, no Shell):**
+
+Add the teacher's email to Render env, redeploy, and they are approved automatically on the next API boot:
+
+```
+COC_BOOTSTRAP_APPROVE_EMAILS=rada.palma.coc@phinmaed.com
+```
+
+Comma-separate multiple emails. Pending approval **never expires** — this bypasses the web UI only.
+
 If you have Shell (paid):
 
 ```bash
-php artisan omr:promote-admin you@example.com
+php artisan omr:approve-teacher teacher@school.edu
 ```
 
 This sets `role=school_admin`, `access_status=approved`, and `school_name` to **Cagayan de Oro College**.

@@ -9,7 +9,7 @@ void main() {
 
   group('Custom sheet scannability matrix', () {
     for (final form in forms) {
-      for (var options = 2; options <= 5; options++) {
+      for (var options = 2; options <= 6; options++) {
         test('${form.id} · $options choices · max capacity fits', () {
           final maxItems = OmrLayoutProfile.maxFitItems(
             form: form,
@@ -50,9 +50,9 @@ void main() {
       }
     }
 
-    test('every count in range has at least one scannable form for 5 options', () {
+    test('counts in standard custom range stay scannable for 5 options', () {
       for (var count = OmrLayoutProfile.minCustomItems;
-          count <= OmrLayoutProfile.maxCustomItems;
+          count <= 100;
           count++) {
         final suggestions = OmrLayoutProfile.suggestLayouts(
           itemCount: count,
@@ -63,6 +63,76 @@ void main() {
           isNotEmpty,
           reason: 'No scannable form for $count questions',
         );
+      }
+    });
+
+    test('high counts that cannot fit are blocked instead of forced', () {
+      for (var count = 101; count <= OmrLayoutProfile.maxCustomItems; count++) {
+        final suggestions = OmrLayoutProfile.suggestLayouts(
+          itemCount: count,
+          optionsCount: 5,
+        );
+        if (suggestions.isNotEmpty) {
+          for (final suggestion in suggestions) {
+            _assertScanFriendly(suggestion.profile);
+          }
+          continue;
+        }
+        final blocked = OmrLayoutProfile.blockedLayouts(
+          itemCount: count,
+          optionsCount: 5,
+        );
+        expect(
+          blocked,
+          isNotEmpty,
+          reason: 'Expected an explicit block reason for $count questions',
+        );
+      }
+    });
+
+    test('full-page custom capacity is honest and scan-safe through maxFit', () {
+      for (final opts in [2, 3, 4, 5, 6]) {
+        final maxFit = OmrLayoutProfile.maxFitItems(
+          form: const OmrLayoutForm(
+            orientation: OmrLayoutOrientation.lengthwise,
+            pageFill: OmrLayoutPageFill.full,
+          ),
+          optionsCount: opts,
+        );
+        expect(maxFit, greaterThanOrEqualTo(OmrLayoutProfile.minCustomItems));
+        expect(maxFit, lessThanOrEqualTo(OmrLayoutProfile.maxCustomItems));
+
+        final atCap = OmrLayoutProfile.suggestLayouts(
+          itemCount: maxFit,
+          optionsCount: opts,
+        );
+        expect(atCap, isNotEmpty, reason: 'opts=$opts maxFit=$maxFit');
+        for (final suggestion in atCap) {
+          _assertScanFriendly(suggestion.profile);
+          expect(
+            suggestion.profile.grid.rows,
+            lessThanOrEqualTo(OmrLayoutProfile.maxRowsPerColumn),
+          );
+          expect(
+            suggestion.profile.grid.rowHeight,
+            greaterThanOrEqualTo(
+              suggestion.profile.geometry.answerBubbleDiameter +
+                  OmrLayoutProfile.minBubbleVerticalClearance,
+            ),
+          );
+        }
+
+        if (maxFit < OmrLayoutProfile.maxCustomItems) {
+          final over = OmrLayoutProfile.suggestLayouts(
+            itemCount: maxFit + 1,
+            optionsCount: opts,
+          );
+          expect(
+            over.every((s) => s.form.id != 'lengthwise_full') || over.isEmpty,
+            isTrue,
+            reason: 'opts=$opts must not offer unsafe full-page over maxFit',
+          );
+        }
       }
     });
 
@@ -119,14 +189,57 @@ void main() {
 }
 
 void _assertScanFriendly(OmrLayoutProfile profile) {
-  expect(profile.grid.rowHeight, greaterThanOrEqualTo(OmrLayoutProfile.minRowHeight));
+  expect(
+    profile.grid.rowHeight,
+    greaterThanOrEqualTo(OmrLayoutProfile.scanMinRowHeight(profile.geometry)),
+  );
   expect(
     profile.grid.bubbleSpacingX,
-    greaterThanOrEqualTo(OmrLayoutProfile.minBubbleSpacingX),
+    greaterThanOrEqualTo(
+      OmrLayoutProfile.scanMinBubbleSpacing(profile.form, profile.geometry),
+    ),
   );
   expect(profile.geometry.qrCodeSize, greaterThanOrEqualTo(56.0));
   expect(profile.geometry.answerBubbleDiameter, greaterThanOrEqualTo(8.0));
   expect(profile.geometry.omrIdBottom, lessThanOrEqualTo(profile.geometry.answerGridTop + 0.01));
+  // Full portrait uses proven 30–100 row-mark X; half/¼ keep the stricter clearance.
+  if (!(profile.form.pageFill == OmrLayoutPageFill.full &&
+      profile.form.orientation == OmrLayoutOrientation.lengthwise)) {
+    final sampleHalf = profile.geometry.rowMarkSize.clamp(3.0, 6.0);
+    expect(
+      profile.geometry.rowMarkX,
+      greaterThanOrEqualTo(
+        profile.geometry.timingMarkEdgeOffset +
+            profile.geometry.timingMarkSize +
+            sampleHalf +
+            1.0 -
+            0.01,
+      ),
+    );
+  }
+  expect(profile.bubblesFitInsideColumns(), isTrue);
+  expect(profile.hasAdequateTimingMarks(), isTrue);
+  final minOmrRow = profile.form.pageFill == OmrLayoutPageFill.full &&
+          profile.form.orientation == OmrLayoutOrientation.lengthwise
+      ? profile.geometry.omrIdBubbleDiameter
+      : profile.geometry.omrIdBubbleDiameter + 3.0;
+  expect(
+    profile.geometry.omrIdRowSpacing,
+    greaterThanOrEqualTo(minOmrRow - 0.01),
+  );
+  if (!(profile.form.pageFill == OmrLayoutPageFill.full &&
+      profile.form.orientation == OmrLayoutOrientation.lengthwise)) {
+    expect(
+      profile.geometry.calibrationY +
+          profile.geometry.calibrationBubbleSize / 2 +
+          4.0,
+      lessThanOrEqualTo(
+        profile.geometry.contentBlockHeight -
+            profile.geometry.marginBottom +
+            0.5,
+      ),
+    );
+  }
   expect(profile.itemCount, greaterThanOrEqualTo(OmrLayoutProfile.minCustomItems));
   expect(profile.itemCount, lessThanOrEqualTo(OmrLayoutProfile.maxCustomItems));
 }

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
 
@@ -10,6 +10,13 @@ const geist = Geist({
 export const metadata: Metadata = {
   title: "COC OMR — Teacher Portal",
   description: "PHINMA Cagayan de Oro College OMR desk companion for roster, answer keys, and results.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

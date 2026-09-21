@@ -30,19 +30,31 @@ type TurnstileFieldProps = {
 export function TurnstileField({ siteKey, onToken }: TurnstileFieldProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const widgetIdRef = useRef<string | null>(null);
+  const onTokenRef = useRef(onToken);
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onTokenRef.current = onToken;
+  }, [onToken]);
 
   useEffect(() => {
     if (!ready || !containerRef.current || !window.turnstile || !siteKey) {
       return;
     }
 
+    setLoadError(null);
+    onTokenRef.current(null);
+
     widgetIdRef.current = window.turnstile.render(containerRef.current, {
       sitekey: siteKey,
       theme: "light",
-      callback: (token) => onToken(token),
-      "expired-callback": () => onToken(null),
-      "error-callback": () => onToken(null),
+      callback: (token) => onTokenRef.current(token),
+      "expired-callback": () => onTokenRef.current(null),
+      "error-callback": () => {
+        onTokenRef.current(null);
+        setLoadError("Security check failed to load. Refresh the page.");
+      },
     });
 
     return () => {
@@ -51,22 +63,36 @@ export function TurnstileField({ siteKey, onToken }: TurnstileFieldProps) {
         widgetIdRef.current = null;
       }
     };
-  }, [ready, siteKey, onToken]);
+  }, [ready, siteKey]);
 
   if (!siteKey) {
     return null;
   }
 
   return (
-    <>
+    <div className="my-3">
+      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+        Security check
+      </p>
       <Script
         src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
         strategy="afterInteractive"
         onLoad={() => setReady(true)}
+        onError={() =>
+          setLoadError("Could not load security check. Check your connection and refresh.")
+        }
       />
-      <div className="my-3 flex w-full justify-center">
-        <div ref={containerRef} className="inline-flex justify-center" />
+      {!ready && !loadError ? (
+        <p className="mb-2 text-xs text-slate-500">Loading security check…</p>
+      ) : null}
+      <div className="flex w-full justify-center">
+        <div ref={containerRef} className="inline-flex min-h-[65px] justify-center" />
       </div>
-    </>
+      {loadError ? (
+        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+          {loadError}
+        </p>
+      ) : null}
+    </div>
   );
 }

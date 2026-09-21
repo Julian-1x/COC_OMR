@@ -33,7 +33,7 @@ export default function OmrIdsPage() {
   } = useSlowApiLoad(async () => {
     const api = createBrowserApiClient();
     const [sectionRows, studentRows] = await Promise.all([
-      fetchSections(api),
+      fetchSections(api, { archived: false }),
       fetchStudents(api),
     ]);
     const names = sectionRows.map((s) => s.name);
@@ -100,9 +100,7 @@ export default function OmrIdsPage() {
           ← Prepare
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">OMR ID handouts</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Students synced from your phone — search or download the full list per section.
-        </p>
+        <p className="mt-1 text-sm text-slate-500">Search or download by section</p>
       </div>
 
       {dataLoading ? (

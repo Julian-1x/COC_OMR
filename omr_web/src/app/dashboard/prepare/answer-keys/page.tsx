@@ -11,6 +11,8 @@ import { deleteSubject, fetchSubjects } from "@/lib/api/data";
 import { slowApiLoadingMessage, useSlowApiLoad } from "@/lib/api/use-slow-api-load";
 import type { DbSubject } from "@/lib/types/database";
 import { formatPassingLabel } from "@/lib/omr/passing-score";
+import { AnswerKeyScopeBadge } from "@/components/answer-key-scope-badge";
+import { SyncLoopNotice } from "@/components/desk-notices";
 
 export default function AnswerKeysPage() {
   const [subjects, setSubjects] = useState<DbSubject[]>([]);
@@ -55,6 +57,8 @@ export default function AnswerKeysPage() {
         </Link>
       </div>
 
+      <SyncLoopNotice className="mb-4" />
+
       {error ? (
         <Card className="mb-3 border-red-200 bg-red-50">
           <p className="text-sm font-semibold text-red-700">{error}</p>
@@ -78,9 +82,7 @@ export default function AnswerKeysPage() {
               <p className="mt-1 text-sm text-slate-500">
                 {subject.total_questions} items · {formatPassingLabel(subject.passing_score, subject.total_questions)}
               </p>
-              <p className="mt-1 text-xs text-slate-400">
-                Sections: {(subject.section_names ?? []).join(", ") || "None"}
-              </p>
+              <AnswerKeyScopeBadge subject={subject} showSubtitle className="mt-2" />
               <div className="mt-4 flex gap-2">
                 <Link
                   href={`/dashboard/prepare/answer-keys/${encodeURIComponent(subject.local_id)}`}

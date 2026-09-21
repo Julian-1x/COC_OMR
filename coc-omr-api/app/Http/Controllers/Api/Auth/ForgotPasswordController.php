@@ -26,6 +26,15 @@ class ForgotPasswordController extends Controller
         ]);
 
         $email = strtolower($validated['email']);
+
+        if ($this->captcha->isEnabled() && blank($validated['captcha_token'] ?? null)) {
+            return response()->json([
+                'message' => 'Complete the security check, then try again.',
+                'captcha_required' => true,
+                'captcha_site_key' => $this->captcha->siteKey(),
+            ], 422);
+        }
+
         $this->captcha->assertValid($validated['captcha_token'] ?? null, $request);
 
         try {

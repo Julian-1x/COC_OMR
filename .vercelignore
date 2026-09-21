@@ -1,23 +1,24 @@
 # Keep CLI uploads small when deploying the monorepo to Vercel.
 # Project Root Directory remains `omr_web`.
+# Use leading / so patterns only match the repo root (not omr_web/src/lib, etc.).
 # Do NOT ignore *.png / *.jpg — omr_web/public brand assets must ship.
-android/
-ios/
-lib/
-test/
-tool/
-assets/
-coc-omr-api/
-laravel/
-paper_format_extract/
-supabase/
-scripts/
-.cursor/
-.github/
-.dart_tool/
-.build/
-build/
-coverage/
+/android/
+/ios/
+/lib/
+/test/
+/tool/
+/assets/
+/coc-omr-api/
+/laravel/
+/paper_format_extract/
+/supabase/
+/scripts/
+/.cursor/
+/.github/
+/.dart_tool/
+/.build/
+/build/
+/coverage/
 node_modules/
 omr_web/node_modules/
 omr_web/.next/
@@ -26,13 +27,13 @@ omr_web/.next/
 *.pdf
 *.apk
 *.zip
-pubspec.yaml
-pubspec.lock
-secrets.json
-secrets.json.example
-analysis_options.yaml
-render.yaml
-run.bat
-run.sh
-test_nowrap.pdf
-test_wrap.pdf
+/pubspec.yaml
+/pubspec.lock
+/secrets.json
+/secrets.json.example
+/analysis_options.yaml
+/render.yaml
+/run.bat
+/run.sh
+/test_nowrap.pdf
+/test_wrap.pdf

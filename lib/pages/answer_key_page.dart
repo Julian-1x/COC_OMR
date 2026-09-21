@@ -9,10 +9,12 @@ import 'package:omr_app/pages/answer_sheet_generator.dart' as generator;
 import 'package:omr_app/pages/custom_sheet_layouts_page.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/auto_sync_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/utils/answer_key_sections.dart';
+import 'package:omr_app/widgets/answer_key_scope_badge.dart';
 
 enum AnswerKeyEditorAction { updated, deleted }
 
@@ -48,6 +50,8 @@ class AnswerKeyPage extends StatefulWidget {
   final String? editSectionFocus;
   /// When set, hides the standard/custom toggle and locks the editor path.
   final AnswerKeySheetMode? sheetMode;
+  /// Pre-select this saved custom layout (question count + choices apply automatically).
+  final String? initialCustomLayoutId;
 
   const AnswerKeyPage({
     super.key,
@@ -56,6 +60,7 @@ class AnswerKeyPage extends StatefulWidget {
     this.initialSection,
     this.editSectionFocus,
     this.sheetMode,
+    this.initialCustomLayoutId,
   });
 
   @override
@@ -90,7 +95,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   final TextEditingController _sectionController = TextEditingController();
 
   List<String> get _answerChoices =>
-      _allAnswerChoices.take(_optionsCount.clamp(2, 5)).toList();
+      _allAnswerChoices.take(_optionsCount.clamp(2, 6)).toList();
   Set<String> get _answerChoiceSet => _answerChoices.toSet();
 
   int get _optionsCount {
@@ -156,19 +161,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     return null;
   }
 
-  List<CustomSheetLayout> get _sortedCustomLayouts {
-    final layouts = globalCustomSheetLayouts
-        // All six forms are scannable when session geometry drives native.
-        .toList()
-      ..sort((a, b) {
-        final byQuestions = a.totalQuestions.compareTo(b.totalQuestions);
-        if (byQuestions != 0) {
-          return byQuestions;
-        }
-        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
-    return layouts;
-  }
+  List<CustomSheetLayout> get _sortedCustomLayouts =>
+      CustomSheetLayout.sortedByRecency();
 
   String? get _focusedSection {
     final raw = widget.editSectionFocus?.trim();
@@ -619,10 +613,32 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       _selectedSections = {_canonicalizeSectionName(widget.initialSection!)};
     }
 
+    _applyInitialCustomLayoutIfNeeded();
+
     if (widget.subjectToEdit != null && _focusedSection != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         unawaited(_promptSharedKeyEditMode());
       });
+    }
+  }
+
+  void _applyInitialCustomLayoutIfNeeded() {
+    if (_isEditing && widget.subjectToEdit!.useCustomLayout) {
+      return;
+    }
+    final preferredId = widget.initialCustomLayoutId;
+    if (preferredId != null) {
+      for (final layout in _sortedCustomLayouts) {
+        if (layout.id == preferredId) {
+          _applyCustomLayoutSelection(layout, announce: false);
+          return;
+        }
+      }
+    }
+    if (_useSavedCustomSheet &&
+        _selectedCustomLayout == null &&
+        _sortedCustomLayouts.isNotEmpty) {
+      _applyCustomLayoutSelection(_sortedCustomLayouts.first, announce: false);
     }
   }
 
@@ -722,6 +738,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     CustomSheetLayout layout, {
     bool announce = true,
   }) {
+    final previousLayout = _selectedCustomLayout;
     final newCount = layout.totalQuestions;
     _selectedCustomLayoutId = layout.id;
     _useSavedCustomSheet = true;
@@ -730,6 +747,17 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     }
     _questionCount = newCount;
     _resanitizeLoadedAnswers();
+
+    // New custom keys: fill Subject Name from the layout you just picked.
+    if (!_isEditing) {
+      final currentName = _nameController.text.trim();
+      final previousName = previousLayout?.name.trim() ?? '';
+      if (currentName.isEmpty ||
+          (previousName.isNotEmpty && currentName == previousName)) {
+        _nameController.text = layout.name;
+      }
+    }
+
     if (announce && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -761,17 +789,22 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
-        builder: (context) => const CustomSheetLayoutsPage(),
+        builder: (context) => const CustomSheetLayoutsPage(
+          promptAnswerKeyAfterCreate: false,
+        ),
       ),
     );
     if (!mounted) {
       return;
     }
     setState(() {
-      if (_useSavedCustomSheet &&
-          _selectedCustomLayoutId != null &&
-          _selectedCustomLayout == null &&
-          _sortedCustomLayouts.isNotEmpty) {
+      if (!_useSavedCustomSheet) {
+        return;
+      }
+      if (_selectedCustomLayout != null) {
+        return;
+      }
+      if (_sortedCustomLayouts.isNotEmpty) {
         _applyCustomLayoutSelection(_sortedCustomLayouts.first, announce: false);
       }
     });
@@ -1273,10 +1306,20 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       );
 
       await LocalDataStore.instance.upsertSubject(
-        _preserveSheetLayout(updatedOriginal, existingSubject),
+        _preserveSheetLayout(updatedOriginal, existingSubject).copyWith(
+          syncStatus: SyncStatus.pending,
+          updatedAt: DateTime.now(),
+        ),
       );
       await LocalDataStore.instance.upsertSubject(
-        _applySheetModeToSubject(newSubject),
+        _applySheetModeToSubject(newSubject).copyWith(
+          syncStatus: SyncStatus.pending,
+          updatedAt: DateTime.now(),
+        ),
+      );
+      AutoSyncService.instance.scheduleSync(
+        immediate: true,
+        allowCellular: true,
       );
 
       if (!mounted) {
@@ -1316,9 +1359,16 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       cloudId: targetSubject?.cloudId,
     );
 
-    final persistedSubject = _applySheetModeToSubject(subject);
+    final persistedSubject = _applySheetModeToSubject(subject).copyWith(
+      syncStatus: SyncStatus.pending,
+      updatedAt: DateTime.now(),
+    );
 
     await LocalDataStore.instance.upsertSubject(persistedSubject);
+    AutoSyncService.instance.scheduleSync(
+      immediate: true,
+      allowCellular: true,
+    );
 
     if (!mounted) {
       return;
@@ -2297,8 +2347,10 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                 child: _buildEditorInfoBanner(
                   icon: Icons.warning_amber_rounded,
                   message:
-                      'This key is shared across multiple sections. '
-                      'Saving will update every assigned section.',
+                      'Shared key — the same answers apply to every assigned section '
+                      '(${_selectedSections.join(', ')}). '
+                      'Need different answers for one class? Use Split / create a '
+                      'separate key with the same subject name for that section only.',
                   color: _warningOrange,
                 ),
               ),
@@ -2653,13 +2705,45 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           subtitle: _splitEditMode
               ? 'This split applies to ${_focusedSection ?? 'the selected section'} only.'
               : _isEditing
-                  ? 'Tap sections to add or remove classes, or use Add section if one is missing.'
+                  ? 'Tap sections to add or remove classes. Two or more = Shared key; one = section-only key.'
                   : duplicateSubjects.isNotEmpty
-                      ? 'Pick one section for this version. Sections already assigned are disabled.'
-                      : 'Assign the sections that should use this exact answer key.',
+                      ? 'Pick one section for this version (section-only key). Sections already assigned are disabled.'
+                      : 'Pick one section for a section-only key, or several for a Shared key (same answers).',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (_selectedSections.isNotEmpty && !_splitEditMode) ...[
+                Row(
+                  children: [
+                    AnswerKeyScopeBadge(
+                      subject: Subject(
+                        id: widget.subjectToEdit?.id,
+                        name: _nameController.text.trim().isEmpty
+                            ? 'Key'
+                            : _nameController.text.trim(),
+                        answerKey: const {},
+                        totalQuestions: _questionCount,
+                        sectionNames: _selectedSections.toList(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _selectedSections.length > 1
+                            ? 'Shared — same answers for all selected sections.'
+                            : 'One section — other classes need their own key if answers differ.',
+                        style: const TextStyle(
+                          color: _brandMuted,
+                          fontSize: 12,
+                          height: 1.35,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+              ],
               if (!canSelectSection)
                 const Text(
                   'No sections available yet. Create one first.',
@@ -2827,49 +2911,98 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                     ),
                   ),
                 ] else ...[
-                  DropdownButtonFormField<String>(
-                    key: ValueKey(_selectedCustomLayoutId ?? 'none'),
-                    initialValue: _selectedCustomLayout?.id,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Custom sheet layout',
+                  const Text(
+                    'Tap a layout — question count and choices apply automatically. '
+                    'Then fill the answers below.',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.35,
+                      color: _brandMuted,
+                      fontWeight: FontWeight.w600,
                     ),
-                    items: _sortedCustomLayouts
-                        .map(
-                          (layout) => DropdownMenuItem<String>(
-                            value: layout.id,
-                            child: Text(
-                              '${layout.name} · ${layout.totalQuestions} Q · '
-                              '${layout.optionsCount} choices',
-                              overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 10),
+                  ..._sortedCustomLayouts.map((layout) {
+                    final selected = layout.id == _selectedCustomLayoutId;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Material(
+                        color: selected
+                            ? AppColors.brandGreen.withValues(alpha: 0.08)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {
+                            setState(() {
+                              _applyCustomLayoutSelection(layout);
+                            });
+                          },
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: selected
+                                    ? AppColors.brandGreen
+                                    : AppColors.brandBorder,
+                                width: selected ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  selected
+                                      ? Icons.radio_button_checked_rounded
+                                      : Icons.radio_button_off_rounded,
+                                  color: selected
+                                      ? AppColors.brandGreen
+                                      : AppColors.brandMuted,
+                                  size: 22,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        layout.name,
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: selected
+                                              ? AppColors.brandGreenDark
+                                              : _brandText,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        layout.previewSubtitle,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          height: 1.35,
+                                          color: _brandMuted,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        )
-                        .toList(),
-                    onChanged: (layoutId) {
-                      if (layoutId == null) {
-                        return;
-                      }
-                      CustomSheetLayout? picked;
-                      for (final layout in _sortedCustomLayouts) {
-                        if (layout.id == layoutId) {
-                          picked = layout;
-                          break;
-                        }
-                      }
-                      if (picked == null) {
-                        return;
-                      }
-                      setState(() {
-                        _applyCustomLayoutSelection(picked!);
-                      });
-                    },
-                  ),
+                        ),
+                      ),
+                    );
+                  }),
                   if (_selectedCustomLayout != null) ...[
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 4),
                     Text(
-                      '${_selectedCustomLayout!.previewSubtitle}\n'
-                      'Fill ${_selectedCustomLayout!.totalQuestions} answers below. '
+                      'Fill ${_selectedCustomLayout!.totalQuestions} answers '
+                      '(A–${_allAnswerChoices[_optionsCount - 1]}). '
                       'At Print Sheets, pick this same layout.',
                       style: const TextStyle(
                         fontSize: 12.5,

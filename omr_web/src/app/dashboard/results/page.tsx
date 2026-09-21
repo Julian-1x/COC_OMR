@@ -7,9 +7,15 @@ import { ResultsContent } from "./results-content";
 export default async function ResultsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ view?: string; year?: string; review?: string }>;
+  searchParams: Promise<{
+    view?: string;
+    year?: string;
+    review?: string;
+    section?: string;
+    subject?: string;
+  }>;
 }) {
-  const { view, year, review } = await searchParams;
+  const { view, year, review, section, subject } = await searchParams;
   const showArchived = view === "archived";
   const schoolYear = year?.trim() || undefined;
   const reviewFilter =
@@ -22,7 +28,7 @@ export default async function ResultsPage({
     fetchSections(api, { archived: showArchived ? true : false, schoolYear }),
   ]);
 
-  const allowedSectionNames = new Set(sections.map((section) => section.name));
+  const allowedSectionNames = new Set(sections.map((row) => row.name));
 
   return (
     <Suspense fallback={<p className="text-sm text-slate-500">Loading results…</p>}>
@@ -36,6 +42,8 @@ export default async function ResultsPage({
         schoolYear={schoolYear}
         yearOptions={schoolYearOptions()}
         initialReviewFilter={reviewFilter}
+        initialSectionFilter={section?.trim() ?? ""}
+        initialSubjectFilter={subject?.trim() ?? ""}
       />
     </Suspense>
   );

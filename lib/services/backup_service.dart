@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:omr_app/models/custom_sheet_layout.dart';
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
+import 'package:omr_app/services/backup_compare.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -53,8 +54,8 @@ class BackupService {
     return true;
   }
 
-  /// Pick a `.json` backup and replace local data. Caller should confirm with the user first.
-  static Future<bool> importFromPick(BuildContext context) async {
+  /// Pick a `.json` backup. Returns null if cancelled or invalid.
+  static Future<Map<String, dynamic>?> pickBackupMap(BuildContext context) async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['json'],
@@ -63,7 +64,7 @@ class BackupService {
     );
 
     if (result == null || result.files.isEmpty) {
-      return false;
+      return null;
     }
 
     final file = result.files.first;
@@ -75,14 +76,36 @@ class BackupService {
     }
 
     if (raw == null || raw.trim().isEmpty) {
-      return false;
+      return null;
     }
 
     final decoded = jsonDecode(raw);
     if (decoded is! Map<String, dynamic>) {
-      return false;
+      return null;
     }
+    return decoded;
+  }
 
-    return LocalDataStore.instance.restoreFromBackupMap(decoded);
+  static BackupCompareReport comparePickedBackup(Map<String, dynamic> decoded) {
+    return compareBackupToPhone(
+      phone: phoneSnapshotFromGlobals(),
+      backup: BackupSnapshotData.fromBackupMap(decoded),
+    );
+  }
+
+  /// Apply a previously picked backup with the chosen conflict mode.
+  static Future<bool> applyBackupMap(
+    Map<String, dynamic> decoded, {
+    BackupRestoreMode mode = BackupRestoreMode.replaceAll,
+  }) {
+    return LocalDataStore.instance.restoreFromBackupMap(decoded, mode: mode);
+  }
+
+  /// Pick a `.json` backup and replace local data. Caller should confirm with the user first.
+  @Deprecated('Use pickBackupMap + compare + applyBackupMap')
+  static Future<bool> importFromPick(BuildContext context) async {
+    final decoded = await pickBackupMap(context);
+    if (decoded == null) return false;
+    return applyBackupMap(decoded);
   }
 }

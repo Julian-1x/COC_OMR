@@ -18,6 +18,29 @@ void main() {
       expect(PersonName.normalize('Ana Del Rosario'), 'Ana del Rosario');
     });
 
+    test('combines first and last into normalized full name', () {
+      expect(PersonName.normalizeFromParts(lastName: 'santos', firstName: 'maria'),
+          'Maria Santos');
+      expect(PersonName.normalizeFromParts(lastName: 'BALABA', firstName: 'ALEXANDER'),
+          'Alexander Balaba');
+    });
+
+    test('appends optional suffix', () {
+      expect(
+        PersonName.normalizeFromParts(
+          lastName: 'Santos',
+          firstName: 'Maria',
+          suffix: 'jr',
+        ),
+        'Maria Santos JR',
+      );
+    });
+
+    test('returns empty when either part is missing', () {
+      expect(PersonName.normalizeFromParts(lastName: '', firstName: 'Maria'), '');
+      expect(PersonName.normalizeFromParts(lastName: 'Santos', firstName: '  '), '');
+    });
+
     test('handles hyphenated and Mc names', () {
       expect(PersonName.normalize('mary-jane watson'), 'Mary-Jane Watson');
       expect(PersonName.normalize('RONALD MCDONALD'), 'Ronald McDonald');

@@ -1,17 +1,43 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/custom_sheet_layout.dart';
+import 'package:omr_app/pages/answer_key_page.dart';
 import 'package:omr_app/pages/custom_sheet_layout_editor_page.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/theme/app_colors.dart';
 
 class CustomSheetLayoutsPage extends StatefulWidget {
-  const CustomSheetLayoutsPage({super.key});
+  const CustomSheetLayoutsPage({
+    super.key,
+    this.openNewLayoutOnStart = false,
+    this.promptAnswerKeyAfterCreate = true,
+  });
+
+  /// When true, opens the new-layout editor immediately (e.g. from print).
+  final bool openNewLayoutOnStart;
+
+  /// After saving a *new* layout, require creating an answer key next.
+  /// Set false when opened from the answer-key editor (already on that path).
+  final bool promptAnswerKeyAfterCreate;
 
   @override
   State<CustomSheetLayoutsPage> createState() => _CustomSheetLayoutsPageState();
 }
 
 class _CustomSheetLayoutsPageState extends State<CustomSheetLayoutsPage> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.openNewLayoutOnStart) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(_openEditor());
+        }
+      });
+    }
+  }
+
   Future<void> _openEditor([CustomSheetLayout? existing]) async {
     final saved = await Navigator.push<CustomSheetLayout>(
       context,
@@ -19,7 +45,55 @@ class _CustomSheetLayoutsPageState extends State<CustomSheetLayoutsPage> {
         builder: (context) => CustomSheetLayoutEditorPage(existing: existing),
       ),
     );
-    if (saved != null && mounted) {
+    if (!mounted) {
+      return;
+    }
+    if (saved == null) {
+      return;
+    }
+    setState(() {});
+
+    // New layouts must get an answer key next — otherwise Print Sheets cannot use them.
+    if (existing == null && widget.promptAnswerKeyAfterCreate) {
+      await _continueToAnswerKey(saved);
+    }
+  }
+
+  Future<void> _continueToAnswerKey(CustomSheetLayout layout) async {
+    if (!mounted) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Layout saved'),
+        content: Text(
+          '"${layout.name}" is ready (${layout.totalQuestions} questions). '
+          'Next you must create the answer key for this sheet so Print Sheets '
+          'and Scan can use it.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Create answer key'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AnswerKeyPage(
+          sheetMode: AnswerKeySheetMode.custom,
+          initialCustomLayoutId: layout.id,
+        ),
+      ),
+    );
+    if (mounted) {
       setState(() {});
     }
   }
@@ -92,11 +166,10 @@ class _CustomSheetLayoutsPageState extends State<CustomSheetLayoutsPage> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'You can skip this — normal exams use Print Sheets with '
-                      '"Standard sheet" and do not need anything here.\n\n'
-                      'For short quizzes: create a layout here, then Answer Key → '
-                      'Saved custom to fill the matching answers. '
-                      'Print a sample and scan once before exam day.',
+                      'Skip this for normal 30–100 exams — use Answer Keys · Standard, '
+                      'then Print Sheets with "Standard sheet".\n\n'
+                      'For short quizzes or special sizes: tap New layout, then you will '
+                      'create the matching answer key right away.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: AppColors.brandMuted),
                     ),

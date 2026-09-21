@@ -6,16 +6,18 @@ import 'package:omr_app/pages/answer_key_page.dart';
 import 'package:omr_app/pages/exam_day_board_page.dart';
 import 'package:omr_app/pages/scan_review_page.dart';
 import 'package:omr_app/theme/app_page_transitions.dart';
-import 'package:omr_app/services/backup_service.dart';
 import 'package:omr_app/services/export_service.dart';
 import 'package:omr_app/services/import_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
+import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/add_student_dialog.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_primary_button.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
+import 'package:omr_app/utils/answer_key_scope.dart';
+import 'package:omr_app/widgets/answer_key_scope_badge.dart';
 
 class SectionDetailPage extends StatefulWidget {
   final String sectionName;
@@ -115,7 +117,8 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     return names.toList()..sort();
   }
 
-  String _subjectLabel(Subject subject) => subject.displayName;
+  String _subjectLabel(Subject subject) =>
+      AnswerKeyScope.of(subject).describeSubject(subject);
 
   List<ScanResult> _resultsForStudent(Student student) {
     final results = globalScanResults
@@ -459,7 +462,10 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                           _subjectLabel(subject),
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        subtitle: Text('${subject.totalQuestions} questions'),
+                        subtitle: Text(
+                          '${subject.totalQuestions} questions · '
+                          '${AnswerKeyScope.of(subject).shortBadge}',
+                        ),
                         trailing: const Icon(Icons.add_rounded),
                         onTap: () async {
                           Navigator.pop(context);
@@ -730,7 +736,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               },
               icon: const Icon(Icons.person_remove_rounded, color: Colors.red),
               label: const Text(
-                'Remove student',
+                'Move to Archive',
                 style: TextStyle(color: Colors.red),
               ),
               style: OutlinedButton.styleFrom(
@@ -749,10 +755,12 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Remove student?'),
+        title: const Text('Move to Phone Archive?'),
         content: Text(
-          'Remove ${student.name} from ${widget.sectionName}? '
-          '${scanCount > 0 ? 'This also deletes $scanCount scan result${scanCount == 1 ? '' : 's'}.' : 'No scan results will be affected.'}',
+          'Move ${student.name} out of ${widget.sectionName}? '
+          '${scanCount > 0 ? 'Scores ($scanCount) are kept in Phone Archive so you can restore offline. ' : ''}'
+          'When you are online, Sync Now moves the archive to the web and frees phone storage. '
+          'Delete forever is only available inside Phone Archive.',
         ),
         actions: [
           TextButton(
@@ -761,8 +769,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Remove'),
+            child: const Text('Move to Archive'),
           ),
         ],
       ),
@@ -774,14 +781,15 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
 
     try {
       final summary =
-          await LocalDataStore.instance.removeStudentCascade(student.omrId);
+          await PhoneArchiveService.instance.archiveStudents([student.omrId]);
       if (!mounted) {
         return;
       }
       setState(() => _mutated = true);
       _showSnackBar(
-        'Removed ${student.name}. Deleted ${summary.removedScans} scan${summary.removedScans == 1 ? '' : 's'}.',
-        backgroundColor: Colors.red,
+        'Moved ${student.name} to Phone Archive'
+        '${summary.removedScans > 0 ? ' (kept ${summary.removedScans} score${summary.removedScans == 1 ? '' : 's'})' : ''}.',
+        backgroundColor: AppColors.brandGreen,
       );
     } catch (error) {
       if (mounted) {
@@ -968,17 +976,20 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete class?'),
+        title: const Text('Move class to Phone Archive?'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Delete ${widget.sectionName} and all ${_sectionStudents.length} student${_sectionStudents.length == 1 ? '' : 's'} with their scan results?',
+              'Move ${widget.sectionName} and ${_sectionStudents.length} student${_sectionStudents.length == 1 ? '' : 's'} '
+              '(with scores) to Phone Archive.',
             ),
             const SizedBox(height: 12),
             const Text(
-              'This cannot be undone. Export a backup first if you may need this data later.',
+              'You can restore offline from Settings → Phone Archive. '
+              'When online, Sync Now uploads to the web and clears phone storage. '
+              'Delete forever is only inside Phone Archive.',
               style: TextStyle(color: brandMuted, fontSize: 13),
             ),
           ],
@@ -988,17 +999,9 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context, false);
-              await BackupService.exportAndShare();
-            },
-            child: const Text('Back up first'),
-          ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Delete class'),
+            child: const Text('Move to Archive'),
           ),
         ],
       ),
@@ -1009,7 +1012,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
     }
 
     try {
-      await LocalDataStore.instance.deleteSectionCascade(widget.sectionName);
+      await PhoneArchiveService.instance.archiveSection(widget.sectionName);
       if (!mounted) {
         return;
       }
@@ -2066,12 +2069,26 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
                             Icons.menu_book_rounded,
                             color: brandGreen,
                           ),
-                          title: Text(
-                            _subjectLabel(subject),
-                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          title: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  subject.displayName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              AnswerKeyScopeBadge(
+                                subject: subject,
+                                compact: true,
+                              ),
+                            ],
                           ),
-                          subtitle:
-                              Text('${subject.totalQuestions} questions'),
+                          subtitle: Text(
+                            '${subject.totalQuestions} questions · '
+                            '${AnswerKeyScope.of(subject).gradingContextLabel}',
+                          ),
                           onTap: () => Navigator.pop(context, subject),
                         ),
                       )
@@ -2443,11 +2460,8 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
               ),
             if (_sectionStudents.isNotEmpty)
               ListTile(
-                leading: const Icon(Icons.delete_forever_rounded, color: Colors.red),
-                title: const Text(
-                  'Delete class',
-                  style: TextStyle(color: Colors.red),
-                ),
+                leading: const Icon(Icons.inventory_2_outlined, color: brandGreen),
+                title: const Text('Move class to Phone Archive'),
                 onTap: () {
                   Navigator.pop(context);
                   _deleteCurrentSectionWithStudents();

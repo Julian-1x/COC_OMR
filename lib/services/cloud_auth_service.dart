@@ -107,7 +107,9 @@ class CloudAuthService {
   static final CloudAuthService instance = CloudAuthService._();
 
   Future<TeacherRegistrationResult> registerTeacher({
-    required String name,
+    required String lastName,
+    required String firstName,
+    String? suffix,
     required String email,
     required String password,
     required String department,
@@ -115,10 +117,14 @@ class CloudAuthService {
     String? captchaToken,
   }) async {
     _ensureApiReady();
-    final trimmedName = PersonName.normalize(name);
+    final trimmedName = PersonName.normalizeFromParts(
+      lastName: lastName,
+      firstName: firstName,
+      suffix: suffix,
+    );
     if (trimmedName.isEmpty) {
       throw const CloudAuthException(
-        'Enter your full name (first name, then last name).',
+        'Enter your last name and first name.',
       );
     }
     final normalizedEmail = email.trim().toLowerCase();
@@ -631,6 +637,14 @@ class CloudAuthService {
     }
     if (normalized.contains('locked') || error.statusCode == 429) {
       return error.message;
+    }
+    if (normalized.contains('server error') ||
+        error.statusCode == 500 ||
+        error.statusCode == 502 ||
+        error.statusCode == 503 ||
+        error.statusCode == 504) {
+      return 'School server had a problem (may still be waking up). '
+          'Wait about a minute and try again.';
     }
     return error.message;
   }

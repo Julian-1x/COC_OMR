@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1080" viewBox="0 0 1500 1080" role="img" aria-label="Figure 4.14 Relational database schema">
+  <rect width="1500" height="1080" fill="#ffffff"/>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,1 L9,5 L0,9 Z" fill="#000000"/>
+    </marker>
+  </defs>
+
+  <!-- Title strip -->
+  <text x="750" y="36" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" fill="#333333">
+    Server schema (PostgreSQL production / SQLite development). Mobile SQLite mirrors academic sync entities under the same ownership keys.
+  </text>
+
+  <!-- ========== USERS ========== -->
+  <g>
+    <rect x="40" y="70" width="220" height="200" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="40" y="70" width="220" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="150" y="90" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">USERS</text>
+    <text x="52" y="118" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="52" y="138" font-family="Consolas, monospace" font-size="11" fill="#000000">    name</text>
+    <text x="52" y="158" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  email</text>
+    <text x="52" y="178" font-family="Consolas, monospace" font-size="11" fill="#000000">    password</text>
+    <text x="52" y="198" font-family="Consolas, monospace" font-size="11" fill="#000000">    email_verified_at</text>
+    <text x="52" y="218" font-family="Consolas, monospace" font-size="11" fill="#000000">    remember_token</text>
+    <text x="52" y="238" font-family="Consolas, monospace" font-size="11" fill="#000000">    created_at / updated_at</text>
+  </g>
+
+  <!-- ========== TEACHER_PROFILES ========== -->
+  <g>
+    <rect x="360" y="70" width="250" height="220" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="360" y="70" width="250" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="485" y="90" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">TEACHER_PROFILES</text>
+    <text x="372" y="118" font-family="Consolas, monospace" font-size="11" fill="#000000">PK/FK  id ’ USERS.id</text>
+    <text x="372" y="138" font-family="Consolas, monospace" font-size="11" fill="#000000">     full_name</text>
+    <text x="372" y="158" font-family="Consolas, monospace" font-size="11" fill="#000000">     role (teacher|admin)</text>
+    <text x="372" y="178" font-family="Consolas, monospace" font-size="11" fill="#000000">     is_active</text>
+    <text x="372" y="198" font-family="Consolas, monospace" font-size="11" fill="#000000">     access_status</text>
+    <text x="372" y="218" font-family="Consolas, monospace" font-size="11" fill="#000000">     school_name</text>
+    <text x="372" y="238" font-family="Consolas, monospace" font-size="11" fill="#000000">     pin_hash / pin_salt</text>
+    <text x="372" y="258" font-family="Consolas, monospace" font-size="11" fill="#000000">     created_at / updated_at</text>
+  </g>
+
+  <!-- ========== SECTIONS ========== -->
+  <g>
+    <rect x="40" y="360" width="250" height="250" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="40" y="360" width="250" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="165" y="380" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">SECTIONS</text>
+    <text x="52" y="408" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="52" y="428" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="52" y="448" font-family="Consolas, monospace" font-size="11" fill="#000000">    name</text>
+    <text x="52" y="468" font-family="Consolas, monospace" font-size="11" fill="#000000">    teacher</text>
+    <text x="52" y="488" font-family="Consolas, monospace" font-size="11" fill="#000000">    student_count</text>
+    <text x="52" y="508" font-family="Consolas, monospace" font-size="11" fill="#000000">    school_year / term_label</text>
+    <text x="52" y="528" font-family="Consolas, monospace" font-size="11" fill="#000000">    archived_at</text>
+    <text x="52" y="548" font-family="Consolas, monospace" font-size="11" fill="#000000">    local_id / sync_status</text>
+    <text x="52" y="568" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner_teacher_id, name)</text>
+    <text x="52" y="588" font-family="Consolas, monospace" font-size="11" fill="#000000">    created_at / updated_at</text>
+  </g>
+
+  <!-- ========== STUDENTS ========== -->
+  <g>
+    <rect x="340" y="360" width="270" height="290" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="340" y="360" width="270" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="475" y="380" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">STUDENTS</text>
+    <text x="352" y="408" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="352" y="428" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="352" y="448" font-family="Consolas, monospace" font-size="11" fill="#000000">    school_id</text>
+    <text x="352" y="468" font-family="Consolas, monospace" font-size="11" fill="#000000">    omr_id</text>
+    <text x="352" y="488" font-family="Consolas, monospace" font-size="11" fill="#000000">    name</text>
+    <text x="352" y="508" font-family="Consolas, monospace" font-size="11" fill="#000000">    section_name</text>
+    <text x="352" y="528" font-family="Consolas, monospace" font-size="11" fill="#000000">    score / answers / confidence</text>
+    <text x="352" y="548" font-family="Consolas, monospace" font-size="11" fill="#000000">    scan_date</text>
+    <text x="352" y="568" font-family="Consolas, monospace" font-size="11" fill="#000000">    local_id / sync_status</text>
+    <text x="352" y="588" font-family="Consolas, monospace" font-size="11" fill="#000000">    archived_at</text>
+    <text x="352" y="608" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner, omr_id)</text>
+    <text x="352" y="628" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner, school_id)</text>
+  </g>
+
+  <!-- ========== SUBJECTS ========== -->
+  <g>
+    <rect x="700" y="70" width="280" height="270" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="700" y="70" width="280" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="840" y="90" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">SUBJECTS (answer keys)</text>
+    <text x="712" y="118" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="712" y="138" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="712" y="158" font-family="Consolas, monospace" font-size="11" fill="#000000">    local_id</text>
+    <text x="712" y="178" font-family="Consolas, monospace" font-size="11" fill="#000000">    name</text>
+    <text x="712" y="198" font-family="Consolas, monospace" font-size="11" fill="#000000">    answer_key (JSON)</text>
+    <text x="712" y="218" font-family="Consolas, monospace" font-size="11" fill="#000000">    total_questions</text>
+    <text x="712" y="238" font-family="Consolas, monospace" font-size="11" fill="#000000">    section_names (JSON)</text>
+    <text x="712" y="258" font-family="Consolas, monospace" font-size="11" fill="#000000">    exam_date / passing_score</text>
+    <text x="712" y="278" font-family="Consolas, monospace" font-size="11" fill="#000000">    use_partial_credit</text>
+    <text x="712" y="298" font-family="Consolas, monospace" font-size="11" fill="#000000">    sync_status</text>
+    <text x="712" y="318" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner_teacher_id, local_id)</text>
+  </g>
+
+  <!-- ========== SCAN_RESULTS ========== -->
+  <g>
+    <rect x="700" y="380" width="300" height="310" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="700" y="380" width="300" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="850" y="400" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">SCAN_RESULTS</text>
+    <text x="712" y="428" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="712" y="448" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="712" y="468" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  subject_id ’ SUBJECTS (nullable)</text>
+    <text x="712" y="488" font-family="Consolas, monospace" font-size="11" fill="#000000">    student_omr_id</text>
+    <text x="712" y="508" font-family="Consolas, monospace" font-size="11" fill="#000000">    subject_local_id / subject_name</text>
+    <text x="712" y="528" font-family="Consolas, monospace" font-size="11" fill="#000000">    detected_answers (JSON)</text>
+    <text x="712" y="548" font-family="Consolas, monospace" font-size="11" fill="#000000">    correctness_map (JSON)</text>
+    <text x="712" y="568" font-family="Consolas, monospace" font-size="11" fill="#000000">    score / total_questions</text>
+    <text x="712" y="588" font-family="Consolas, monospace" font-size="11" fill="#000000">    confidence / scan_time</text>
+    <text x="712" y="608" font-family="Consolas, monospace" font-size="11" fill="#000000">    needs_review / manually_confirmed</text>
+    <text x="712" y="628" font-family="Consolas, monospace" font-size="11" fill="#000000">    review_reasons / flagged_questions</text>
+    <text x="712" y="648" font-family="Consolas, monospace" font-size="11" fill="#000000">    local_id / sync_status</text>
+    <text x="712" y="668" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner, omr_id, subject, time)</text>
+  </g>
+
+  <!-- ========== SCAN_WARNINGS ========== -->
+  <g>
+    <rect x="1080" y="420" width="280" height="200" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="1080" y="420" width="280" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="1220" y="440" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">SCAN_WARNINGS</text>
+    <text x="1092" y="468" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="1092" y="488" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="1092" y="508" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  scan_result_id ’ SCAN_RESULTS</text>
+    <text x="1092" y="528" font-family="Consolas, monospace" font-size="11" fill="#000000">    question_number</text>
+    <text x="1092" y="548" font-family="Consolas, monospace" font-size="11" fill="#000000">    reason</text>
+    <text x="1092" y="568" font-family="Consolas, monospace" font-size="11" fill="#000000">    metadata (JSON)</text>
+    <text x="1092" y="588" font-family="Consolas, monospace" font-size="11" fill="#000000">    created_at</text>
+  </g>
+
+  <!-- ========== DEADLINES ========== -->
+  <g>
+    <rect x="1080" y="70" width="280" height="230" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <rect x="1080" y="70" width="280" height="28" fill="#eeeeee" stroke="#000000" stroke-width="1.8"/>
+    <text x="1220" y="90" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" fill="#000000">DEADLINES</text>
+    <text x="1092" y="118" font-family="Consolas, monospace" font-size="11" fill="#000000">PK  id (UUID)</text>
+    <text x="1092" y="138" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  owner_teacher_id ’ USERS</text>
+    <text x="1092" y="158" font-family="Consolas, monospace" font-size="11" fill="#000000">FK  subject_id ’ SUBJECTS</text>
+    <text x="1092" y="178" font-family="Consolas, monospace" font-size="11" fill="#000000">    local_id / title</text>
+    <text x="1092" y="198" font-family="Consolas, monospace" font-size="11" fill="#000000">    section_name</text>
+    <text x="1092" y="218" font-family="Consolas, monospace" font-size="11" fill="#000000">    subject_local_id</text>
+    <text x="1092" y="238" font-family="Consolas, monospace" font-size="11" fill="#000000">    due_date / is_completed</text>
+    <text x="1092" y="258" font-family="Consolas, monospace" font-size="11" fill="#000000">    sync_status</text>
+    <text x="1092" y="278" font-family="Consolas, monospace" font-size="11" fill="#000000">UK  (owner_teacher_id, local_id)</text>
+  </g>
+
+  <!-- ========== Relationship lines ========== -->
+  <g stroke="#000000" stroke-width="1.4" fill="none">
+    <!-- users 1:1 teacher_profiles -->
+    <line x1="260" y1="160" x2="360" y2="160"/>
+    <!-- users 1:N sections -->
+    <path d="M150,270 L150,360"/>
+    <!-- users 1:N students -->
+    <path d="M200,270 L200,330 L340,330 L340,360"/>
+    <!-- users 1:N subjects -->
+    <path d="M260,120 L700,120"/>
+    <!-- users ownership to scan_results (via vertical then across) -->
+    <path d="M115,270 L115,720 L700,720 L700,690"/>
+    <!-- subjects 1:N scan_results -->
+    <line x1="840" y1="340" x2="840" y2="380"/>
+    <!-- subjects 1:N deadlines -->
+    <line x1="980" y1="180" x2="1080" y2="180"/>
+    <!-- scan_results 1:N scan_warnings -->
+    <line x1="1000" y1="520" x2="1080" y2="520"/>
+    <!-- logical: students.section_name ~ sections.name -->
+    <line x1="290" y1="500" x2="340" y2="500" stroke-dasharray="5,4"/>
+    <!-- logical: students.omr_id ~ scan_results.student_omr_id -->
+    <path d="M610,500 L680,500 L680,500 L700,500" stroke-dasharray="5,4"/>
+  </g>
+
+  <!-- Cardinality labels -->
+  <g font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">
+    <text x="300" y="152" text-anchor="middle">1</text>
+    <text x="340" y="152" text-anchor="middle">1</text>
+    <text x="310" y="145" text-anchor="middle" font-size="10">has profile</text>
+
+    <text x="160" y="320" text-anchor="middle">1</text>
+    <text x="160" y="350" text-anchor="middle">N</text>
+    <text x="175" y="335" font-size="10">owns</text>
+
+    <text x="270" y="325" font-size="10">owns</text>
+    <text x="310" y="350">N</text>
+
+    <text x="480" y="112" text-anchor="middle" font-size="10">owns</text>
+    <text x="450" y="125">1</text>
+    <text x="680" y="125">N</text>
+
+    <text x="855" y="365" font-size="10">1</text>
+    <text x="855" y="378" font-size="10">N</text>
+
+    <text x="1030" y="168" font-size="10">1</text>
+    <text x="1065" y="168" font-size="10">N</text>
+
+    <text x="1030" y="512" font-size="10">1</text>
+    <text x="1065" y="512" font-size="10">N</text>
+
+    <text x="300" y="490" font-size="9" fill="#444444">section_name</text>
+    <text x="640" y="490" font-size="9" fill="#444444">omr_id match</text>
+  </g>
+
+  <!-- Legend -->
+  <g>
+    <rect x="40" y="780" width="620" height="140" fill="#ffffff" stroke="#000000" stroke-width="1.2"/>
+    <text x="55" y="805" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#000000">Legend / constraints</text>
+    <text x="55" y="828" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">PK = primary key · FK = foreign key · UK = unique constraint</text>
+    <text x="55" y="848" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">Solid lines = formal FK relationships · Dashed lines = logical joins (section_name, omr_id)</text>
+    <text x="55" y="868" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">Teacher ownership: academic rows are scoped by owner_teacher_id (cascade on delete)</text>
+    <text x="55" y="888" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">Photos: scanned_image_path may exist locally; photograph files are not synced to the server</text>
+    <text x="55" y="908" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">Shared vs section-only keys: SUBJECTS.section_names (JSON) limits key applicability by section</text>
+  </g>
+
+  <g>
+    <rect x="700" y="780" width="660" height="140" fill="#ffffff" stroke="#000000" stroke-width="1.2"/>
+    <text x="715" y="805" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" fill="#000000">Integrity summary</text>
+    <text x="715" y="828" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">1. USERS ” TEACHER_PROFILES is 1:1 (profile id equals user id).</text>
+    <text x="715" y="848" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">2. SECTIONS / STUDENTS / SUBJECTS / SCAN_RESULTS / DEADLINES are teacher-owned.</text>
+    <text x="715" y="868" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">3. SCAN_RESULTS optionally references SUBJECTS; warnings cascade from a scan row.</text>
+    <text x="715" y="888" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">4. access_status on TEACHER_PROFILES gates cloud use until administrator approval.</text>
+    <text x="715" y="908" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#000000">5. Framework tables (tokens, sessions, jobs, cache) omitted from this academic ERD.</text>
+  </g>
+
+  <text x="750" y="970" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="11" fill="#444444">
+    No student login entity exists. A student is a roster/scan row owned by a teacher, not an authenticated user account.
+  </text>
+  <text x="750" y="1020" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#000000">
+    Figure 4.14. Relational database schema design representing entity attributes and key constraints
+  </text>
+</svg>

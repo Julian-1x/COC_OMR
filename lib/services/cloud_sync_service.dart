@@ -3,6 +3,7 @@ import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
 
@@ -87,6 +88,12 @@ class CloudSyncService {
     }
 
     await LocalDataStore.instance.processPendingDeletions();
+    // Soft-archived packs → cloud archive → purge phone storage (2A).
+    try {
+      await PhoneArchiveService.instance.uploadAndPurge(requireOnline: false);
+    } catch (error) {
+      debugPrint('Phone archive upload skipped: $error');
+    }
     final pending = await LocalDataStore.instance.fetchPendingSync();
     if (pending.total == 0) {
       return const SyncSummary(

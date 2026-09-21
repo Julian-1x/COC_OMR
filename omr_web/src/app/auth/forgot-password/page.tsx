@@ -1,15 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BrandHeader } from "@/components/brand";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
-import { isApiConfigured } from "@/lib/api/env";
+import { isApiConfigured, apiConfigHint } from "@/lib/api/env";
 import { workspaceName } from "@/lib/theme";
 import { TurnstileField } from "@/components/auth/turnstile-field";
 
-const CAPTCHA_SITE_KEY =
+const ENV_CAPTCHA_SITE_KEY =
   process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY?.trim() ?? "";
 
 export default function ForgotPasswordPage() {
@@ -18,16 +18,50 @@ export default function ForgotPasswordPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaSiteKey, setCaptchaSiteKey] = useState(ENV_CAPTCHA_SITE_KEY);
+  const [captchaRequired, setCaptchaRequired] = useState(Boolean(ENV_CAPTCHA_SITE_KEY));
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/auth/security-config", { cache: "no-store" });
+        const payload = (await response.json()) as {
+          captcha_enabled?: boolean;
+          captcha_site_key?: string | null;
+        };
+        if (cancelled) return;
+        const key = payload.captcha_site_key?.trim() || ENV_CAPTCHA_SITE_KEY;
+        if (payload.captcha_enabled && key) {
+          setCaptchaRequired(true);
+          setCaptchaSiteKey(key);
+        } else if (key) {
+          setCaptchaSiteKey(key);
+          setCaptchaRequired(true);
+        }
+      } catch {
+        // Keep env key fallback.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setNotice(null);
-    setLoading(true);
 
+    if (captchaRequired && !captchaToken) {
+      setError("Complete the security check below, then try again.");
+      return;
+    }
+
+    setLoading(true);
     try {
       if (!isApiConfigured()) {
-        throw new Error("API URL missing. Contact your administrator.");
+        throw new Error(apiConfigHint());
       }
 
       const response = await fetch("/api/auth/forgot-password", {
@@ -39,8 +73,18 @@ export default function ForgotPasswordPage() {
         }),
       });
 
-      const payload = (await response.json()) as { error?: string; ok?: boolean };
+      const payload = (await response.json()) as {
+        error?: string;
+        ok?: boolean;
+        captchaRequired?: boolean;
+        captchaSiteKey?: string;
+      };
       if (!response.ok || payload.error) {
+        if (payload.captchaRequired && payload.captchaSiteKey) {
+          setCaptchaRequired(true);
+          setCaptchaSiteKey(payload.captchaSiteKey);
+          setCaptchaToken(null);
+        }
         throw new Error(payload.error ?? "Could not send reset link.");
       }
 
@@ -83,8 +127,12 @@ export default function ForgotPasswordPage() {
             />
           </div>
 
-          {CAPTCHA_SITE_KEY ? (
-            <TurnstileField siteKey={CAPTCHA_SITE_KEY} onToken={setCaptchaToken} />
+          {captchaSiteKey ? (
+            <TurnstileField siteKey={captchaSiteKey} onToken={setCaptchaToken} />
+          ) : captchaRequired ? (
+            <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+              Security check is required but not available yet. Refresh this page.
+            </p>
           ) : null}
 
           {notice ? (
@@ -99,8 +147,16 @@ export default function ForgotPasswordPage() {
             </p>
           ) : null}
 
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Sending…" : "Send reset link"}
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={loading || (Boolean(captchaSiteKey) && !captchaToken)}
+          >
+            {loading
+              ? "Sending…"
+              : captchaSiteKey && !captchaToken
+                ? "Waiting for security check…"
+                : "Send reset link"}
           </Button>
 
           <p className="mt-4 text-center text-sm text-slate-600">

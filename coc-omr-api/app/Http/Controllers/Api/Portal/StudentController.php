@@ -20,6 +20,12 @@ class StudentController extends Controller
     {
         $query = $this->scope->studentsQuery($request->user())->orderBy('name');
 
+        if ($request->boolean('archived')) {
+            $query->whereNotNull('archived_at');
+        } elseif (! $request->boolean('include_archived')) {
+            $query->whereNull('archived_at');
+        }
+
         if ($sectionName = $request->string('section_name')->toString()) {
             $query->where('section_name', $sectionName);
         }
