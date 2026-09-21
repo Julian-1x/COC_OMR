@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>COC OMR needs the camera to scan printed answer sheets during exam checking.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>COC OMR may access photos only if you choose an image of an answer sheet to scan.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
