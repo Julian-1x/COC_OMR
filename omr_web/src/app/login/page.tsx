@@ -167,11 +167,20 @@ function LoginForm() {
   }
 
   useEffect(() => {
+    // Intentional post-transfer sign-out must win over a race where a stale
+    // dashboard request sees a revoked token and appends error=session.
+    if (searchParams.get("notice") === "super-admin-transferred") {
+      setError(null);
+      setNotice(
+        "Super admin handoff complete. You were signed out on purpose. Sign in again with your usual email and password.",
+      );
+      setMode("login");
+      return;
+    }
+
     const authError = searchParams.get("error");
     if (authError === "session") {
-      setError(
-        "Sign-in did not stay active. Allow cookies for this site, then try again with a fresh authenticator code.",
-      );
+      setError("Your session ended. Sign in again to continue.");
       setMode("login");
       return;
     }
@@ -210,13 +219,6 @@ function LoginForm() {
 
     if (searchParams.get("reset") === "1") {
       setNotice("Password updated. Sign in with your new password.");
-      setMode("login");
-    }
-
-    if (searchParams.get("notice") === "super-admin-transferred") {
-      setNotice(
-        "Super admin was transferred. Sign in again. If you received the role, use your usual email and password.",
-      );
       setMode("login");
     }
   }, [searchParams]);

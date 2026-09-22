@@ -81,9 +81,7 @@ export function TransferSuperAdminPanel({
         setError(result.error);
         return;
       }
-      window.location.replace(
-        "/auth/signout?next=/login&notice=super-admin-transferred",
-      );
+      window.location.replace("/login?notice=super-admin-transferred");
     });
   }
 
@@ -109,9 +107,9 @@ export function TransferSuperAdminPanel({
         setResignError(result.error);
         return;
       }
-      window.location.replace(
-        "/auth/signout?next=/login&notice=super-admin-transferred",
-      );
+      // Cookie already cleared in the server action — go straight to login
+      // so a parallel 401 cannot overwrite the success notice with error=session.
+      window.location.replace("/login?notice=super-admin-transferred");
     });
   }
 

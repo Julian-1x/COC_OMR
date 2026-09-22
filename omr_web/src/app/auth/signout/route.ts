@@ -35,12 +35,17 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const nextPath = url.searchParams.get("next") || "/login";
   const destination = new URL(nextPath, url.origin);
-  // Preserve pending / error query flags from callers.
+  // Preserve pending / error / notice query flags from callers.
   for (const key of ["pending", "error", "confirmed", "reset", "notice"] as const) {
     const value = url.searchParams.get(key);
     if (value) {
       destination.searchParams.set(key, value);
     }
+  }
+  // Successful transfer/resign sign-out is intentional — never show the
+  // scary "session died / authenticator" error beside that success notice.
+  if (destination.searchParams.get("notice") === "super-admin-transferred") {
+    destination.searchParams.delete("error");
   }
 
   const response = NextResponse.redirect(destination);
