@@ -443,21 +443,53 @@ class AdminController extends Controller
         }
 
         try {
-            DB::transaction(function () use ($fromProfile, $target) {
-                TeacherProfile::query()->whereKey($target->id)->update([
-                    'role' => CocSchool::ROLE_SUPER_ADMIN,
-                    'school_name' => CocSchool::NAME,
-                    'access_status' => CocSchool::ACCESS_APPROVED,
-                    'is_active' => true,
-                ]);
+            // One statement avoids Postgres 25P02 (aborted txn) when a prior
+            // statement fails mid-transfer, and avoids briefly having two
+            // super_admin rows if a unique/partial index exists.
+            $updated = DB::update(
+                'UPDATE teacher_profiles
+                 SET role = CASE
+                        WHEN id = ? THEN ?
+                        WHEN id = ? THEN ?
+                        ELSE role
+                     END,
+                     school_name = CASE
+                        WHEN id = ? THEN ?
+                        ELSE school_name
+                     END,
+                     access_status = CASE
+                        WHEN id IN (?, ?) THEN ?
+                        ELSE access_status
+                     END,
+                     is_active = CASE
+                        WHEN id IN (?, ?) THEN TRUE
+                        ELSE is_active
+                     END,
+                     updated_at = ?
+                 WHERE id IN (?, ?)',
+                [
+                    $fromProfile->id,
+                    CocSchool::ROLE_TEACHER,
+                    $target->id,
+                    CocSchool::ROLE_SUPER_ADMIN,
+                    $target->id,
+                    CocSchool::NAME,
+                    $fromProfile->id,
+                    $target->id,
+                    CocSchool::ACCESS_APPROVED,
+                    $fromProfile->id,
+                    $target->id,
+                    now(),
+                    $fromProfile->id,
+                    $target->id,
+                ],
+            );
 
-                // Previous holder keeps an approved instructor account (not dept admin by default).
-                TeacherProfile::query()->whereKey($fromProfile->id)->update([
-                    'role' => CocSchool::ROLE_TEACHER,
-                    'access_status' => CocSchool::ACCESS_APPROVED,
-                    'is_active' => true,
-                ]);
-            });
+            if ($updated < 1) {
+                return response()->json([
+                    'message' => 'Transfer failed: no teacher profiles were updated. Refresh and try again.',
+                ], 500);
+            }
 
             // Revoke sessions after roles commit so a token-delete glitch cannot
             // abort the role transfer (and so the current request can finish).
