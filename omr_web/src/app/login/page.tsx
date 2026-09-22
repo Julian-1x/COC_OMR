@@ -212,6 +212,13 @@ function LoginForm() {
       setNotice("Password updated. Sign in with your new password.");
       setMode("login");
     }
+
+    if (searchParams.get("notice") === "super-admin-transferred") {
+      setNotice(
+        "Super admin was transferred. Sign in again. If you received the role, use your usual email and password.",
+      );
+      setMode("login");
+    }
   }, [searchParams]);
 
   // While waiting for email confirmation, poll so verifying on phone unlocks this tab.

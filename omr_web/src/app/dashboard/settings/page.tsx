@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { Card } from "@/components/ui/card";
-import { isSchoolAdmin } from "@/lib/api/admin";
+import { isSchoolAdmin, isSuperAdmin } from "@/lib/api/admin";
 import { fetchCloudLastUpdated, fetchDashboardStats } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
 import { workspaceName } from "@/lib/theme";
@@ -11,6 +11,7 @@ import { apiBaseUrlMismatch } from "@/lib/api/env";
 export default async function SettingsPage() {
   const { user, profile, api } = await requireTeacherSession();
   const admin = isSchoolAdmin(profile, user);
+  const superAdmin = isSuperAdmin(profile, user);
 
   let stats = {
     sectionCount: 0,
@@ -153,6 +154,14 @@ export default async function SettingsPage() {
               >
                 Access control
               </Link>
+              {superAdmin ? (
+                <Link
+                  href="/dashboard/admin/transfer"
+                  className="inline-block rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-extrabold text-red-800 hover:bg-red-50"
+                >
+                  Transfer super admin
+                </Link>
+              ) : null}
             </div>
           </Card>
         ) : null}

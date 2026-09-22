@@ -13,6 +13,7 @@ import {
   Menu,
   Settings,
   Shield,
+  ArrowRightLeft,
   Users,
   X,
 } from "lucide-react";
@@ -48,6 +49,7 @@ const adminNavBase: NavItem[] = [
 const adminNavSuper: NavItem[] = [
   { href: "/dashboard/admin/departments", label: "Dept admins", icon: Users },
   { href: "/dashboard/admin/security", label: "Sign-in log", icon: Shield },
+  { href: "/dashboard/admin/transfer", label: "Transfer", icon: ArrowRightLeft },
 ];
 
 const adminNavTail: NavItem[] = [
@@ -128,19 +130,28 @@ export function DashboardShell({
   const [mode, setMode] = useState<PortalMode>(initialMode);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Keep desk mode in sync with the URL: any /dashboard/admin* page is Admin desk.
+  // Desk chrome must match the URL so Admin nav never wraps Teacher pages.
   useEffect(() => {
     if (!isAdmin) return;
     const onAdminRoute = pathname.startsWith("/dashboard/admin");
+    const onSharedSettings =
+      pathname === "/dashboard/settings" || pathname.startsWith("/dashboard/settings/");
+
     if (onAdminRoute) {
-      if (mode !== "admin") {
-        document.cookie = portalModeCookieValue("admin");
-        setMode("admin");
-      }
+      document.cookie = portalModeCookieValue("admin");
+      if (mode !== "admin") setMode("admin");
       return;
     }
-    const cookieMode = readPortalModeCookie();
-    if (cookieMode !== mode) setMode(cookieMode);
+
+    if (onSharedSettings) {
+      const cookieMode = readPortalModeCookie();
+      if (cookieMode !== mode) setMode(cookieMode);
+      return;
+    }
+
+    // Any other /dashboard* route is Teacher desk content.
+    document.cookie = portalModeCookieValue("teacher");
+    if (mode !== "teacher") setMode("teacher");
   }, [pathname, isAdmin, mode]);
 
   useEffect(() => {
@@ -157,10 +168,17 @@ export function DashboardShell({
       : teacherNav.filter((item) => item.href !== "/dashboard/settings");
 
   function switchMode(next: PortalMode) {
-    document.cookie = portalModeCookieValue(next);
-    setMode(next);
     setMenuOpen(false);
-    router.push(next === "admin" ? "/dashboard/admin" : "/dashboard");
+    if (next === "admin") {
+      // Navigate first; cookie is set when /dashboard/admin* actually loads.
+      // Avoids Admin chrome stuck on Teacher home if admin route redirects.
+      router.push("/dashboard/admin");
+      router.refresh();
+      return;
+    }
+    document.cookie = portalModeCookieValue("teacher");
+    setMode("teacher");
+    router.push("/dashboard");
     router.refresh();
   }
 

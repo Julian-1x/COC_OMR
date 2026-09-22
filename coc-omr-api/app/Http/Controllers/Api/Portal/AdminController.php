@@ -4,15 +4,19 @@ namespace App\Http\Controllers\Api\Portal;
 
 use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
+use App\Services\Auth\AuthEventLogger;
 use App\Services\TeacherScopeService;
 use App\Support\CocSchool;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 
 class AdminController extends Controller
 {
     public function __construct(
         private readonly TeacherScopeService $scope,
+        private readonly AuthEventLogger $authEvents,
     ) {}
 
     public function stats(Request $request): JsonResponse
@@ -360,6 +364,114 @@ class AdminController extends Controller
                 'role' => $teacher->role,
                 'department' => $teacher->department,
                 'access_status' => $teacher->access_status,
+            ],
+        ]);
+    }
+
+    /**
+     * Transfer the single school super-admin role to another approved teacher.
+     * Requires password + typed recipient email + confirmation phrase.
+     */
+    public function transferSuperAdmin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'target_teacher_id' => ['required', 'uuid'],
+            'target_email' => ['required', 'email'],
+            'current_password' => ['required', 'string'],
+            'confirmation' => ['required', 'string'],
+        ]);
+
+        if (strtoupper(trim($validated['confirmation'])) !== 'TRANSFER') {
+            return response()->json([
+                'message' => 'Type TRANSFER exactly to confirm this change.',
+            ], 422);
+        }
+
+        $admin = $request->user();
+        if (! $admin || ! $admin->isSuperAdmin()) {
+            return response()->json(['message' => 'Only the super admin can transfer this role.'], 403);
+        }
+
+        if (! is_string($admin->password) || ! Hash::check($validated['current_password'], $admin->password)) {
+            return response()->json([
+                'message' => 'Current password is incorrect.',
+            ], 422);
+        }
+
+        $target = TeacherProfile::query()->with('user')->find($validated['target_teacher_id']);
+        if ($target === null || $target->school_name !== CocSchool::NAME) {
+            return response()->json(['message' => 'Teacher not found at this school.'], 404);
+        }
+
+        if ($target->id === $admin->id) {
+            return response()->json(['message' => 'You already hold the super admin role.'], 422);
+        }
+
+        $targetEmail = strtolower(trim((string) ($target->user?->email ?? '')));
+        $typedEmail = strtolower(trim($validated['target_email']));
+        if ($targetEmail === '' || $targetEmail !== $typedEmail) {
+            return response()->json([
+                'message' => 'Recipient email does not match the selected teacher. Type their full email to verify.',
+            ], 422);
+        }
+
+        if (! $target->isApproved()) {
+            return response()->json([
+                'message' => 'Approve this instructor first, then transfer super admin.',
+            ], 422);
+        }
+
+        if (CocSchool::isSuperAdminRole((string) $target->role)) {
+            return response()->json([
+                'message' => 'That account is already a super admin.',
+            ], 422);
+        }
+
+        $fromProfile = $admin->teacherProfile;
+        if ($fromProfile === null) {
+            return response()->json(['message' => 'Your admin profile was not found.'], 422);
+        }
+
+        DB::transaction(function () use ($fromProfile, $target, $admin) {
+            $target->role = CocSchool::ROLE_SUPER_ADMIN;
+            $target->school_name = CocSchool::NAME;
+            $target->applyAccessStatus(CocSchool::ACCESS_APPROVED);
+            $target->save();
+
+            // Previous holder keeps an approved instructor account (not dept admin by default).
+            $fromProfile->role = CocSchool::ROLE_TEACHER;
+            $fromProfile->applyAccessStatus(CocSchool::ACCESS_APPROVED);
+            $fromProfile->save();
+
+            // Force both accounts to re-authenticate with new roles.
+            $admin->tokens()->delete();
+            $target->user?->tokens()->delete();
+        });
+
+        $this->authEvents->record(
+            'super_admin_transferred',
+            (string) $admin->email,
+            $admin,
+            $request,
+            [
+                'from_teacher_id' => $fromProfile->id,
+                'to_teacher_id' => $target->id,
+                'to_email' => $targetEmail,
+            ],
+        );
+
+        return response()->json([
+            'message' => 'Super admin transferred. Sign in again. The new super admin must also sign in again.',
+            'from' => [
+                'id' => $fromProfile->id,
+                'email' => $admin->email,
+                'role' => CocSchool::ROLE_TEACHER,
+            ],
+            'to' => [
+                'id' => $target->id,
+                'email' => $targetEmail,
+                'full_name' => $target->full_name,
+                'role' => CocSchool::ROLE_SUPER_ADMIN,
             ],
         ]);
     }

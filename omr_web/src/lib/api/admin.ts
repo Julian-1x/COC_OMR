@@ -247,6 +247,23 @@ export async function revokeDepartmentAdmin(
   await api.post(`/admin/teachers/${teacherId}/revoke-dept-admin`);
 }
 
+export async function transferSuperAdmin(
+  api: ApiClient,
+  payload: {
+    targetTeacherId: string;
+    targetEmail: string;
+    currentPassword: string;
+    confirmation: string;
+  },
+): Promise<{ message: string }> {
+  return api.post<{ message: string }>("/admin/transfer-super-admin", {
+    target_teacher_id: payload.targetTeacherId,
+    target_email: payload.targetEmail,
+    current_password: payload.currentPassword,
+    confirmation: payload.confirmation,
+  });
+}
+
 export async function fetchSchoolAdminStats(
   api: ApiClient,
   _schoolName: string,

@@ -119,6 +119,12 @@ export default async function AdminDashboardPage() {
               >
                 Sign-in activity
               </Link>
+              <Link
+                href="/dashboard/admin/transfer"
+                className="inline-flex rounded-xl border border-red-200 px-3 py-2 text-sm font-bold text-red-800 hover:bg-red-50"
+              >
+                Transfer super admin
+              </Link>
             </>
           ) : null}
         </div>
