@@ -63,10 +63,9 @@ class AdminBootstrap
             return false;
         }
 
-        // Another instructor already holds school-wide super admin — do not
-        // recreate dual supers after a verified Transfer handoff.
+        // Another super admin already exists anywhere in this single-tenant
+        // deploy — do not recreate dual supers after Transfer/Resign.
         $schoolHasSuperAdmin = TeacherProfile::query()
-            ->where('school_name', CocSchool::NAME)
             ->whereIn('role', ['super_admin', 'admin', 'school_admin'])
             ->where('id', '!=', $user->id)
             ->exists();

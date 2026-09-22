@@ -264,6 +264,19 @@ export async function transferSuperAdmin(
   });
 }
 
+export async function resignSuperAdmin(
+  api: ApiClient,
+  payload: {
+    currentPassword: string;
+    confirmation: string;
+  },
+): Promise<{ message: string }> {
+  return api.post<{ message: string }>("/admin/resign-super-admin", {
+    current_password: payload.currentPassword,
+    confirmation: payload.confirmation,
+  });
+}
+
 export async function fetchSchoolAdminStats(
   api: ApiClient,
   _schoolName: string,

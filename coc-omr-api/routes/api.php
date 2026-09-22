@@ -159,6 +159,7 @@ Route::middleware(['auth:sanctum', 'verified', 'teacher.approved'])->group(funct
             Route::post('/teachers/{teacherId}/revoke-dept-admin', [AdminController::class, 'revokeDeptAdmin']);
             Route::delete('/teachers/{teacherId}', [AdminController::class, 'destroy']);
             Route::post('/transfer-super-admin', [AdminController::class, 'transferSuperAdmin']);
+            Route::post('/resign-super-admin', [AdminController::class, 'resignSuperAdmin']);
         });
     });
 });

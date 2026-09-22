@@ -548,6 +548,114 @@ class AdminController extends Controller
     }
 
     /**
+     * Resign school-wide super admin when at least one other super admin exists.
+     * Used to fix a stuck dual-super state without waiting on Transfer.
+     */
+    public function resignSuperAdmin(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'current_password' => ['required', 'string'],
+            'confirmation' => ['required', 'string'],
+        ]);
+
+        if (strtoupper(trim($validated['confirmation'])) !== 'RESIGN') {
+            return response()->json([
+                'message' => 'Type RESIGN exactly to confirm you are stepping down.',
+            ], 422);
+        }
+
+        $admin = $request->user();
+        if (! $admin || ! $admin->isSuperAdmin()) {
+            return response()->json(['message' => 'Only a super admin can resign this role.'], 403);
+        }
+
+        $passwordHash = $admin->getAuthPassword();
+        $passwordOk = false;
+        try {
+            $passwordOk = is_string($passwordHash)
+                && $passwordHash !== ''
+                && Hash::check($validated['current_password'], $passwordHash);
+        } catch (\Throwable $error) {
+            report($error);
+            $passwordOk = false;
+        }
+        if (! $passwordOk) {
+            return response()->json([
+                'message' => 'Current password is incorrect.',
+            ], 422);
+        }
+
+        $otherSuper = TeacherProfile::query()
+            ->where('id', '!=', $admin->id)
+            ->whereIn('role', ['super_admin', 'admin', 'school_admin'])
+            ->where(function ($query) {
+                $query->where('school_name', CocSchool::NAME)
+                    ->orWhereNull('school_name');
+            })
+            ->with('user')
+            ->first();
+
+        if ($otherSuper === null) {
+            return response()->json([
+                'message' => 'You are the only super admin. Transfer to someone else first, then resign.',
+            ], 422);
+        }
+
+        try {
+            $updated = DB::update(
+                'UPDATE teacher_profiles
+                 SET role = ?, access_status = ?, is_active = TRUE, updated_at = ?
+                 WHERE id = ?',
+                [
+                    CocSchool::ROLE_TEACHER,
+                    CocSchool::ACCESS_APPROVED,
+                    now(),
+                    $admin->id,
+                ],
+            );
+
+            if ($updated < 1) {
+                return response()->json([
+                    'message' => 'Could not update your profile. Refresh and try again.',
+                ], 500);
+            }
+
+            try {
+                $admin->tokens()->delete();
+            } catch (\Throwable $tokenError) {
+                report($tokenError);
+            }
+
+            try {
+                $this->authEvents->record(
+                    'super_admin_resigned',
+                    (string) $admin->email,
+                    $admin,
+                    $request,
+                    [
+                        'remaining_super_admin_id' => $otherSuper->id,
+                        'remaining_super_admin_email' => $otherSuper->user?->email,
+                    ],
+                );
+            } catch (\Throwable $logError) {
+                report($logError);
+            }
+        } catch (\Throwable $error) {
+            report($error);
+
+            return response()->json([
+                'message' => 'Resign failed: '.$error->getMessage(),
+            ], 500);
+        }
+
+        return response()->json([
+            'message' => 'You are now an approved instructor. Sign in again. '
+                .(($otherSuper->user?->email) ?: $otherSuper->full_name)
+                .' remains super admin.',
+        ]);
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     private function teacherSummaries(Request $request): array
