@@ -431,26 +431,21 @@ class AdminController extends Controller
             ], 422);
         }
 
-        if (CocSchool::isSuperAdminRole((string) $target->role)) {
-            return response()->json([
-                'message' => 'That account is already a super admin.',
-            ], 422);
-        }
-
+        // Target may already be super admin (stuck dual-super state after
+        // bootstrap re-promoted the previous holder). Transfer still demotes you.
         $fromProfile = TeacherProfile::query()->find($admin->id);
         if ($fromProfile === null) {
             return response()->json(['message' => 'Your admin profile was not found.'], 422);
         }
 
         try {
-            // One statement avoids Postgres 25P02 (aborted txn) when a prior
-            // statement fails mid-transfer, and avoids briefly having two
-            // super_admin rows if a unique/partial index exists.
+            // One statement: demote every other COC super admin to teacher, keep
+            // (or promote) the chosen recipient as the sole school super admin.
             $updated = DB::update(
                 'UPDATE teacher_profiles
                  SET role = CASE
                         WHEN id = ? THEN ?
-                        WHEN id = ? THEN ?
+                        WHEN school_name = ? AND role IN (?, ?, ?) THEN ?
                         ELSE role
                      END,
                      school_name = CASE
@@ -458,30 +453,43 @@ class AdminController extends Controller
                         ELSE school_name
                      END,
                      access_status = CASE
-                        WHEN id IN (?, ?) THEN ?
+                        WHEN id = ? OR (school_name = ? AND role IN (?, ?, ?)) THEN ?
                         ELSE access_status
                      END,
                      is_active = CASE
-                        WHEN id IN (?, ?) THEN TRUE
+                        WHEN id = ? OR (school_name = ? AND role IN (?, ?, ?)) THEN TRUE
                         ELSE is_active
                      END,
                      updated_at = ?
-                 WHERE id IN (?, ?)',
+                 WHERE id = ?
+                    OR (school_name = ? AND role IN (?, ?, ?))',
                 [
-                    $fromProfile->id,
-                    CocSchool::ROLE_TEACHER,
                     $target->id,
                     CocSchool::ROLE_SUPER_ADMIN,
+                    CocSchool::NAME,
+                    CocSchool::ROLE_SUPER_ADMIN,
+                    'admin',
+                    'school_admin',
+                    CocSchool::ROLE_TEACHER,
                     $target->id,
                     CocSchool::NAME,
-                    $fromProfile->id,
                     $target->id,
+                    CocSchool::NAME,
+                    CocSchool::ROLE_SUPER_ADMIN,
+                    'admin',
+                    'school_admin',
                     CocSchool::ACCESS_APPROVED,
-                    $fromProfile->id,
                     $target->id,
+                    CocSchool::NAME,
+                    CocSchool::ROLE_SUPER_ADMIN,
+                    'admin',
+                    'school_admin',
                     now(),
-                    $fromProfile->id,
                     $target->id,
+                    CocSchool::NAME,
+                    CocSchool::ROLE_SUPER_ADMIN,
+                    'admin',
+                    'school_admin',
                 ],
             );
 

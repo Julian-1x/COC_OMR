@@ -39,6 +39,9 @@ class AdminBootstrap
     /**
      * Promote a matching user to super_admin + approved + COC school.
      * Returns true when a change was applied.
+     *
+     * Only seeds the *first* school super admin. Once any COC super admin
+     * exists, login must not re-promote bootstrap emails (that undoes Transfer).
      */
     public static function promoteIfListed(User $user): bool
     {
@@ -57,6 +60,23 @@ class AdminBootstrap
             && $profile->school_name === CocSchool::NAME;
 
         if ($alreadyAdmin) {
+            return false;
+        }
+
+        // Another instructor already holds school-wide super admin — do not
+        // recreate dual supers after a verified Transfer handoff.
+        $schoolHasSuperAdmin = TeacherProfile::query()
+            ->where('school_name', CocSchool::NAME)
+            ->whereIn('role', ['super_admin', 'admin', 'school_admin'])
+            ->where('id', '!=', $user->id)
+            ->exists();
+
+        if ($schoolHasSuperAdmin) {
+            Log::info('COC super admin bootstrap skipped; school already has a super admin', [
+                'email' => $user->email,
+                'user_id' => $user->id,
+            ]);
+
             return false;
         }
 

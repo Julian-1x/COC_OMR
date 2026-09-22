@@ -22,16 +22,29 @@ export function TransferSuperAdminPanel({
   const [error, setError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
 
+  const otherSuperAdmins = useMemo(
+    () =>
+      candidates.filter(
+        (t) =>
+          t.email &&
+          t.accessStatus === "approved" &&
+          isSuperAdminRole(t.role) &&
+          t.email.toLowerCase() !== currentEmail.toLowerCase(),
+      ),
+    [candidates, currentEmail],
+  );
+
   const eligible = useMemo(
     () =>
       candidates.filter(
         (t) =>
           t.email &&
           t.accessStatus === "approved" &&
-          !isSuperAdminRole(t.role) &&
-          t.email.toLowerCase() !== currentEmail.toLowerCase(),
+          t.email.toLowerCase() !== currentEmail.toLowerCase() &&
+          // Instructors, or an existing super admin when finishing a dual-super cleanup.
+          (!isSuperAdminRole(t.role) || otherSuperAdmins.some((s) => s.id === t.id)),
       ),
-    [candidates, currentEmail],
+    [candidates, currentEmail, otherSuperAdmins],
   );
 
   const selected = eligible.find((t) => t.id === targetId) ?? null;
@@ -85,10 +98,18 @@ export function TransferSuperAdminPanel({
         <p className="font-bold">This permanently moves school-wide super admin power.</p>
         <ul className="mt-2 list-disc space-y-1 pl-5">
           <li>You become a regular approved instructor.</li>
-          <li>The recipient becomes the only super admin from this transfer.</li>
+          <li>The recipient becomes the only school super admin (any other supers are demoted).</li>
           <li>Both of you must sign in again afterward.</li>
         </ul>
       </div>
+
+      {otherSuperAdmins.length > 0 ? (
+        <div className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+          More than one super admin is listed right now. Choose who should keep the role
+          (for example Jyll), confirm with their email + your password + TRANSFER — you
+          will resign and they remain the only super admin.
+        </div>
+      ) : null}
 
       {eligible.length === 0 ? (
         <p className="text-sm text-slate-600">
@@ -115,6 +136,7 @@ export function TransferSuperAdminPanel({
                 <option key={t.id} value={t.id}>
                   {t.full_name}
                   {t.email ? ` · ${t.email}` : ""}
+                  {isSuperAdminRole(t.role) ? " (already super admin)" : ""}
                 </option>
               ))}
             </select>
