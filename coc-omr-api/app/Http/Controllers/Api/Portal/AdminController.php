@@ -392,7 +392,17 @@ class AdminController extends Controller
             return response()->json(['message' => 'Only the super admin can transfer this role.'], 403);
         }
 
-        if (! is_string($admin->password) || ! Hash::check($validated['current_password'], $admin->password)) {
+        $passwordHash = $admin->getAuthPassword();
+        $passwordOk = false;
+        try {
+            $passwordOk = is_string($passwordHash)
+                && $passwordHash !== ''
+                && Hash::check($validated['current_password'], $passwordHash);
+        } catch (\Throwable $error) {
+            report($error);
+            $passwordOk = false;
+        }
+        if (! $passwordOk) {
             return response()->json([
                 'message' => 'Current password is incorrect.',
             ], 422);
@@ -427,38 +437,59 @@ class AdminController extends Controller
             ], 422);
         }
 
-        $fromProfile = $admin->teacherProfile;
+        $fromProfile = TeacherProfile::query()->find($admin->id);
         if ($fromProfile === null) {
             return response()->json(['message' => 'Your admin profile was not found.'], 422);
         }
 
-        DB::transaction(function () use ($fromProfile, $target, $admin) {
-            $target->role = CocSchool::ROLE_SUPER_ADMIN;
-            $target->school_name = CocSchool::NAME;
-            $target->applyAccessStatus(CocSchool::ACCESS_APPROVED);
-            $target->save();
+        try {
+            DB::transaction(function () use ($fromProfile, $target) {
+                TeacherProfile::query()->whereKey($target->id)->update([
+                    'role' => CocSchool::ROLE_SUPER_ADMIN,
+                    'school_name' => CocSchool::NAME,
+                    'access_status' => CocSchool::ACCESS_APPROVED,
+                    'is_active' => true,
+                ]);
 
-            // Previous holder keeps an approved instructor account (not dept admin by default).
-            $fromProfile->role = CocSchool::ROLE_TEACHER;
-            $fromProfile->applyAccessStatus(CocSchool::ACCESS_APPROVED);
-            $fromProfile->save();
+                // Previous holder keeps an approved instructor account (not dept admin by default).
+                TeacherProfile::query()->whereKey($fromProfile->id)->update([
+                    'role' => CocSchool::ROLE_TEACHER,
+                    'access_status' => CocSchool::ACCESS_APPROVED,
+                    'is_active' => true,
+                ]);
+            });
 
-            // Force both accounts to re-authenticate with new roles.
-            $admin->tokens()->delete();
-            $target->user?->tokens()->delete();
-        });
+            // Revoke sessions after roles commit so a token-delete glitch cannot
+            // abort the role transfer (and so the current request can finish).
+            try {
+                $admin->tokens()->delete();
+                $target->user?->tokens()->delete();
+            } catch (\Throwable $tokenError) {
+                report($tokenError);
+            }
 
-        $this->authEvents->record(
-            'super_admin_transferred',
-            (string) $admin->email,
-            $admin,
-            $request,
-            [
-                'from_teacher_id' => $fromProfile->id,
-                'to_teacher_id' => $target->id,
-                'to_email' => $targetEmail,
-            ],
-        );
+            try {
+                $this->authEvents->record(
+                    'super_admin_transferred',
+                    (string) $admin->email,
+                    $admin,
+                    $request,
+                    [
+                        'from_teacher_id' => $fromProfile->id,
+                        'to_teacher_id' => $target->id,
+                        'to_email' => $targetEmail,
+                    ],
+                );
+            } catch (\Throwable $logError) {
+                report($logError);
+            }
+        } catch (\Throwable $error) {
+            report($error);
+
+            return response()->json([
+                'message' => 'Transfer failed: '.$error->getMessage(),
+            ], 500);
+        }
 
         return response()->json([
             'message' => 'Super admin transferred. Sign in again. The new super admin must also sign in again.',
