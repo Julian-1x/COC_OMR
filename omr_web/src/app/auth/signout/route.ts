@@ -36,7 +36,7 @@ export async function GET(request: Request) {
   const nextPath = url.searchParams.get("next") || "/login";
   const destination = new URL(nextPath, url.origin);
   // Preserve pending / error query flags from callers.
-  for (const key of ["pending", "error", "confirmed", "reset"] as const) {
+  for (const key of ["pending", "error", "confirmed", "reset", "notice"] as const) {
     const value = url.searchParams.get(key);
     if (value) {
       destination.searchParams.set(key, value);

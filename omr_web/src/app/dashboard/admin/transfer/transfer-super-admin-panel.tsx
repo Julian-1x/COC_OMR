@@ -1,7 +1,6 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import type { SchoolTeacherSummary } from "@/lib/api/admin";
 import { isSuperAdminRole } from "@/lib/api/admin";
 import { transferSuperAdminAction } from "./actions";
@@ -13,14 +12,12 @@ export function TransferSuperAdminPanel({
   candidates: SchoolTeacherSummary[];
   currentEmail: string;
 }) {
-  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [targetId, setTargetId] = useState("");
   const [targetEmail, setTargetEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [doneMessage, setDoneMessage] = useState<string | null>(null);
 
   const otherSuperAdmins = useMemo(
     () =>
@@ -52,7 +49,6 @@ export function TransferSuperAdminPanel({
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    setDoneMessage(null);
 
     if (!targetId || !selected?.email) {
       setError("Select the teacher who will become super admin.");
@@ -82,13 +78,11 @@ export function TransferSuperAdminPanel({
         setError(result.error);
         return;
       }
-      setDoneMessage(result.message);
-      setPassword("");
-      setConfirmation("");
-      // Tokens were revoked — force a clean sign-in.
-      await fetch("/auth/signout", { method: "POST" });
-      router.push("/login?notice=super-admin-transferred");
-      router.refresh();
+      // Hard navigation: clear any in-memory admin UI and land on login.
+      // Soft router.push can leave a stale Admin desk cache after role change.
+      window.location.replace(
+        "/auth/signout?next=/login&notice=super-admin-transferred",
+      );
     });
   }
 
@@ -186,11 +180,6 @@ export function TransferSuperAdminPanel({
           {error ? (
             <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               {error}
-            </p>
-          ) : null}
-          {doneMessage ? (
-            <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
-              {doneMessage}
             </p>
           ) : null}
 

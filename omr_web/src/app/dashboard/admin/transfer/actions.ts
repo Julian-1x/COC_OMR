@@ -1,8 +1,9 @@
 "use server";
 
+import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { transferSuperAdmin } from "@/lib/api/admin";
-import { ApiError } from "@/lib/api/laravel-client";
+import { API_TOKEN_COOKIE, ApiError } from "@/lib/api/laravel-client";
 import { requireSuperAdminSession } from "@/lib/api/session";
 
 export async function transferSuperAdminAction(input: {
@@ -14,6 +15,18 @@ export async function transferSuperAdminAction(input: {
   try {
     const { api } = await requireSuperAdminSession();
     const result = await transferSuperAdmin(api, input);
+
+    // API already revoked Sanctum tokens — drop the web cookie so the next
+    // navigation cannot keep using Admin desk with a stale role.
+    const cookieStore = await cookies();
+    cookieStore.set(API_TOKEN_COOKIE, "", {
+      path: "/",
+      maxAge: 0,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+
     revalidatePath("/dashboard");
     revalidatePath("/dashboard/admin");
     revalidatePath("/dashboard/admin/access");
