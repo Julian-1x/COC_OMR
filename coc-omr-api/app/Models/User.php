@@ -29,6 +29,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'name',
         'email',
         'password',
+        'signup_client',
         'two_factor_secret',
         'two_factor_recovery_codes',
         'two_factor_confirmed_at',
@@ -168,9 +169,16 @@ class User extends Authenticatable implements MustVerifyEmail
             && $other->school_name === $school;
     }
 
+    public function preferredVerifyPlatform(): string
+    {
+        return VerificationEmailSender::normalizePlatform(
+            (string) ($this->signup_client ?? 'web'),
+        );
+    }
+
     public function sendEmailVerificationNotification(): void
     {
-        $result = VerificationEmailSender::send($this);
+        $result = VerificationEmailSender::send($this, $this->preferredVerifyPlatform());
         if (! $result['ok']) {
             throw new \RuntimeException($result['error'] ?? 'Verification email could not be sent.');
         }

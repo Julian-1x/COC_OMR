@@ -183,6 +183,7 @@ export async function POST(request: Request) {
           full_name: name,
           school: COC_SCHOOL_NAME,
           department,
+          client: "web",
           captcha_token: body.captcha_token,
         }),
       });

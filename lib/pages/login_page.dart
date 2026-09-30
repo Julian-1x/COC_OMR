@@ -1556,7 +1556,8 @@ class _LoginPageState extends State<LoginPage> {
     return AuthShell(
       title: 'Check your email',
       subtitle:
-          'We sent a confirmation link to finish setting up your account.',
+          'Open the email on this phone and tap “Verify in COC OMR app” '
+          '(not the browser link). That finishes setup inside the app.',
       badge: AuthBadgeType.online,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

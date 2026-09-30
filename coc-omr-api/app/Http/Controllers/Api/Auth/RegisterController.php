@@ -34,6 +34,8 @@ class RegisterController extends Controller
             // Accepted for backward compatibility with older clients; ignored.
             'school' => ['nullable', 'string', 'max:255'],
             'captcha_token' => ['nullable', 'string'],
+            // phone app → mobile deep-link as primary verify button; web → browser link.
+            'client' => ['nullable', 'string', 'in:mobile,web'],
         ]);
 
         $this->captcha->assertValid($validated['captcha_token'] ?? null, $request);
@@ -70,10 +72,15 @@ class RegisterController extends Controller
             ]);
         }
 
+        $client = \App\Services\VerificationEmailSender::normalizePlatform(
+            (string) ($validated['client'] ?? 'web'),
+        );
+
         if ($existing !== null) {
             return $this->finishRegistration(
                 $this->updateUnverifiedUser($existing, $validated, $department),
                 resumed: true,
+                client: $client,
             );
         }
 
@@ -81,6 +88,7 @@ class RegisterController extends Controller
             'name' => $validated['full_name'],
             'email' => $email,
             'password' => Hash::make($validated['password']),
+            'signup_client' => $client,
         ]);
 
         TeacherProfile::query()->create([
@@ -93,7 +101,7 @@ class RegisterController extends Controller
             'access_status' => CocSchool::ACCESS_PENDING,
         ]);
 
-        return $this->finishRegistration($user, resumed: false);
+        return $this->finishRegistration($user, resumed: false, client: $client);
     }
 
     /**
@@ -104,6 +112,9 @@ class RegisterController extends Controller
         $user->update([
             'name' => $validated['full_name'],
             'password' => Hash::make($validated['password']),
+            'signup_client' => \App\Services\VerificationEmailSender::normalizePlatform(
+                (string) ($validated['client'] ?? $user->signup_client ?? 'web'),
+            ),
         ]);
 
         TeacherProfile::query()->updateOrCreate(
@@ -121,8 +132,12 @@ class RegisterController extends Controller
         return $user->fresh(['teacherProfile']) ?? $user;
     }
 
-    private function finishRegistration(User $user, bool $resumed): JsonResponse
+    private function finishRegistration(User $user, bool $resumed, string $client = 'web'): JsonResponse
     {
+        if (($user->signup_client ?? null) !== $client) {
+            $user->forceFill(['signup_client' => $client])->save();
+        }
+
         $this->events->record(
             $resumed ? 'register_resumed' : 'register_created',
             $user->email,
@@ -140,7 +155,7 @@ class RegisterController extends Controller
             }
             $user->markEmailAsVerified();
         } else {
-            $verificationEmailSent = $this->sendVerificationEmail($user);
+            $verificationEmailSent = $this->sendVerificationEmail($user, $client);
         }
 
         $user->loadMissing('teacherProfile');
@@ -179,9 +194,9 @@ class RegisterController extends Controller
         return response()->json($payload, $resumed ? 200 : 201);
     }
 
-    private function sendVerificationEmail(User $user): bool
+    private function sendVerificationEmail(User $user, string $client = 'web'): bool
     {
-        $result = \App\Services\VerificationEmailSender::send($user);
+        $result = \App\Services\VerificationEmailSender::send($user, $client);
 
         return $result['ok'];
     }

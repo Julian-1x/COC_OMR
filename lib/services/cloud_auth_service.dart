@@ -151,6 +151,8 @@ class CloudAuthService {
           'full_name': trimmedName,
           'school': trimmedSchool,
           'department': normalizedDepartment,
+          // Primary verify button opens the app deep link (not the browser).
+          'client': 'mobile',
           if (captchaToken != null && captchaToken.isNotEmpty)
             'captcha_token': captchaToken,
         },
@@ -248,7 +250,10 @@ class CloudAuthService {
     try {
       await ApiService.postJson(
         '/email/resend-verification',
-        <String, dynamic>{'email': normalizedEmail},
+        <String, dynamic>{
+          'email': normalizedEmail,
+          'client': 'mobile',
+        },
         auth: false,
       );
     } catch (error) {

@@ -31,7 +31,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, client: "web" }),
     });
 
     const text = await response.text();

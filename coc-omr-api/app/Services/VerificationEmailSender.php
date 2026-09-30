@@ -12,16 +12,22 @@ use Illuminate\Support\Facades\URL;
 class VerificationEmailSender
 {
     /**
+     * Send a verify email with only one link: phone app OR web — never both.
+     *
+     * @param  'mobile'|'web'|null  $preferredPlatform  Null → use user's signup_client.
      * @return array{ok: bool, error?: string}
      */
-    public static function send(User $user): array
+    public static function send(User $user, ?string $preferredPlatform = null): array
     {
+        $preferredPlatform = self::normalizePlatform(
+            $preferredPlatform ?? (string) ($user->signup_client ?? 'web'),
+        );
         $apiKey = trim((string) config('services.brevo.api_key'));
         $lastError = null;
 
         if ($apiKey !== '') {
             try {
-                self::sendViaBrevoApi($user);
+                self::sendViaBrevoApi($user, $preferredPlatform);
 
                 return ['ok' => true];
             } catch (\Throwable $exception) {
@@ -35,7 +41,7 @@ class VerificationEmailSender
         }
 
         try {
-            $user->notify(new VerifyEmailNotification);
+            $user->notify(new VerifyEmailNotification($preferredPlatform));
 
             return ['ok' => true];
         } catch (\Throwable $exception) {
@@ -78,20 +84,37 @@ class VerificationEmailSender
         return 'Email could not be sent. Check Brevo API key and sender on Render.';
     }
 
-    private static function sendViaBrevoApi(User $user): void
+    public static function normalizePlatform(string $platform): string
     {
-        $webUrl = self::verificationUrl($user, 'web');
-        $mobileUrl = self::verificationUrl($user, 'mobile');
+        return strtolower(trim($platform)) === 'mobile' ? 'mobile' : 'web';
+    }
 
-        $html = <<<HTML
+    private static function sendViaBrevoApi(User $user, string $preferredPlatform): void
+    {
+        $url = self::verificationUrl($user, $preferredPlatform);
+        $email = e($user->getEmailForVerification());
+
+        if ($preferredPlatform === 'mobile') {
+            $html = <<<HTML
 <p>You are receiving this email because we received a registration request for your COC OMR account.</p>
-<p><a href="{$webUrl}"><strong>Verify email</strong></a></p>
-<p>You can open this link on your phone or computer. If you registered on the web, leave that sign-in page open — it will continue automatically after you verify.</p>
-<p>Prefer the mobile app? <a href="{$mobileUrl}">Open in COC OMR app</a></p>
+<p>This link confirms: <strong>{$email}</strong></p>
+<p>You signed up in the <strong>phone app</strong>. Tap below to finish inside COC OMR.</p>
+<p><a href="{$url}"><strong>Verify in COC OMR app</strong></a></p>
 <p>This link expires in 60 minutes. If you did not request this, you can ignore this email.</p>
 HTML;
-
-        $text = "Verify your COC OMR email\n\n{$webUrl}\n\nLeave your web sign-in page open if you registered there — it will continue after you verify.\n\nMobile app: {$mobileUrl}\n";
+            $text = "Verify your COC OMR email ({$user->getEmailForVerification()})\n\n"
+                ."You signed up in the phone app. Open this link on your phone:\n{$url}\n";
+        } else {
+            $html = <<<HTML
+<p>You are receiving this email because we received a registration request for your COC OMR account.</p>
+<p>This link confirms: <strong>{$email}</strong></p>
+<p>You signed up on the <strong>web</strong>. Tap below to confirm in your browser.</p>
+<p><a href="{$url}"><strong>Verify email</strong></a></p>
+<p>Leave the sign-in page open — it can continue after you verify.</p>
+<p>This link expires in 60 minutes. If you did not request this, you can ignore this email.</p>
+HTML;
+            $text = "Verify your COC OMR email ({$user->getEmailForVerification()})\n\n{$url}\n";
+        }
 
         BrevoMailService::sendTransactional(
             $user->getEmailForVerification(),
@@ -101,7 +124,7 @@ HTML;
         );
     }
 
-    private static function verificationUrl(User $user, string $platform): string
+    public static function verificationUrl(User $user, string $platform): string
     {
         return URL::temporarySignedRoute(
             'verification.verify',
@@ -109,7 +132,7 @@ HTML;
             [
                 'id' => $user->getKey(),
                 'hash' => sha1($user->getEmailForVerification()),
-                'platform' => $platform,
+                'platform' => self::normalizePlatform($platform),
             ],
         );
     }
