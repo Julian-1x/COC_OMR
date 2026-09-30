@@ -89,6 +89,9 @@ class _LoginPageState extends State<LoginPage> {
   bool _registerCaptchaRequired = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   StreamSubscription<Uri>? _authLinkSub;
+  Timer? _emailVerifyPoll;
+  bool _emailVerifyPollInFlight = false;
+  bool _adminApprovalDialogOpen = false;
   final AppLinks _appLinks = AppLinks();
 
   @override
@@ -156,6 +159,7 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    _stopEmailVerificationPoll();
     _connectivitySub?.cancel();
     _authLinkSub?.cancel();
     _lastNameController.dispose();
@@ -166,6 +170,195 @@ class _LoginPageState extends State<LoginPage> {
     _unlockPinController.dispose();
     _mfaCodeController.dispose();
     super.dispose();
+  }
+
+  void _stopEmailVerificationPoll() {
+    _emailVerifyPoll?.cancel();
+    _emailVerifyPoll = null;
+    _emailVerifyPollInFlight = false;
+  }
+
+  void _startEmailVerificationPoll() {
+    _stopEmailVerificationPoll();
+    if (!ApiService.isReady) {
+      return;
+    }
+    // Immediate check, then keep polling until the mail link is confirmed.
+    unawaited(_pollEmailVerificationOnce());
+    _emailVerifyPoll = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => unawaited(_pollEmailVerificationOnce()),
+    );
+  }
+
+  Future<void> _pollEmailVerificationOnce() async {
+    if (!mounted ||
+        _stage != _LoginStage.awaitingEmailConfirmation ||
+        _emailVerifyPollInFlight ||
+        _adminApprovalDialogOpen) {
+      return;
+    }
+    final email = (_pendingConfirmationEmail ?? _emailController.text.trim())
+        .trim()
+        .toLowerCase();
+    if (!_isValidEmail(email)) {
+      return;
+    }
+
+    _emailVerifyPollInFlight = true;
+    try {
+      final status = await _auth.checkEmailVerificationStatus(email: email);
+      if (!mounted || _stage != _LoginStage.awaitingEmailConfirmation) {
+        return;
+      }
+      if (!status.verified) {
+        return;
+      }
+      _stopEmailVerificationPoll();
+      await _onEmailConfirmedWhileWaiting(
+        accessPending: status.accessPending,
+      );
+    } catch (error) {
+      debugPrint('Email verification poll failed: $error');
+    } finally {
+      _emailVerifyPollInFlight = false;
+    }
+  }
+
+  /// After the teacher confirms email (deep link or poll), return to Login and
+  /// require them to acknowledge the admin-approval wait.
+  Future<void> _onEmailConfirmedWhileWaiting({
+    required bool accessPending,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+    final email = (_pendingConfirmationEmail ?? _emailController.text.trim())
+        .trim()
+        .toLowerCase();
+
+    // Drop any half-open session from registration — they sign in after approval.
+    if (ApiService.hasActiveSession) {
+      try {
+        await ApiService.clearSession();
+      } catch (_) {}
+    }
+
+    setState(() {
+      _confirmedEmailThisSession = true;
+      _pendingConfirmationEmail = email.isEmpty ? _pendingConfirmationEmail : email;
+      _stage = _LoginStage.onlineAuth;
+      _mode = _AuthMode.login;
+      _isLoading = false;
+      _isSubmitting = false;
+    });
+
+    if (accessPending) {
+      await _showAdminApprovalAcknowledgmentDialog(email: email);
+    } else {
+      _showMessage(
+        'Email confirmed. Sign in with your email and password.',
+        isError: false,
+      );
+    }
+  }
+
+  Future<void> _showAdminApprovalAcknowledgmentDialog({
+    required String email,
+  }) async {
+    if (!mounted || _adminApprovalDialogOpen) {
+      return;
+    }
+    _adminApprovalDialogOpen = true;
+    var understood = false;
+    var canContinue = false;
+    var waitScheduled = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            if (!waitScheduled) {
+              waitScheduled = true;
+              Future<void>.delayed(const Duration(seconds: 3), () {
+                if (dialogContext.mounted) {
+                  setDialogState(() => canContinue = true);
+                }
+              });
+            }
+            return PopScope(
+              canPop: false,
+              child: AlertDialog(
+                title: const Text('Email confirmed'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Your email is confirmed. You still cannot use COC OMR '
+                        'until a school admin approves your account.',
+                        style: TextStyle(height: 1.35),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        email.isEmpty
+                            ? 'Ask your COC admin to open the web portal → Admin → Access control and approve you.'
+                            : 'Ask your COC admin to approve:\n$email\n\n'
+                                'They open the web portal → Admin → Access control.',
+                        style: const TextStyle(height: 1.35),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'You will get an email when they approve. Then come back '
+                        'here and sign in with the same email and password.',
+                        style: TextStyle(height: 1.35),
+                      ),
+                      const SizedBox(height: 8),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: understood,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text(
+                          'I understand I must wait for admin approval before signing in.',
+                          style: TextStyle(fontSize: 14, height: 1.3),
+                        ),
+                        onChanged: (value) {
+                          setDialogState(() => understood = value ?? false);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  FilledButton(
+                    onPressed: (understood && canContinue)
+                        ? () => Navigator.of(dialogContext).pop()
+                        : null,
+                    child: Text(
+                      canContinue
+                          ? 'I understand — go to sign in'
+                          : 'Read above (wait…)',
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    _adminApprovalDialogOpen = false;
+    if (!mounted) {
+      return;
+    }
+    _showMessage(
+      'Waiting for school admin approval. Sign in again after they approve you.',
+      isError: false,
+    );
   }
 
   Future<void> _initConnectivity() async {
@@ -237,21 +430,8 @@ class _LoginPageState extends State<LoginPage> {
     final token = uri.queryParameters['token']?.trim();
 
     if (accessPending || (verified && (token == null || token.isEmpty))) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _stage = _LoginStage.awaitingAdminApproval;
-        _mode = _AuthMode.login;
-        _isLoading = false;
-        _isSubmitting = false;
-        _pendingConfirmationEmail =
-            _pendingConfirmationEmail ?? _emailController.text.trim().toLowerCase();
-      });
-      _showMessage(
-        'Email confirmed. Ask your COC admin to approve your account, then sign in.',
-        isError: false,
-      );
+      _stopEmailVerificationPoll();
+      await _onEmailConfirmedWhileWaiting(accessPending: true);
       return;
     }
 
@@ -264,6 +444,7 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) {
         return;
       }
+      _stopEmailVerificationPoll();
       _confirmedEmailThisSession = true;
       await _continueWithActiveSession(
         fromEmailConfirmation: true,
@@ -276,12 +457,8 @@ class _LoginPageState extends State<LoginPage> {
       final message = UserErrorMessages.friendlyError(error);
       if (message.toLowerCase().contains('admin approval') ||
           message.toLowerCase().contains('waiting for school admin')) {
-        setState(() {
-          _stage = _LoginStage.awaitingAdminApproval;
-          _mode = _AuthMode.login;
-          _isLoading = false;
-          _isSubmitting = false;
-        });
+        await _onEmailConfirmedWhileWaiting(accessPending: true);
+        return;
       }
       _showMessage(message, isError: true);
     }
@@ -323,17 +500,8 @@ class _LoginPageState extends State<LoginPage> {
     if (!account.isApproved) {
       await ApiService.clearSession();
       if (mounted) {
-        setState(() {
-          _stage = _LoginStage.awaitingAdminApproval;
-          _mode = _AuthMode.login;
-          _isLoading = false;
-          _isSubmitting = false;
-          _pendingConfirmationEmail = account.email;
-        });
-        _showMessage(
-          'Your account is waiting for school admin approval. Ask your COC admin to approve you, then sign in.',
-          isError: false,
-        );
+        _pendingConfirmationEmail = account.email;
+        await _onEmailConfirmedWhileWaiting(accessPending: true);
       }
       return;
     }
@@ -512,6 +680,7 @@ class _LoginPageState extends State<LoginPage> {
                 registration.pendingEmail ?? email.trim().toLowerCase();
             _stage = _LoginStage.awaitingEmailConfirmation;
           });
+          _startEmailVerificationPoll();
           return;
         }
 
@@ -521,12 +690,11 @@ class _LoginPageState extends State<LoginPage> {
             _isNewRegistration = true;
             _pendingConfirmationEmail =
                 registration.pendingEmail ?? email.trim().toLowerCase();
-            _stage = _LoginStage.awaitingAdminApproval;
+            _stage = _LoginStage.onlineAuth;
+            _mode = _AuthMode.login;
           });
-          _showMessage(
-            registration.message ??
-                'Ask your COC admin to approve your account, then sign in.',
-            isError: false,
+          await _showAdminApprovalAcknowledgmentDialog(
+            email: registration.pendingEmail ?? email.trim().toLowerCase(),
           );
           return;
         }
@@ -674,14 +842,17 @@ class _LoginPageState extends State<LoginPage> {
             _stage = _LoginStage.awaitingEmailConfirmation;
             _pendingConfirmationEmail = email.trim().toLowerCase();
           });
+          _startEmailVerificationPoll();
+          _showMessage(message, isError: true);
         } else if (lower.contains('admin approval') ||
             lower.contains('waiting for school admin')) {
-          setState(() {
-            _stage = _LoginStage.awaitingAdminApproval;
-            _pendingConfirmationEmail = email.trim().toLowerCase();
-          });
+          _pendingConfirmationEmail = email.trim().toLowerCase();
+          await _showAdminApprovalAcknowledgmentDialog(
+            email: email.trim().toLowerCase(),
+          );
+        } else {
+          _showMessage(message, isError: true);
         }
-        _showMessage(message, isError: true);
       }
     }
   }
@@ -1525,9 +1696,10 @@ class _LoginPageState extends State<LoginPage> {
           _statusNote(
             icon: Icons.admin_panel_settings_outlined,
             text:
-                'Your email must already be confirmed. Then a COC admin opens '
-                'the web portal → Admin → Access control and approves you.\n\n'
-                'After they approve, come back here and sign in with the same email and password.',
+                'Ask your COC admin to open the web portal → Admin → Access control '
+                'and approve you.\n\n'
+                'You will get an email when they approve. Then sign in with the '
+                'same email and password — do not keep waiting on this screen.',
           ),
           const SizedBox(height: AppSpacing.md),
           _statusNote(
@@ -1556,8 +1728,8 @@ class _LoginPageState extends State<LoginPage> {
     return AuthShell(
       title: 'Check your email',
       subtitle:
-          'Open the email on this phone and tap “Verify in COC OMR app” '
-          '(not the browser link). That finishes setup inside the app.',
+          'Open the email on this phone and tap “Verify in COC OMR app”. '
+          'We will detect confirmation and bring you back to sign in.',
       badge: AuthBadgeType.online,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1565,10 +1737,16 @@ class _LoginPageState extends State<LoginPage> {
           _statusNote(
             icon: Icons.mark_email_read_outlined,
             text:
-                'Open the email on this phone and tap Confirm.\n\n'
-                'After your email is confirmed, a school admin still needs to '
-                'approve your account before you can use the app.\n\n'
+                'Keep this screen open.\n\n'
+                '1. Open the email on this phone\n'
+                '2. Tap “Verify in COC OMR app”\n'
+                '3. We send you back to sign in and explain the admin-approval wait\n\n'
                 'Check spam/junk if you do not see the message.',
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _statusNote(
+            icon: Icons.hourglass_top_rounded,
+            text: 'Waiting for email confirmation…',
           ),
           const SizedBox(height: AppSpacing.md),
           _statusNote(
@@ -1576,13 +1754,6 @@ class _LoginPageState extends State<LoginPage> {
             text: email.isEmpty ? 'Your school email' : email,
           ),
           const SizedBox(height: AppSpacing.xl),
-          AppPrimaryButton(
-            label: 'I confirmed — continue',
-            icon: Icons.arrow_forward_rounded,
-            isLoading: _isSubmitting,
-            onPressed: !_isSubmitting ? _retryAfterEmailConfirmation : null,
-          ),
-          const SizedBox(height: AppSpacing.sm),
           TextButton(
             onPressed: _isSubmitting ? null : _resendConfirmationEmail,
             child: const Text('Resend confirmation email'),
@@ -1591,6 +1762,7 @@ class _LoginPageState extends State<LoginPage> {
             onPressed: _isSubmitting
                 ? null
                 : () {
+                    _stopEmailVerificationPoll();
                     setState(() {
                       _stage = _LoginStage.onlineAuth;
                       _mode = _AuthMode.login;
@@ -1622,36 +1794,6 @@ class _LoginPageState extends State<LoginPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      setState(() => _isSubmitting = false);
-      _showMessage(UserErrorMessages.friendlyError(error), isError: true);
-    }
-  }
-
-  Future<void> _retryAfterEmailConfirmation() async {
-    if (!ApiService.isReady) {
-      return;
-    }
-
-    setState(() => _isSubmitting = true);
-    try {
-      if (ApiService.hasActiveSession) {
-        _confirmedEmailThisSession = true;
-        await _continueWithActiveSession(
-          fromEmailConfirmation: true,
-          isNewRegistration: true,
-        );
-        return;
-      }
-
-      setState(() => _isSubmitting = false);
-      _showMessage(
-        'Not confirmed yet. Tap the link in your email first, then try again.',
-        isError: true,
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
       setState(() => _isSubmitting = false);
       _showMessage(UserErrorMessages.friendlyError(error), isError: true);
     }

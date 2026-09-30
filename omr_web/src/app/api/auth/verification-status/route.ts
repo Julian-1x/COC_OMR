@@ -3,6 +3,8 @@ import { tryGetApiBaseUrl } from "@/lib/api/env";
 
 type StatusResponse = {
   verified?: boolean;
+  access_pending?: boolean;
+  access_status?: string;
   message?: string;
   errors?: Record<string, string[]>;
 };
@@ -55,6 +57,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       verified: payload?.verified === true,
+      access_pending: payload?.access_pending === true,
+      access_status: payload?.access_status ?? null,
     });
   } catch (error) {
     const message =

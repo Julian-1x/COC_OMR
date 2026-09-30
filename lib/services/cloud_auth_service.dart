@@ -59,6 +59,18 @@ class CloudAuthException implements Exception {
   String toString() => message;
 }
 
+class EmailVerificationStatus {
+  const EmailVerificationStatus({
+    required this.verified,
+    this.accessPending = false,
+    this.accessStatus,
+  });
+
+  final bool verified;
+  final bool accessPending;
+  final String? accessStatus;
+}
+
 class TeacherRegistrationResult {
   const TeacherRegistrationResult({
     this.account,
@@ -255,6 +267,29 @@ class CloudAuthService {
           'client': 'mobile',
         },
         auth: false,
+      );
+    } catch (error) {
+      throw CloudAuthException(_friendlyError(error));
+    }
+  }
+
+  /// Poll while the teacher is on "Check your email" (no login required).
+  Future<EmailVerificationStatus> checkEmailVerificationStatus({
+    required String email,
+  }) async {
+    _ensureApiReady();
+    final normalizedEmail = email.trim().toLowerCase();
+    try {
+      final response = await ApiService.postJson(
+        '/email/verification-check',
+        <String, dynamic>{'email': normalizedEmail},
+        auth: false,
+      );
+      final verified = response['verified'] == true;
+      return EmailVerificationStatus(
+        verified: verified,
+        accessPending: verified && response['access_pending'] != false,
+        accessStatus: response['access_status']?.toString(),
       );
     } catch (error) {
       throw CloudAuthException(_friendlyError(error));
