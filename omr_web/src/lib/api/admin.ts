@@ -191,8 +191,10 @@ export async function fetchAccessRequests(
 export async function approveTeacherAccess(
   api: ApiClient,
   teacherId: string,
-): Promise<void> {
-  await api.post(`/admin/teachers/${teacherId}/approve`);
+): Promise<{ message?: string; email_sent?: boolean | null }> {
+  return api.post<{ message?: string; email_sent?: boolean | null }>(
+    `/admin/teachers/${teacherId}/approve`,
+  );
 }
 
 export async function revokeTeacherAccess(

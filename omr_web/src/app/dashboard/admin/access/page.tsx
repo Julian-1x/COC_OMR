@@ -19,8 +19,8 @@ export default async function AdminAccessPage() {
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Access control</h1>
         <p className="mt-1 text-sm text-slate-500">
           {viewerIsSuperAdmin
-            ? "Approve or revoke instructors. Delete only when you are sure."
-            : `Approve or revoke instructors in ${profile.department ?? "your department"}.`}
+            ? "Approve emails the teacher that they can sign in. Revoke blocks sign-in; delete removes the cloud account."
+            : `Approve or revoke instructors in ${profile.department ?? "your department"}. Approve emails them that they can sign in.`}
         </p>
       </div>
 

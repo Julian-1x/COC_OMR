@@ -8,13 +8,20 @@ import {
 } from "@/lib/api/admin";
 import { requireAdminSession, requireSuperAdminSession } from "@/lib/api/session";
 
-export async function approveTeacherAction(teacherId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function approveTeacherAction(
+  teacherId: string,
+): Promise<{ ok: true; message?: string } | { ok: false; error: string }> {
   try {
     const { api } = await requireAdminSession();
-    await approveTeacherAccess(api, teacherId);
+    const result = await approveTeacherAccess(api, teacherId);
     revalidatePath("/dashboard/admin");
     revalidatePath("/dashboard/admin/access");
-    return { ok: true };
+    return {
+      ok: true,
+      message:
+        result.message ??
+        "Teacher approved. We emailed them that they can sign in.",
+    };
   } catch (error) {
     return {
       ok: false,
@@ -54,3 +61,4 @@ export async function deleteTeacherAction(
     };
   }
 }
+

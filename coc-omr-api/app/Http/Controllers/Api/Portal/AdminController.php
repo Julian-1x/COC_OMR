@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Portal;
 
 use App\Http\Controllers\Controller;
 use App\Models\TeacherProfile;
+use App\Services\AccountApprovedEmailSender;
 use App\Services\Auth\AuthEventLogger;
 use App\Services\TeacherScopeService;
 use App\Support\CocSchool;
@@ -156,12 +157,30 @@ class AdminController extends Controller
             return response()->json(['message' => 'Only a super admin can change another admin account.'], 403);
         }
 
+        $wasApproved = $teacher->isApproved();
         $teacher->applyAccessStatus(CocSchool::ACCESS_APPROVED);
         $teacher->school_name = CocSchool::NAME;
         $teacher->save();
 
+        $emailSent = null;
+        if (! $wasApproved) {
+            $teacher->loadMissing('user');
+            $user = $teacher->user;
+            if ($user !== null) {
+                $emailSent = AccountApprovedEmailSender::send($user)['ok'];
+            }
+        }
+
+        $message = 'Teacher approved.';
+        if ($emailSent === true) {
+            $message = 'Teacher approved. We emailed them that they can sign in.';
+        } elseif ($emailSent === false) {
+            $message = 'Teacher approved, but the approval email could not be sent. Tell them they can sign in now.';
+        }
+
         return response()->json([
-            'message' => 'Teacher approved.',
+            'message' => $message,
+            'email_sent' => $emailSent,
             'teacher' => [
                 'id' => $teacher->id,
                 'full_name' => $teacher->full_name,

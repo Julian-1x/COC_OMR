@@ -3,7 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\User;
-use App\Services\TeacherApprovalBootstrap;
+use App\Services\AccountApprovedEmailSender;
 use App\Support\CocSchool;
 use Illuminate\Console\Command;
 
@@ -47,7 +47,13 @@ class ApproveTeacherCommand extends Command
         }
         $profile->save();
 
-        $this->info("Approved {$email}. They can sign in on the app or web after email confirmation.");
+        $mail = AccountApprovedEmailSender::send($user);
+        if ($mail['ok']) {
+            $this->info("Approved {$email}. Approval email sent — they can sign in on the app or web.");
+        } else {
+            $this->warn("Approved {$email}, but approval email failed: ".($mail['error'] ?? 'unknown'));
+            $this->info('Tell them they can sign in on the app or web.');
+        }
 
         return self::SUCCESS;
     }

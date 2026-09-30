@@ -12,6 +12,9 @@ import {
   type SchoolTeacherSummary,
 } from "@/lib/api/admin";
 import { approveTeacherAction, deleteTeacherAction, revokeTeacherAction } from "./actions";
+import { Input, Label } from "@/components/ui/input";
+
+type DeleteTarget = { id: string; full_name: string; email: string | null };
 
 export function AccessControlPanel({
   pending,
@@ -31,14 +34,20 @@ export function AccessControlPanel({
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteEmailTyped, setDeleteEmailTyped] = useState("");
 
   function run(
     teacherId: string,
-    action: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>,
+    action: (
+      id: string,
+    ) => Promise<{ ok: true; message?: string } | { ok: false; error: string }>,
   ) {
     setError(null);
+    setNotice(null);
     setPendingId(teacherId);
     startTransition(async () => {
       const result = await action(teacherId);
@@ -46,6 +55,9 @@ export function AccessControlPanel({
       if (!result.ok) {
         setError(result.error);
         return;
+      }
+      if (result.message) {
+        setNotice(result.message);
       }
       // Lists are loaded into client state — refresh the RSC tree AND reload the
       // browser fetch so pending → approved moves without a hard refresh.
@@ -65,30 +77,50 @@ export function AccessControlPanel({
     run(teacher.id, revokeTeacherAction);
   }
 
-  function confirmDelete(teacher: { id: string; full_name: string; email: string | null }) {
-    const label = teacher.full_name || teacher.email || "this teacher";
-    const email = (teacher.email ?? "").trim().toLowerCase();
-    if (!email) {
+  function openDelete(teacher: DeleteTarget) {
+    setError(null);
+    setDeleteEmailTyped("");
+    setDeleteTarget(teacher);
+  }
+
+  function submitDelete() {
+    if (!deleteTarget) {
+      return;
+    }
+    const expected = (deleteTarget.email ?? "").trim().toLowerCase();
+    if (!expected) {
       setError("Cannot delete: this account has no email on file.");
+      setDeleteTarget(null);
       return;
     }
-    const typed = window.prompt(
-      `Permanently delete ${label}?\n\nThis removes their account, cloud roster, answer keys, and scan results. They will be signed out on the phone immediately. This cannot be undone.\n\nType their email exactly to confirm:\n${teacher.email}`,
+    if (deleteEmailTyped.trim().toLowerCase() !== expected) {
+      setError("Delete cancelled — typed email did not match.");
+      return;
+    }
+    const teacherId = deleteTarget.id;
+    setDeleteTarget(null);
+    setDeleteEmailTyped("");
+    run(teacherId, deleteTeacherAction);
+  }
+
+  const deleteEmailMatches =
+    deleteTarget !== null &&
+    deleteEmailTyped.trim().toLowerCase() === (deleteTarget.email ?? "").trim().toLowerCase();
+
+  function DeleteButton({ teacher }: { teacher: DeleteTarget }) {
+    if (!viewerIsSuperAdmin) {
+      return null;
+    }
+    return (
+      <Button
+        type="button"
+        variant="danger"
+        disabled={isPending && pendingId === teacher.id}
+        onClick={() => openDelete(teacher)}
+      >
+        {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
+      </Button>
     );
-    if (typed === null) {
-      return;
-    }
-    if (typed.trim().toLowerCase() !== email) {
-      setError("Delete cancelled — email did not match.");
-      return;
-    }
-    const confirmed = window.confirm(
-      `Last chance: permanently delete ${label} (${teacher.email})? This cannot be undone.`,
-    );
-    if (!confirmed) {
-      return;
-    }
-    run(teacher.id, deleteTeacherAction);
   }
 
   const scopeHint = viewerIsSuperAdmin
@@ -104,12 +136,18 @@ export function AccessControlPanel({
           {error}
         </p>
       ) : null}
+      {notice ? (
+        <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+          {notice}
+        </p>
+      ) : null}
 
       <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
         <h2 className="text-lg font-extrabold text-slate-800">Pending</h2>
-        {scopeHint ? (
-          <p className="mt-1 text-sm text-slate-600">{scopeHint}</p>
-        ) : null}
+        <p className="mt-1 text-sm text-slate-600">
+          Approve sends them an email that they can sign in on the app or web.
+          {scopeHint ? ` ${scopeHint}.` : ""}
+        </p>
         {pending.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">
             {!viewerIsSuperAdmin
@@ -138,16 +176,7 @@ export function AccessControlPanel({
                   >
                     {isPending && pendingId === teacher.id ? "Approving…" : "Approve"}
                   </Button>
-                  {viewerIsSuperAdmin ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={isPending && pendingId === teacher.id}
-                      onClick={() => confirmDelete(teacher)}
-                    >
-                      {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
-                    </Button>
-                  ) : null}
+                  <DeleteButton teacher={teacher} />
                 </div>
               </li>
             ))}
@@ -204,16 +233,7 @@ export function AccessControlPanel({
                             >
                               {isPending && pendingId === teacher.id ? "Revoking…" : "Revoke"}
                             </Button>
-                            {viewerIsSuperAdmin ? (
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                disabled={isPending && pendingId === teacher.id}
-                                onClick={() => confirmDelete(teacher)}
-                              >
-                                {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
-                              </Button>
-                            ) : null}
+                            <DeleteButton teacher={teacher} />
                           </div>
                         )}
                       </td>
@@ -251,21 +271,77 @@ export function AccessControlPanel({
                   >
                     {isPending && pendingId === teacher.id ? "Restoring…" : "Approve again"}
                   </Button>
-                  {viewerIsSuperAdmin ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      disabled={isPending && pendingId === teacher.id}
-                      onClick={() => confirmDelete(teacher)}
-                    >
-                      {isPending && pendingId === teacher.id ? "Deleting…" : "Delete"}
-                    </Button>
-                  ) : null}
+                  <DeleteButton teacher={teacher} />
                 </div>
               </li>
             ))}
           </ul>
         </section>
+      ) : null}
+
+      {deleteTarget ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-teacher-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-5 shadow-xl">
+            <p id="delete-teacher-title" className="text-base font-extrabold text-slate-800">
+              Permanently delete {deleteTarget.full_name || "this teacher"}?
+            </p>
+            <p className="mt-2 text-sm text-slate-600">
+              This removes their account, cloud roster, answer keys, and scan results. They will be
+              signed out on the phone. This cannot be undone. Use Revoke if you only want to block
+              sign-in.
+            </p>
+            <p className="mt-3 text-sm font-semibold text-slate-700">
+              Type {deleteTarget.email} in the box below. The box starts empty.
+            </p>
+            <div className="mt-3">
+              <Label htmlFor="delete-teacher-email">Email</Label>
+              <Input
+                id="delete-teacher-email"
+                type="email"
+                name="coc-omr-delete-confirm"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                autoFocus
+                value={deleteEmailTyped}
+                onChange={(e) => setDeleteEmailTyped(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (deleteEmailMatches) {
+                      submitDelete();
+                    }
+                  }
+                }}
+              />
+            </div>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteEmailTyped("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                disabled={!deleteEmailMatches || isPending}
+                onClick={submitDelete}
+              >
+                Delete permanently
+              </Button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
