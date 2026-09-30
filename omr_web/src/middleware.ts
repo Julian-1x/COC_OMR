@@ -1,5 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { API_TOKEN_COOKIE } from "@/lib/api/laravel-client";
+import {
+  API_TOKEN_COOKIE,
+  clearApiTokenCookie,
+  hasAuthResultQuery,
+} from "@/lib/api/laravel-client";
 
 /**
  * Soft cookie-presence gate only.
@@ -16,6 +20,7 @@ export async function middleware(request: NextRequest) {
   if (
     pathname.startsWith("/auth/signout") ||
     pathname.startsWith("/auth/after-login") ||
+    pathname.startsWith("/auth/callback") ||
     pathname.startsWith("/warming") ||
     pathname.startsWith("/api/")
   ) {
@@ -33,6 +38,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
+  // Email verify / reset / transfer messages must show on /login even if another
+  // teacher was already signed in on this browser (common on shared phones).
+  if (pathname === "/login" && hasAuthResultQuery(request.nextUrl.searchParams)) {
+    const response = NextResponse.next({ request });
+    clearApiTokenCookie(response.cookies);
+    return response;
+  }
+
   if (pathname === "/login" || pathname === "/") {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
@@ -45,7 +58,6 @@ export async function middleware(request: NextRequest) {
   }
 
   const response = NextResponse.next({ request });
-  // Hint browsers not to cache authenticated HTML.
   if (isDashboard) {
     response.headers.set("Cache-Control", "private, no-store");
   }

@@ -224,6 +224,33 @@ export function setApiTokenCookie(
   target.set(API_TOKEN_COOKIE, encodeApiTokenCookie(token), apiTokenCookieOptions());
 }
 
+/** Clear the Sanctum cookie (e.g. after email verify so another teacher's session cannot stick). */
+export function clearApiTokenCookie(target: {
+  set: (name: string, value: string, options: ReturnType<typeof apiTokenCookieOptions> & { maxAge: number }) => void;
+}): void {
+  target.set(API_TOKEN_COOKIE, "", {
+    ...apiTokenCookieOptions(),
+    maxAge: 0,
+  });
+}
+
+/** Login / auth query flags that must win over an existing browser session. */
+export const AUTH_RESULT_QUERY_KEYS = [
+  "pending",
+  "confirmed",
+  "error",
+  "reset",
+  "notice",
+  "email",
+] as const;
+
+export function hasAuthResultQuery(searchParams: URLSearchParams): boolean {
+  return AUTH_RESULT_QUERY_KEYS.some((key) => {
+    const value = searchParams.get(key);
+    return value != null && value !== "";
+  });
+}
+
 /**
  * Browser client talks to the same-origin BFF (`/api/laravel/...`), which attaches
  * the httpOnly Sanctum cookie. Never read the bearer token from document.cookie.

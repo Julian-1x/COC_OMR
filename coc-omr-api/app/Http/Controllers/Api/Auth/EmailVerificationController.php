@@ -79,12 +79,15 @@ class EmailVerificationController extends Controller
             && $user !== null
             && ! $user->isAccessApproved();
 
+        $email = $user?->email;
+
         if ($platform === 'mobile') {
             $base = rtrim(config('app.mobile_verify_redirect'), '/');
             $query = http_build_query(array_filter([
                 'token' => $token,
                 'verified' => $success ? '1' : '0',
                 'message' => $message,
+                'email' => $email,
                 'access_status' => $accessStatus,
                 'access_pending' => $accessPending ? '1' : null,
             ], fn ($value) => $value !== null && $value !== ''));
@@ -97,6 +100,7 @@ class EmailVerificationController extends Controller
             'token' => $token,
             'verified' => $success ? '1' : '0',
             'message' => $message,
+            'email' => $email,
             'access_status' => $accessStatus,
             'access_pending' => $accessPending ? '1' : null,
         ], fn ($value) => $value !== null && $value !== ''));

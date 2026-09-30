@@ -256,9 +256,16 @@ function LoginForm() {
       setMode("login");
       return;
     }
+    const confirmedEmail = searchParams.get("email")?.trim() ?? "";
+    if (confirmedEmail) {
+      setEmail(confirmedEmail);
+    }
+
     if (authError === "confirm") {
       setNotice(
-        "Your email may already be confirmed. Sign in below with the same email and password.",
+        confirmedEmail
+          ? `Could not finish confirmation for ${confirmedEmail}. Sign in with that email and password, or request a new verification link.`
+          : "Your email may already be confirmed. Sign in below with the same email and password.",
       );
       setMode("login");
       return;
@@ -270,14 +277,22 @@ function LoginForm() {
       setMode("login");
       setNotice(
         searchParams.get("confirmed") === "1"
-          ? "Email confirmed. Your account is waiting for a COC admin to approve access."
-          : "Your account is waiting for a COC admin to approve access.",
+          ? confirmedEmail
+            ? `Email confirmed for ${confirmedEmail}. Ask a COC admin to approve access, then sign in with that account.`
+            : "Email confirmed. Your account is waiting for a COC admin to approve access."
+          : confirmedEmail
+            ? `${confirmedEmail} is waiting for a COC admin to approve access.`
+            : "Your account is waiting for a COC admin to approve access.",
       );
       return;
     }
 
     if (searchParams.get("confirmed") === "1") {
-      setNotice("Email confirmed. Sign in to open your dashboard.");
+      setNotice(
+        confirmedEmail
+          ? `Email confirmed for ${confirmedEmail}. Sign in with that email and password (not a different Google inbox account).`
+          : "Email confirmed. Sign in to open your dashboard.",
+      );
       setMode("login");
       return;
     }

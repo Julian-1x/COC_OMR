@@ -38,6 +38,12 @@ class EmailVerificationUrlTest extends TestCase
             ],
         );
 
-        $this->get($url)->assertRedirect();
+        $response = $this->get($url);
+        $response->assertRedirect();
+        $location = $response->headers->get('Location');
+        $this->assertIsString($location);
+        $this->assertStringContainsString('auth/callback', $location);
+        $this->assertStringContainsString('verified=1', $location);
+        $this->assertStringContainsString('email='.rawurlencode('teacher@example.com'), $location);
     }
 }
