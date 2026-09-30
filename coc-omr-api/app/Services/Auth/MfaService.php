@@ -3,7 +3,7 @@
 namespace App\Services\Auth;
 
 use App\Models\User;
-use App\Support\CocSchool;
+use App\Notifications\MfaEmailCodeNotification;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -17,10 +17,11 @@ class MfaService
 
     public function mustEnroll(User $user): bool
     {
-        if ($user->two_factor_confirmed_at !== null) {
+        if ($this->hasConfirmedMfa($user)) {
             return false;
         }
 
+        // Every account with a school profile must set up authenticator.
         return $this->roleRequiresMfa($user);
     }
 
@@ -35,8 +36,15 @@ class MfaService
     {
         $role = $user->teacherProfile?->role;
         $required = config('security.mfa.required_roles', []);
+        if (! is_array($required) || $required === []) {
+            return true;
+        }
 
-        return is_string($role) && in_array($role, $required, true);
+        if (! is_string($role) || $role === '') {
+            return true;
+        }
+
+        return in_array($role, $required, true);
     }
 
     /**
@@ -135,16 +143,87 @@ class MfaService
     public function forgetTicket(string $ticket): void
     {
         Cache::forget($this->ticketKey($ticket));
+        Cache::forget($this->emailOtpKey($ticket));
+        Cache::forget($this->emailOtpCooldownKey($ticket));
     }
 
-    public function verifyCodeOrRecovery(User $user, string $code): bool
+    /**
+     * @return array{message: string, email_hint: string, resend_after_seconds: int}
+     */
+    public function sendEmailChallengeCode(User $user, string $ticket): array
+    {
+        $cooldown = (int) config('security.mfa.email_otp_resend_seconds', 60);
+        $maxPerHour = (int) config('security.mfa.email_otp_max_sends_per_hour', 5);
+        $ttlMinutes = (int) config('security.mfa.email_otp_ttl_minutes', 10);
+
+        $cooldownKey = $this->emailOtpCooldownKey($ticket);
+        if (Cache::has($cooldownKey)) {
+            throw ValidationException::withMessages([
+                'mfa_ticket' => ["Wait {$cooldown} seconds before requesting another email code."],
+            ]);
+        }
+
+        $hourKey = $this->emailOtpHourKey($user->id);
+        $sendsThisHour = (int) Cache::get($hourKey, 0);
+        if ($sendsThisHour >= $maxPerHour) {
+            throw ValidationException::withMessages([
+                'mfa_ticket' => ['Too many email codes sent. Try your authenticator app, or wait about an hour.'],
+            ]);
+        }
+
+        $code = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        Cache::put(
+            $this->emailOtpKey($ticket),
+            hash('sha256', $code),
+            now()->addMinutes($ttlMinutes),
+        );
+        Cache::put($cooldownKey, true, now()->addSeconds($cooldown));
+        Cache::put($hourKey, $sendsThisHour + 1, now()->addHour());
+
+        $user->notify(new MfaEmailCodeNotification($code));
+
+        $emailHint = $this->maskEmail($user->email);
+
+        return [
+            'message' => "We emailed a 6-digit code to {$emailHint}.",
+            'email_hint' => $emailHint,
+            'resend_after_seconds' => $cooldown,
+        ];
+    }
+
+    public function verifyCodeOrRecovery(User $user, string $code, ?string $mfaTicket = null): bool
     {
         $secret = $this->decryptSecret($user);
         if ($secret !== null && $this->totp->verify($secret, $code, 3)) {
             return true;
         }
 
+        if ($mfaTicket !== null && $this->consumeEmailOtp($mfaTicket, $code)) {
+            return true;
+        }
+
         return $this->consumeRecoveryCode($user, $code);
+    }
+
+    private function consumeEmailOtp(string $ticket, string $code): bool
+    {
+        $normalized = preg_replace('/\s+/', '', $code) ?? '';
+        if (! preg_match('/^\d{6}$/', $normalized)) {
+            return false;
+        }
+
+        $storedHash = Cache::get($this->emailOtpKey($ticket));
+        if (! is_string($storedHash) || $storedHash === '') {
+            return false;
+        }
+
+        if (! hash_equals($storedHash, hash('sha256', $normalized))) {
+            return false;
+        }
+
+        Cache::forget($this->emailOtpKey($ticket));
+
+        return true;
     }
 
     private function consumeRecoveryCode(User $user, string $code): bool
@@ -211,5 +290,37 @@ class MfaService
     private function ticketKey(string $ticket): string
     {
         return 'mfa_ticket:'.$ticket;
+    }
+
+    private function emailOtpKey(string $ticket): string
+    {
+        return 'mfa_email_otp:'.$ticket;
+    }
+
+    private function emailOtpCooldownKey(string $ticket): string
+    {
+        return 'mfa_email_otp_cd:'.$ticket;
+    }
+
+    private function emailOtpHourKey(string $userId): string
+    {
+        return 'mfa_email_otp_hour:'.$userId;
+    }
+
+    private function maskEmail(string $email): string
+    {
+        $parts = explode('@', strtolower(trim($email)), 2);
+        if (count($parts) !== 2) {
+            return 'your email';
+        }
+
+        [$local, $domain] = $parts;
+        if ($local === '') {
+            return '***@'.$domain;
+        }
+
+        $visible = substr($local, 0, 1);
+
+        return $visible.'***@'.$domain;
     }
 }

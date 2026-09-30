@@ -11,11 +11,11 @@ import { readJsonResponse } from "@/lib/api/read-json-response";
 import { wakeSchoolApi } from "@/lib/api/wake-api";
 import {
   PASSWORD_MIN_LENGTH,
-  PASSWORD_REQUIREMENT_HINT,
   passwordValidationError,
 } from "@/lib/auth/password-rules";
 import { COC_DEPARTMENTS, COC_SCHOOL_NAME, isCocDepartment } from "@/lib/coc-school";
 import { workspaceName } from "@/lib/theme";
+import { PasswordField } from "@/components/auth/password-field";
 import { TurnstileField } from "@/components/auth/turnstile-field";
 import QRCode from "qrcode";
 
@@ -46,6 +46,10 @@ function LoginForm() {
   const [mfaOtpAuthUrl, setMfaOtpAuthUrl] = useState<string | null>(null);
   const [mfaQrDataUrl, setMfaQrDataUrl] = useState<string | null>(null);
   const [mfaSetupView, setMfaSetupView] = useState<"qr" | "secret">("qr");
+  const [mfaViaEmail, setMfaViaEmail] = useState(false);
+  const [mfaEmailHint, setMfaEmailHint] = useState<string | null>(null);
+  const [mfaEmailResendAt, setMfaEmailResendAt] = useState(0);
+  const [mfaEmailSending, setMfaEmailSending] = useState(false);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaSiteKey, setCaptchaSiteKey] = useState(CAPTCHA_SITE_KEY);
   const [slowServerHint, setSlowServerHint] = useState(false);
@@ -164,6 +168,67 @@ function LoginForm() {
     } finally {
       setResendLoading(false);
     }
+  }
+
+  async function requestMfaEmailCode() {
+    if (!mfaTicket) {
+      setError("Sign-in expired. Enter your password again.");
+      return;
+    }
+    if (Date.now() < mfaEmailResendAt) {
+      const waitSec = Math.ceil((mfaEmailResendAt - Date.now()) / 1000);
+      setError(`Wait ${waitSec} seconds before requesting another email code.`);
+      return;
+    }
+
+    setMfaEmailSending(true);
+    setError(null);
+    try {
+      const response = await fetch("/auth/login/mfa-email-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mfa_ticket: mfaTicket }),
+      });
+      const payload = await readJsonResponse<{
+        error?: string;
+        ok?: boolean;
+        message?: string;
+        emailHint?: string;
+        resendAfterSeconds?: number;
+      }>(response);
+      if (!response.ok || payload.error || !payload.ok) {
+        throw new Error(payload.error ?? "Could not email a sign-in code.");
+      }
+      const cooldown = payload.resendAfterSeconds ?? 60;
+      setMfaViaEmail(true);
+      setMfaEmailHint(payload.emailHint ?? null);
+      setMfaEmailResendAt(Date.now() + cooldown * 1000);
+      setMfaCode("");
+      setNotice(
+        payload.message ??
+          "We emailed a 6-digit code. Enter it below (authenticator is still available).",
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not email a sign-in code.");
+    } finally {
+      setMfaEmailSending(false);
+    }
+  }
+
+  function resetMfaChallenge() {
+    setAwaitingMfa(false);
+    setAwaitingMfaEnrollment(false);
+    setMfaTicket(null);
+    setMfaCode("");
+    setMfaSetupSecret(null);
+    setMfaOtpAuthUrl(null);
+    setMfaQrDataUrl(null);
+    setMfaSetupView("qr");
+    setMfaViaEmail(false);
+    setMfaEmailHint(null);
+    setMfaEmailResendAt(0);
+    setNotice(null);
+    setError(null);
   }
 
   useEffect(() => {
@@ -460,6 +525,9 @@ function LoginForm() {
         setMfaOtpAuthUrl(null);
         setMfaQrDataUrl(null);
         setMfaSetupView("qr");
+        setMfaViaEmail(false);
+        setMfaEmailHint(null);
+        setMfaEmailResendAt(0);
         setNotice(
           payload.message ??
             (payload.mfaEnrollmentRequired
@@ -623,13 +691,15 @@ function LoginForm() {
               <button
                 key={item}
                 type="button"
+                disabled={awaitingMfa}
                 onClick={() => {
+                  if (awaitingMfa) return;
                   setMode(item);
                   if (item === "register") {
                     setAwaitingConfirmation(false);
                   }
                 }}
-                className={`flex-1 rounded-lg py-2 text-sm font-bold capitalize ${
+                className={`flex-1 rounded-lg py-2 text-sm font-bold capitalize disabled:cursor-not-allowed disabled:opacity-60 ${
                   mode === item ? "bg-white text-emerald-800 shadow" : "text-slate-500"
                 }`}
               >
@@ -708,14 +778,24 @@ function LoginForm() {
               type="email"
               autoComplete="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                if (awaitingMfa) return;
+                setEmail(e.target.value);
+              }}
+              readOnly={awaitingMfa}
               required
+              className={awaitingMfa ? "cursor-default bg-slate-100 text-slate-600" : undefined}
             />
           </div>
           <div className="mb-4">
-            <div className="mb-1 flex items-center justify-between">
-              <Label htmlFor="password">Password</Label>
-              {mode === "login" ? (
+            <div className="mb-1.5 flex items-center justify-between">
+              <label
+                htmlFor="password"
+                className="block text-xs font-bold uppercase tracking-wide text-slate-500"
+              >
+                {mode === "register" ? "Enter new password" : "Password"}
+              </label>
+              {mode === "login" && !awaitingMfa ? (
                 <Link
                   href="/auth/forgot-password"
                   className="text-xs font-semibold text-emerald-700 hover:underline"
@@ -724,18 +804,16 @@ function LoginForm() {
                 </Link>
               ) : null}
             </div>
-            <Input
+            <PasswordField
               id="password"
-              type="password"
               autoComplete={mode === "register" ? "new-password" : "current-password"}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={setPassword}
               minLength={mode === "register" ? PASSWORD_MIN_LENGTH : undefined}
               required
+              readOnly={awaitingMfa}
+              showChecklist={mode === "register"}
             />
-            {mode === "register" ? (
-              <p className="mt-1 text-xs text-slate-500">{PASSWORD_REQUIREMENT_HINT}</p>
-            ) : null}
           </div>
 
           {awaitingMfa ? (
@@ -814,15 +892,64 @@ function LoginForm() {
                 </div>
               ) : null}
               <div>
-                <Label htmlFor="mfa">Authenticator code</Label>
+                <Label htmlFor="mfa">
+                  {mfaViaEmail && !awaitingMfaEnrollment
+                    ? "Email sign-in code"
+                    : "Authenticator code"}
+                </Label>
                 <Input
                   id="mfa"
                   inputMode="numeric"
                   autoComplete="one-time-code"
+                  autoFocus
                   value={mfaCode}
                   onChange={(e) => setMfaCode(e.target.value)}
                   required
                 />
+                {mfaViaEmail && !awaitingMfaEnrollment ? (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Enter the code we emailed
+                    {mfaEmailHint ? ` to ${mfaEmailHint}` : ""}. You can still use your
+                    authenticator app instead.
+                  </p>
+                ) : null}
+                {!awaitingMfaEnrollment ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <button
+                      type="button"
+                      disabled={loading || mfaEmailSending}
+                      onClick={() => void requestMfaEmailCode()}
+                      className="text-xs font-semibold text-emerald-700 hover:underline disabled:opacity-50"
+                    >
+                      {mfaEmailSending
+                        ? "Sending email code…"
+                        : mfaViaEmail
+                          ? "Resend email code"
+                          : "Can’t use authenticator? Email me a code"}
+                    </button>
+                    {mfaViaEmail ? (
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => {
+                          setMfaViaEmail(false);
+                          setMfaCode("");
+                          setNotice("Enter the code from your authenticator app.");
+                        }}
+                        className="text-xs font-semibold text-slate-600 hover:underline"
+                      >
+                        Use authenticator instead
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={resetMfaChallenge}
+                  className="mt-2 text-xs font-semibold text-emerald-700 hover:underline"
+                >
+                  Use a different account
+                </button>
               </div>
             </div>
           ) : null}

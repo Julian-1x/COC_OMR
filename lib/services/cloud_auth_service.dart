@@ -64,6 +64,8 @@ class TeacherRegistrationResult {
     this.account,
     this.needsEmailConfirmation = false,
     this.needsAdminApproval = false,
+    this.needsMfaEnrollment = false,
+    this.mfaTicket,
     this.pendingEmail,
     this.pendingName,
     this.pendingSchool,
@@ -73,6 +75,8 @@ class TeacherRegistrationResult {
   final CloudTeacherAccount? account;
   final bool needsEmailConfirmation;
   final bool needsAdminApproval;
+  final bool needsMfaEnrollment;
+  final String? mfaTicket;
   final String? pendingEmail;
   final String? pendingName;
   final String? pendingSchool;
@@ -176,6 +180,18 @@ class CloudAuthService {
         );
       }
 
+      if (response['mfa_enrollment_required'] == true) {
+        await ApiService.clearSession();
+        return TeacherRegistrationResult(
+          needsMfaEnrollment: true,
+          mfaTicket: response['mfa_ticket']?.toString(),
+          pendingEmail: normalizedEmail,
+          pendingName: trimmedName,
+          pendingSchool: trimmedSchool,
+          message: response['message']?.toString(),
+        );
+      }
+
       final account = await _accountFromAuthResponse(response);
       if (account == null) {
         throw const CloudAuthException(
@@ -241,7 +257,9 @@ class CloudAuthService {
   }
 
   Future<void> signOut() async {
-    await LocalAuthService.instance.lock();
+    // Full device sign-out: drop the cloud token and the offline PIN profile so
+    // LoginPage shows email/password, not the PIN unlock screen.
+    await LocalAuthService.instance.clearProfile();
     if (ApiService.hasActiveSession) {
       try {
         await ApiService.postJson('/logout', const <String, dynamic>{});
@@ -408,6 +426,25 @@ class CloudAuthService {
     } catch (error) {
       throw CloudAuthException(_friendlyError(error));
     }
+  }
+
+  /// Optional backup when authenticator is unavailable (confirmed MFA only).
+  Future<Map<String, dynamic>> sendMfaEmailCode({
+    required String mfaTicket,
+  }) async {
+    _ensureApiReady();
+    final response = await ApiService.postJson(
+      '/login/mfa/email-code',
+      <String, dynamic>{'mfa_ticket': mfaTicket},
+      auth: false,
+    );
+    if (response['ok'] != true) {
+      throw CloudAuthException(
+        response['message']?.toString() ??
+            'Could not email a sign-in code. Try again.',
+      );
+    }
+    return response;
   }
 
   Future<Map<String, String>> beginMfaEnrollmentDuringLogin({

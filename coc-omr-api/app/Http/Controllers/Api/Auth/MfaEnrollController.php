@@ -51,7 +51,7 @@ class MfaEnrollController extends Controller
 
         if ($this->mfa->roleRequiresMfa($user)) {
             throw ValidationException::withMessages([
-                'code' => ['School admins must keep two-factor sign-in enabled.'],
+                'code' => ['Two-factor sign-in is required for all COC OMR accounts and cannot be turned off.'],
             ]);
         }
 
@@ -67,7 +67,7 @@ class MfaEnrollController extends Controller
     }
 
     /**
-     * Begin MFA setup during sign-in (admin accounts).
+     * Begin MFA setup during sign-in (required for all accounts without MFA).
      */
     public function setupDuringLogin(Request $request): JsonResponse
     {

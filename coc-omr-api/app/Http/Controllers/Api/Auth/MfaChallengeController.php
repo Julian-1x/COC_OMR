@@ -44,11 +44,11 @@ class MfaChallengeController extends Controller
 
         $this->mfa->refreshTicket($validated['mfa_ticket']);
 
-        if (! $this->mfa->verifyCodeOrRecovery($user, $validated['code'])) {
+        if (! $this->mfa->verifyCodeOrRecovery($user, $validated['code'], $validated['mfa_ticket'])) {
             $this->events->record('mfa_failed', $user->email, $user, $request);
 
             throw ValidationException::withMessages([
-                'code' => ['That code did not match. Try the latest 6-digit code from your authenticator app.'],
+                'code' => ['That code did not match. Try your authenticator app, recovery code, or the latest emailed code.'],
             ]);
         }
 

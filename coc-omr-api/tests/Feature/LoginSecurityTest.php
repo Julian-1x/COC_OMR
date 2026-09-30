@@ -83,4 +83,45 @@ class LoginSecurityTest extends TestCase
         $this->assertSame(0, $user->failed_login_attempts);
         $this->assertNull($user->locked_until);
     }
+
+    public function test_unknown_email_says_account_does_not_exist(): void
+    {
+        config(['security.captcha.enabled' => false]);
+
+        $this->postJson('/api/login', [
+            'email' => 'deleted-teacher@yahoo.com',
+            'password' => 'AnyPass1!',
+        ])->assertStatus(422)->assertJsonFragment([
+            'message' => 'This account does not exist. If it was deleted, register again with this email.',
+        ]);
+    }
+
+    public function test_wrong_password_keeps_generic_credentials_message(): void
+    {
+        config(['security.captcha.enabled' => false]);
+
+        $user = User::query()->create([
+            'name' => 'Test Teacher',
+            'email' => 'teacher3@coc.edu.ph',
+            'password' => Hash::make('CorrectPass1!'),
+            'email_verified_at' => now(),
+        ]);
+
+        TeacherProfile::query()->create([
+            'id' => $user->id,
+            'full_name' => 'Test Teacher',
+            'school_name' => CocSchool::NAME,
+            'department' => CocSchool::DEPARTMENTS[0],
+            'role' => 'teacher',
+            'is_active' => true,
+            'access_status' => CocSchool::ACCESS_APPROVED,
+        ]);
+
+        $this->postJson('/api/login', [
+            'email' => 'teacher3@coc.edu.ph',
+            'password' => 'WrongPass1!',
+        ])->assertStatus(422)->assertJsonFragment([
+            'message' => 'These credentials do not match our records.',
+        ]);
+    }
 }

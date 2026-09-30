@@ -25,6 +25,7 @@ import 'package:omr_app/widgets/app_primary_button.dart';
 import 'package:omr_app/utils/password_rules.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/widgets/auth_shell.dart';
+import 'package:omr_app/widgets/password_requirements_checklist.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:omr_app/widgets/turnstile_captcha_field.dart';
 
@@ -64,6 +65,10 @@ class _LoginPageState extends State<LoginPage> {
   String? _mfaSetupSecret;
   String? _mfaOtpAuthUrl;
   bool _mfaSetupManualKey = false;
+  bool _mfaViaEmail = false;
+  String? _mfaEmailHint;
+  DateTime? _mfaEmailResendAt;
+  bool _mfaEmailSending = false;
   bool _isLoading = true;
   bool _isSubmitting = false;
   bool _obscurePassword = true;
@@ -526,6 +531,35 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
 
+        if (registration.needsMfaEnrollment) {
+          final ticket = registration.mfaTicket;
+          if (ticket == null || ticket.isEmpty) {
+            throw const CloudAuthException(
+              'Registration could not continue. Try signing in.',
+            );
+          }
+          final setup =
+              await _auth.beginMfaEnrollmentDuringLogin(mfaTicket: ticket);
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            _isSubmitting = false;
+            _isNewRegistration = true;
+            _mfaTicket = ticket;
+            _mfaSetupSecret = setup['secret'];
+            _mfaOtpAuthUrl = setup['otpauth_url'];
+            _mfaSetupManualKey = false;
+            _stage = _LoginStage.mfaEnrollment;
+          });
+          _showMessage(
+            registration.message ??
+                'Scan the QR code with Google Authenticator, then enter the 6-digit code.',
+            isError: false,
+          );
+          return;
+        }
+
         final account = registration.account;
         if (account == null) {
           throw const CloudAuthException(
@@ -594,6 +628,9 @@ class _LoginPageState extends State<LoginPage> {
         setState(() {
           _isSubmitting = false;
           _mfaTicket = signIn.mfaTicket;
+          _mfaViaEmail = false;
+          _mfaEmailHint = null;
+          _mfaEmailResendAt = null;
           _stage = _LoginStage.mfaChallenge;
         });
         return;
@@ -713,7 +750,7 @@ class _LoginPageState extends State<LoginPage> {
       }
       _resettingForgottenPin = false;
       await _enterAppAfterAuth(
-        showWelcome: _isNewRegistration && !_confirmedEmailThisSession,
+        showWelcome: _isNewRegistration,
       );
     } catch (error) {
       if (mounted) {
@@ -931,16 +968,23 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final completed = await OnboardingPreferencesService.hasCompletedOnboarding();
+    final profile = await _localAuth.loadProfile();
+    final teacherId = profile?.cloudUserId ??
+        _pendingTrustedAccount?.id ??
+        _offlineProfile?.cloudUserId;
+    final teacherName = profile?.name ??
+        _pendingTrustedAccount?.name ??
+        _offlineProfile?.name;
+
+    final completed = await OnboardingPreferencesService.hasCompletedOnboarding(
+      teacherId: teacherId,
+    );
+    // New registrations always see the tutorial. Other accounts see it once
+    // per teacher on this phone.
     if (!showWelcome && completed) {
       _openDashboard();
       return;
     }
-
-    final profile = await _localAuth.loadProfile();
-    final teacherName = profile?.name ??
-        _pendingTrustedAccount?.name ??
-        _offlineProfile?.name;
 
     if (!mounted) {
       return;
@@ -952,7 +996,9 @@ class _LoginPageState extends State<LoginPage> {
         builder: (context) => WelcomeOnboardingPage(
           teacherName: teacherName,
           onFinished: () async {
-            await OnboardingPreferencesService.setOnboardingCompleted();
+            await OnboardingPreferencesService.setOnboardingCompleted(
+              teacherId: teacherId,
+            );
             if (!context.mounted) {
               return;
             }
@@ -973,7 +1019,7 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) {
       return;
     }
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       unawaited(ScannerEngine.warmUp());
     }
     _openDashboard();
@@ -1195,7 +1241,7 @@ class _LoginPageState extends State<LoginPage> {
       });
       await _routeAfterOnlineAuth(
         account,
-        isNewRegistration: false,
+        isNewRegistration: _isNewRegistration,
         requirePinUnlock: true,
       );
     } catch (error) {
@@ -1206,11 +1252,59 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> _requestMfaEmailCode() async {
+    final ticket = _mfaTicket;
+    if (ticket == null || ticket.isEmpty) {
+      _showMessage('Sign-in expired. Enter your password again.', isError: true);
+      setState(() => _stage = _LoginStage.onlineAuth);
+      return;
+    }
+    final resendAt = _mfaEmailResendAt;
+    if (resendAt != null && DateTime.now().isBefore(resendAt)) {
+      final wait = resendAt.difference(DateTime.now()).inSeconds;
+      _showMessage(
+        'Wait ${wait.clamp(1, 120)} seconds before requesting another email code.',
+        isError: true,
+      );
+      return;
+    }
+
+    setState(() => _mfaEmailSending = true);
+    try {
+      final response = await _auth.sendMfaEmailCode(mfaTicket: ticket);
+      if (!mounted) {
+        return;
+      }
+      final cooldown = (response['resend_after_seconds'] as num?)?.toInt() ?? 60;
+      setState(() {
+        _mfaEmailSending = false;
+        _mfaViaEmail = true;
+        _mfaEmailHint = response['email_hint']?.toString();
+        _mfaEmailResendAt = DateTime.now().add(Duration(seconds: cooldown));
+        _mfaCodeController.clear();
+      });
+      _showMessage(
+        response['message']?.toString() ??
+            'We emailed a 6-digit code. Enter it below.',
+        isError: false,
+      );
+    } catch (error) {
+      if (mounted) {
+        setState(() => _mfaEmailSending = false);
+        _showMessage(UserErrorMessages.friendlyError(error), isError: true);
+      }
+    }
+  }
+
   Widget _buildMfaChallengePanel() {
     return AuthShell(
       title: 'Two-factor code',
-      subtitle:
-          'Enter the 6-digit code from your authenticator app. Wait for a fresh code if the server was slow.',
+      subtitle: _mfaViaEmail
+          ? 'Enter the 6-digit code we emailed'
+              '${_mfaEmailHint != null ? ' to $_mfaEmailHint' : ''}. '
+              'You can still use your authenticator app.'
+          : 'Enter the 6-digit code from your authenticator app. '
+              'Wait for a fresh code if the server was slow.',
       badge: AuthBadgeType.online,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1219,12 +1313,41 @@ class _LoginPageState extends State<LoginPage> {
             controller: _mfaCodeController,
             keyboardType: TextInputType.number,
             maxLength: 8,
-            decoration: const InputDecoration(
-              labelText: 'Authenticator code',
+            decoration: InputDecoration(
+              labelText: _mfaViaEmail ? 'Email sign-in code' : 'Authenticator code',
               counterText: '',
             ),
           ),
-          const SizedBox(height: AppSpacing.lg),
+          const SizedBox(height: AppSpacing.md),
+          TextButton(
+            onPressed: (_isSubmitting || _mfaEmailSending)
+                ? null
+                : () => unawaited(_requestMfaEmailCode()),
+            child: Text(
+              _mfaEmailSending
+                  ? 'Sending email code…'
+                  : _mfaViaEmail
+                      ? 'Resend email code'
+                      : 'Can’t use authenticator? Email me a code',
+            ),
+          ),
+          if (_mfaViaEmail)
+            TextButton(
+              onPressed: _isSubmitting
+                  ? null
+                  : () {
+                      setState(() {
+                        _mfaViaEmail = false;
+                        _mfaCodeController.clear();
+                      });
+                      _showMessage(
+                        'Enter the code from your authenticator app.',
+                        isError: false,
+                      );
+                    },
+              child: const Text('Use authenticator instead'),
+            ),
+          const SizedBox(height: AppSpacing.sm),
           AppPrimaryButton(
             label: 'Verify and continue',
             icon: Icons.verified_user_outlined,
@@ -1240,6 +1363,9 @@ class _LoginPageState extends State<LoginPage> {
                     setState(() {
                       _stage = _LoginStage.onlineAuth;
                       _mfaTicket = null;
+                      _mfaViaEmail = false;
+                      _mfaEmailHint = null;
+                      _mfaEmailResendAt = null;
                       _mfaCodeController.clear();
                     });
                   },
@@ -2031,34 +2157,63 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _passwordField() {
+    final isRegister = _mode == _AuthMode.register;
+    final password = _passwordController.text;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('Password'),
+        _fieldLabel(isRegister ? 'Enter New Password' : 'Password'),
         const SizedBox(height: AppSpacing.xs),
         TextField(
           controller: _passwordController,
           obscureText: _obscurePassword,
+          onChanged: (_) => setState(() {}),
           onSubmitted: (_) => _isSubmitting ? null : _submit(),
-          autofillHints: const [AutofillHints.password],
+          autofillHints: isRegister
+              ? const [AutofillHints.newPassword]
+              : const [AutofillHints.password],
           decoration: _inputDecoration(
-            hint: _mode == _AuthMode.register
-                ? PasswordRules.requirementHint
-                : 'Your account password',
+            hint: isRegister ? 'Create a strong password' : 'Your account password',
             icon: Icons.password_rounded,
           ).copyWith(
-            suffixIcon: IconButton(
-              onPressed: () {
-                setState(() => _obscurePassword = !_obscurePassword);
-              },
-              icon: Icon(
-                _obscurePassword
-                    ? Icons.visibility_rounded
-                    : Icons.visibility_off_rounded,
-              ),
+            suffixIconConstraints: const BoxConstraints(
+              minHeight: 48,
+              minWidth: 48,
+            ),
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (password.isNotEmpty)
+                  IconButton(
+                    tooltip: 'Clear',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () {
+                      _passwordController.clear();
+                      setState(() {});
+                    },
+                    icon: const Icon(Icons.cancel_rounded),
+                    color: AppColors.neutralMuted,
+                  ),
+                IconButton(
+                  tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    setState(() => _obscurePassword = !_obscurePassword);
+                  },
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
+        if (isRegister) ...[
+          const SizedBox(height: AppSpacing.sm),
+          PasswordRequirementsChecklist(password: password),
+        ],
       ],
     );
   }

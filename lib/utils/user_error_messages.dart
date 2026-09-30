@@ -103,10 +103,15 @@ abstract final class UserErrorMessages {
       return 'An account with this email already exists. Use Login instead.';
     }
     if (normalized.contains('password')) {
-      return 'The password does not meet requirements. Use at least 8 characters.';
+      return 'The password does not meet requirements. Use at least 8 characters with upper and lowercase letters, a number, and a symbol.';
     }
     if (normalized.contains('rate limit') || normalized.contains('too many')) {
       return 'Too many attempts. Wait a minute, then try again.';
+    }
+    if (normalized.contains('could not be found') ||
+        (normalized.contains('route ') && normalized.contains('not found'))) {
+      return 'School server is missing this sign-in step (or still updating). '
+          'Use your authenticator app for now, or try email code again in a few minutes.';
     }
     return message;
   }

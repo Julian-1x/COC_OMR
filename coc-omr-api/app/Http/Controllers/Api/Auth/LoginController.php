@@ -49,23 +49,29 @@ class LoginController extends Controller
 
         /** @var User|null $user */
         $user = User::query()->where('email', $email)->with('teacherProfile')->first();
-        $passwordOk = $user !== null
-            && is_string($user->password)
+
+        if ($user === null) {
+            $this->security->recordFailure($email, $request, null);
+
+            return $this->loginFailure(
+                $email,
+                $request,
+                'This account does not exist. If it was deleted, register again with this email.',
+            );
+        }
+
+        $passwordOk = is_string($user->password)
             && Hash::check($credentials['password'], $user->password);
 
-        // Wrong email/password: never reveal pending vs revoked (avoids account fishing).
+        // Wrong password: do not reveal pending vs revoked.
         if (! $passwordOk) {
             $this->security->recordFailure($email, $request, $user);
 
-            $payload = ['email' => ['These credentials do not match our records.']];
-            if ($this->security->requiresCaptcha($email, $request) && $this->captcha->isEnabled()) {
-                return response()->json(array_merge(
-                    ['errors' => $payload, 'message' => 'These credentials do not match our records.'],
-                    $this->security->captchaRequiredPayload($email, $request),
-                ), 422);
-            }
-
-            throw ValidationException::withMessages($payload);
+            return $this->loginFailure(
+                $email,
+                $request,
+                'These credentials do not match our records.',
+            );
         }
 
         if (AdminBootstrap::promoteIfListed($user)) {
@@ -121,6 +127,19 @@ class LoginController extends Controller
         }
 
         return $this->tokenResponse($user, $credentials['device_name'] ?? 'mobile');
+    }
+
+    private function loginFailure(string $email, Request $request, string $message): JsonResponse
+    {
+        $payload = ['email' => [$message]];
+        if ($this->security->requiresCaptcha($email, $request) && $this->captcha->isEnabled()) {
+            return response()->json(array_merge(
+                ['errors' => $payload, 'message' => $message],
+                $this->security->captchaRequiredPayload($email, $request),
+            ), 422);
+        }
+
+        throw ValidationException::withMessages($payload);
     }
 
     private function tokenResponse(User $user, string $deviceName): JsonResponse

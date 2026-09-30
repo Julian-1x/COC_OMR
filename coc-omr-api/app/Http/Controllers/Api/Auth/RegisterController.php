@@ -21,6 +21,7 @@ class RegisterController extends Controller
     public function __construct(
         private readonly CaptchaVerifier $captcha,
         private readonly AuthEventLogger $events,
+        private readonly \App\Services\Auth\MfaService $mfa,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -156,7 +157,14 @@ class RegisterController extends Controller
         ];
 
         if ($user->hasVerifiedEmail() && $approved) {
-            $payload['token'] = $user->createToken('mobile')->plainTextToken;
+            if ($this->mfa->mustEnroll($user)) {
+                $ticket = $this->mfa->issueChallengeTicket($user);
+                $payload['mfa_enrollment_required'] = true;
+                $payload['mfa_ticket'] = $ticket;
+                $payload['message'] = 'Set up two-factor authentication before continuing.';
+            } else {
+                $payload['token'] = $user->createToken('mobile')->plainTextToken;
+            }
         } elseif ($user->hasVerifiedEmail() && ! $approved) {
             $payload['message'] = 'Your email is confirmed. Your account is waiting for school admin approval before you can use the app or web dashboard.';
             $payload['access_pending'] = true;

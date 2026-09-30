@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\Auth\LoginController;
 use App\Http\Controllers\Api\Auth\LogoutController;
 use App\Http\Controllers\Api\Auth\MeController;
 use App\Http\Controllers\Api\Auth\MfaChallengeController;
+use App\Http\Controllers\Api\Auth\MfaEmailCodeController;
 use App\Http\Controllers\Api\Auth\MfaEnrollController;
 use App\Http\Controllers\Api\Auth\RegisterController;
 use App\Http\Controllers\Api\Auth\ResendVerificationController;
@@ -40,6 +41,8 @@ Route::get('/auth/security-config', SecurityConfigController::class);
 Route::post('/login', LoginController::class)
     ->middleware(['throttle:login-ip', 'throttle:login-email']);
 Route::post('/login/mfa', MfaChallengeController::class)
+    ->middleware(['throttle:login-ip', 'throttle:login-email']);
+Route::post('/login/mfa/email-code', MfaEmailCodeController::class)
     ->middleware(['throttle:login-ip', 'throttle:login-email']);
 Route::post('/login/mfa/setup', [MfaEnrollController::class, 'setupDuringLogin'])
     ->middleware(['throttle:login-ip', 'throttle:login-email']);

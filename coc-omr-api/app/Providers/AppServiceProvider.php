@@ -55,10 +55,10 @@ class AppServiceProvider extends ServiceProvider
             return is_string($bearer) ? $bearer : '';
         });
 
-        // Registration + password reset: 8+ chars with a letter, number, and symbol.
+        // Registration + password reset: 8+ chars, mixed case, number, and symbol.
         Password::defaults(static function () {
             return Password::min(8)
-                ->letters()
+                ->mixedCase()
                 ->numbers()
                 ->symbols();
         });

@@ -208,6 +208,18 @@ export async function POST(request: Request) {
         payload?.access_status === "pending" ||
         payload?.user?.profile?.access_status === "pending";
 
+      if (payload?.mfa_enrollment_required && payload?.mfa_ticket) {
+        return NextResponse.json({
+          ok: false,
+          mfaRequired: true,
+          mfaEnrollmentRequired: true,
+          mfaTicket: payload.mfa_ticket,
+          message:
+            payload.message ??
+            "Set up two-factor sign-in to continue.",
+        });
+      }
+
       if (!needsEmailConfirmation && payload?.token) {
         return jsonWithSession(payload.token, {
           ok: true,

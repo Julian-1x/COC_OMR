@@ -42,9 +42,13 @@ return [
     */
     'mfa' => [
         'issuer' => env('MFA_ISSUER', 'COC OMR'),
-        // Admins must enroll before receiving a session token.
-        'required_roles' => ['super_admin', 'dept_admin'],
+        // Every approved account must enroll authenticator (teachers + admins).
+        'required_roles' => ['super_admin', 'dept_admin', 'teacher'],
         'challenge_ttl_minutes' => (int) env('MFA_CHALLENGE_TTL_MINUTES', 15),
+        // Optional email OTP backup when authenticator is unavailable.
+        'email_otp_ttl_minutes' => (int) env('MFA_EMAIL_OTP_TTL_MINUTES', 10),
+        'email_otp_resend_seconds' => (int) env('MFA_EMAIL_OTP_RESEND_SECONDS', 60),
+        'email_otp_max_sends_per_hour' => (int) env('MFA_EMAIL_OTP_MAX_SENDS_PER_HOUR', 5),
     ],
 
 ];
