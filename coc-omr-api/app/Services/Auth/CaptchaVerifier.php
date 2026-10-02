@@ -45,25 +45,34 @@ class CaptchaVerifier
             ])->status(422);
         }
 
-        $response = Http::asForm()
-            ->timeout(8)
-            ->post('https://challenges.cloudflare.com/turnstile/v0/siteverify', [
-                'secret' => config('security.captcha.secret_key'),
-                'response' => $token,
-                'remoteip' => $request->ip(),
-            ]);
+        try {
+            $response = Http::asForm()
+                ->timeout(10)
+                ->post('https://challenges.cloudflare.com/turnstile/v0/siteverify', [
+                    'secret' => config('security.captcha.secret_key'),
+                    'response' => $token,
+                    'remoteip' => $request->ip(),
+                ]);
+        } catch (\Throwable $exception) {
+            // Uncaught transport errors become HTML "Server Error" → phone shows
+            // "waking up". Fail closed with a clear 422 instead.
+            report($exception);
+            throw ValidationException::withMessages([
+                $field => ['Security check could not be verified. Wait a moment, refresh the check, then try again.'],
+            ])->status(422);
+        }
 
         if (! $response->ok()) {
             throw ValidationException::withMessages([
                 $field => ['Security check could not be verified. Try again in a moment.'],
-            ]);
+            ])->status(422);
         }
 
         $body = $response->json();
         if (! ($body['success'] ?? false)) {
             throw ValidationException::withMessages([
-                $field => ['Security check failed. Refresh the page and try again.'],
-            ]);
+                $field => ['Security check expired or already used. Refresh the check, then try again.'],
+            ])->status(422);
         }
     }
 }

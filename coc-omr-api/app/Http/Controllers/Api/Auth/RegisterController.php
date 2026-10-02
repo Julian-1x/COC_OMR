@@ -13,6 +13,8 @@ use App\Services\Auth\CaptchaVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
@@ -76,32 +78,49 @@ class RegisterController extends Controller
             (string) ($validated['client'] ?? 'web'),
         );
 
-        if ($existing !== null) {
-            return $this->finishRegistration(
-                $this->updateUnverifiedUser($existing, $validated, $department),
-                resumed: true,
-                client: $client,
-            );
+        try {
+            if ($existing !== null) {
+                return $this->finishRegistration(
+                    $this->updateUnverifiedUser($existing, $validated, $department),
+                    resumed: true,
+                    client: $client,
+                );
+            }
+
+            $userAttrs = [
+                'name' => $validated['full_name'],
+                'email' => $email,
+                'password' => Hash::make($validated['password']),
+            ];
+            if (Schema::hasColumn('users', 'signup_client')) {
+                $userAttrs['signup_client'] = $client;
+            }
+
+            $user = User::query()->create($userAttrs);
+
+            TeacherProfile::query()->create([
+                'id' => $user->id,
+                'full_name' => $validated['full_name'],
+                'school_name' => CocSchool::NAME,
+                'department' => $department,
+                'role' => 'teacher',
+                'is_active' => false,
+                'access_status' => CocSchool::ACCESS_PENDING,
+            ]);
+
+            return $this->finishRegistration($user, resumed: false, client: $client);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            Log::error('register_failed', [
+                'email' => $email,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Could not create your account just now. Wait a few seconds, refresh the security check, then try Create Account again.',
+            ], 503);
         }
-
-        $user = User::query()->create([
-            'name' => $validated['full_name'],
-            'email' => $email,
-            'password' => Hash::make($validated['password']),
-            'signup_client' => $client,
-        ]);
-
-        TeacherProfile::query()->create([
-            'id' => $user->id,
-            'full_name' => $validated['full_name'],
-            'school_name' => CocSchool::NAME,
-            'department' => $department,
-            'role' => 'teacher',
-            'is_active' => false,
-            'access_status' => CocSchool::ACCESS_PENDING,
-        ]);
-
-        return $this->finishRegistration($user, resumed: false, client: $client);
     }
 
     /**
@@ -109,13 +128,16 @@ class RegisterController extends Controller
      */
     private function updateUnverifiedUser(User $user, array $validated, string $department): User
     {
-        $user->update([
+        $attrs = [
             'name' => $validated['full_name'],
             'password' => Hash::make($validated['password']),
-            'signup_client' => \App\Services\VerificationEmailSender::normalizePlatform(
+        ];
+        if (Schema::hasColumn('users', 'signup_client')) {
+            $attrs['signup_client'] = \App\Services\VerificationEmailSender::normalizePlatform(
                 (string) ($validated['client'] ?? $user->signup_client ?? 'web'),
-            ),
-        ]);
+            );
+        }
+        $user->update($attrs);
 
         TeacherProfile::query()->updateOrCreate(
             ['id' => $user->id],

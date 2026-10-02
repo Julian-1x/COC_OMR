@@ -710,18 +710,31 @@ class CloudAuthService {
       return 'Too many attempts. Wait a minute, then try again.';
     }
     if (normalized.contains('security check') || normalized.contains('captcha')) {
-      return 'Complete the security check on the web portal, then try again.';
+      return error.message.trim().isNotEmpty
+          ? error.message
+          : 'Refresh the security check, then try again.';
     }
     if (normalized.contains('locked') || error.statusCode == 429) {
       return error.message;
     }
-    if (normalized.contains('server error') ||
-        error.statusCode == 500 ||
-        error.statusCode == 502 ||
-        error.statusCode == 503 ||
-        error.statusCode == 504) {
+    // Prefer the API's real message (e.g. register 503) over a generic wake tip.
+    final apiMessage = error.message.trim();
+    final genericServer =
+        apiMessage.isEmpty ||
+        normalized == 'server error' ||
+        normalized.contains('server error') ||
+        normalized.contains('html') ||
+        normalized.startsWith('<!');
+    if (genericServer &&
+        (error.statusCode == 500 ||
+            error.statusCode == 502 ||
+            error.statusCode == 503 ||
+            error.statusCode == 504)) {
       return 'School server had a problem (may still be waking up). '
           'Wait about a minute and try again.';
+    }
+    if (apiMessage.isNotEmpty) {
+      return apiMessage;
     }
     return error.message;
   }

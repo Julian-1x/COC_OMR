@@ -821,13 +821,14 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isSubmitting = false);
         final message = UserErrorMessages.friendlyError(error);
         final lower = message.toLowerCase();
+        // Turnstile tokens are single-use — always clear after a failed attempt.
+        setState(() => _captchaToken = null);
         if (lower.contains('security check') || lower.contains('captcha')) {
           final refreshed =
               await SecurityConfigService.instance.fetch(forceRefresh: true);
           if (mounted) {
             setState(() {
               _securityConfig = refreshed;
-              _captchaToken = null;
               if (_mode == _AuthMode.register) {
                 _registerCaptchaRequired = true;
               } else {
@@ -835,6 +836,7 @@ class _LoginPageState extends State<LoginPage> {
               }
             });
           }
+          _showMessage(message, isError: true);
         } else if (lower.contains('not been confirmed') ||
             lower.contains('confirmation email') ||
             lower.contains('confirm your email')) {
