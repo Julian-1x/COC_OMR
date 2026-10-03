@@ -1,29 +1,26 @@
 <?php
 
 use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
+    /**
+     * Neon / PgBouncer: Schema::hasColumn inside a migration transaction can
+     * abort the TX; later ALTER then fails with SQLSTATE 25P02.
+     */
+    public $withinTransaction = false;
+
     public function up(): void
     {
-        if (Schema::hasColumn('users', 'signup_client')) {
-            return;
-        }
-
-        Schema::table('users', function (Blueprint $table) {
-            // Where the teacher signed up: mobile app vs web portal.
-            // Verification emails only include that platform's link.
-            // No ->after() — PostgreSQL on Render ignores/quirks column order.
-            $table->string('signup_client', 16)->default('web');
-        });
+        // Where the teacher signed up: mobile app vs web portal.
+        DB::statement(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_client varchar(16) NOT NULL DEFAULT 'web'",
+        );
     }
 
     public function down(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn('signup_client');
-        });
+        DB::statement('ALTER TABLE users DROP COLUMN IF EXISTS signup_client');
     }
 };
