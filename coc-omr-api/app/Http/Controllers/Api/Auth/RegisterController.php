@@ -156,7 +156,12 @@ class RegisterController extends Controller
 
     private function finishRegistration(User $user, bool $resumed, string $client = 'web'): JsonResponse
     {
-        if (($user->signup_client ?? null) !== $client) {
+        // Never write signup_client unless the production column exists
+        // (missing migration must not break register with a 500/503).
+        if (
+            Schema::hasColumn('users', 'signup_client')
+            && ($user->signup_client ?? null) !== $client
+        ) {
             $user->forceFill(['signup_client' => $client])->save();
         }
 

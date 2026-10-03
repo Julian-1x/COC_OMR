@@ -13,6 +13,7 @@ import 'package:omr_app/services/cloud_auth_service.dart';
 import 'package:omr_app/services/local_auth_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/onboarding_preferences_service.dart';
+import 'package:omr_app/services/register_form_draft_service.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
@@ -48,7 +49,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   final CloudAuthService _auth = CloudAuthService.instance;
   final LocalAuthService _localAuth = LocalAuthService.instance;
   final TextEditingController _lastNameController = TextEditingController();
@@ -61,6 +62,7 @@ class _LoginPageState extends State<LoginPage> {
 
   _AuthMode _mode = _AuthMode.login;
   _LoginStage _stage = _LoginStage.onlineAuth;
+  Timer? _registerDraftSaveTimer;
   String? _mfaTicket;
   String? _mfaSetupSecret;
   String? _mfaOtpAuthUrl;
@@ -85,6 +87,8 @@ class _LoginPageState extends State<LoginPage> {
   SecurityConfig _securityConfig = SecurityConfig.disabled;
   String? _captchaToken;
   String? _captchaSiteKeyOverride;
+  /// Remount Turnstile after failures so Success UI cannot outlive a cleared token.
+  int _captchaRemountNonce = 0;
   bool _loginCaptchaRequired = false;
   bool _registerCaptchaRequired = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
@@ -97,14 +101,88 @@ class _LoginPageState extends State<LoginPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _lastNameController.addListener(_scheduleRegisterDraftSave);
+    _firstNameController.addListener(_scheduleRegisterDraftSave);
+    _suffixController.addListener(_scheduleRegisterDraftSave);
+    _emailController.addListener(_scheduleRegisterDraftSave);
     unawaited(_bootstrapAuth());
     unawaited(_initConnectivity());
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      unawaited(_saveRegisterDraft());
+    }
+  }
+
   Future<void> _bootstrapAuth() async {
+    await _restoreRegisterDraft();
     await _restoreSession();
     await _loadSecurityConfig();
     await _initAuthDeepLinks();
+  }
+
+  Future<void> _restoreRegisterDraft() async {
+    final draft = await RegisterFormDraftService.load();
+    if (!mounted || !draft.hasAnyField) {
+      if (draft.preferRegisterTab && mounted && _stage == _LoginStage.onlineAuth) {
+        setState(() => _mode = _AuthMode.register);
+      }
+      return;
+    }
+    if (_lastNameController.text.isEmpty && draft.lastName.isNotEmpty) {
+      _lastNameController.text = draft.lastName;
+    }
+    if (_firstNameController.text.isEmpty && draft.firstName.isNotEmpty) {
+      _firstNameController.text = draft.firstName;
+    }
+    if (_suffixController.text.isEmpty && draft.suffix.isNotEmpty) {
+      _suffixController.text = draft.suffix;
+    }
+    if (_emailController.text.isEmpty && draft.email.isNotEmpty) {
+      _emailController.text = draft.email;
+    }
+    if (mounted) {
+      setState(() {
+        if (draft.department != null &&
+            CocSchool.isValidDepartment(draft.department!)) {
+          _selectedDepartment = draft.department;
+        }
+        if (draft.preferRegisterTab || draft.hasAnyField) {
+          _mode = _AuthMode.register;
+        }
+      });
+    }
+  }
+
+  void _scheduleRegisterDraftSave() {
+    _registerDraftSaveTimer?.cancel();
+    _registerDraftSaveTimer = Timer(
+      const Duration(milliseconds: 400),
+      () => unawaited(_saveRegisterDraft()),
+    );
+  }
+
+  Future<void> _saveRegisterDraft() async {
+    await RegisterFormDraftService.save(
+      RegisterFormDraft(
+        lastName: _lastNameController.text,
+        firstName: _firstNameController.text,
+        suffix: _suffixController.text,
+        email: _emailController.text,
+        department: _selectedDepartment,
+        preferRegisterTab: _mode == _AuthMode.register,
+      ),
+    );
+  }
+
+  Future<void> _clearRegisterDraft() async {
+    _registerDraftSaveTimer?.cancel();
+    await RegisterFormDraftService.clear();
   }
 
   Future<void> _loadSecurityConfig() async {
@@ -136,6 +214,12 @@ class _LoginPageState extends State<LoginPage> {
     _loginCaptchaRequired = false;
     _registerCaptchaRequired = false;
     _captchaSiteKeyOverride = null;
+    _captchaRemountNonce += 1;
+  }
+
+  void _invalidateCaptchaAfterFailedAttempt() {
+    _captchaToken = null;
+    _captchaRemountNonce += 1;
   }
 
   Widget? _buildCaptchaField() {
@@ -146,6 +230,8 @@ class _LoginPageState extends State<LoginPage> {
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.md),
       child: TurnstileCaptchaField(
+        // Site key + nonce: password typing does not remount; failures do.
+        key: ValueKey<String>('turnstile-$siteKey-$_captchaRemountNonce'),
         siteKey: siteKey,
         onToken: (token) {
           if (!mounted) {
@@ -159,9 +245,16 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _registerDraftSaveTimer?.cancel();
+    unawaited(_saveRegisterDraft());
     _stopEmailVerificationPoll();
     _connectivitySub?.cancel();
     _authLinkSub?.cancel();
+    _lastNameController.removeListener(_scheduleRegisterDraftSave);
+    _firstNameController.removeListener(_scheduleRegisterDraftSave);
+    _suffixController.removeListener(_scheduleRegisterDraftSave);
+    _emailController.removeListener(_scheduleRegisterDraftSave);
     _lastNameController.dispose();
     _firstNameController.dispose();
     _suffixController.dispose();
@@ -648,7 +741,8 @@ class _LoginPageState extends State<LoginPage> {
     if (_needsCaptchaOnForm &&
         (_captchaToken == null || _captchaToken!.trim().isEmpty)) {
       _showMessage(
-        'Complete the security check, then try again.',
+        'Security check did not sync to the app yet. Wait for '
+        '“Security check ready”, or tap Retry security check, then Create Account.',
         isError: true,
       );
       return;
@@ -673,6 +767,7 @@ class _LoginPageState extends State<LoginPage> {
         }
 
         if (registration.needsEmailConfirmation) {
+          await _clearRegisterDraft();
           setState(() {
             _isSubmitting = false;
             _isNewRegistration = true;
@@ -685,6 +780,7 @@ class _LoginPageState extends State<LoginPage> {
         }
 
         if (registration.needsAdminApproval) {
+          await _clearRegisterDraft();
           setState(() {
             _isSubmitting = false;
             _isNewRegistration = true;
@@ -711,6 +807,7 @@ class _LoginPageState extends State<LoginPage> {
           if (!mounted) {
             return;
           }
+          await _clearRegisterDraft();
           setState(() {
             _isSubmitting = false;
             _isNewRegistration = true;
@@ -735,6 +832,7 @@ class _LoginPageState extends State<LoginPage> {
           );
         }
 
+        await _clearRegisterDraft();
         await _pullCloudData(showErrors: true);
         if (!mounted) {
           return;
@@ -761,7 +859,7 @@ class _LoginPageState extends State<LoginPage> {
           _loginCaptchaRequired = true;
           _captchaSiteKeyOverride =
               signIn.captchaSiteKey ?? _securityConfig.captchaSiteKey;
-          _captchaToken = null;
+          _invalidateCaptchaAfterFailedAttempt();
         });
         _showMessage(
           signIn.message ??
@@ -821,8 +919,9 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isSubmitting = false);
         final message = UserErrorMessages.friendlyError(error);
         final lower = message.toLowerCase();
-        // Turnstile tokens are single-use — always clear after a failed attempt.
-        setState(() => _captchaToken = null);
+        // Turnstile tokens are single-use — remount so UI cannot show Success
+        // while the app token is already cleared.
+        setState(_invalidateCaptchaAfterFailedAttempt);
         if (lower.contains('security check') || lower.contains('captcha')) {
           final refreshed =
               await SecurityConfigService.instance.fetch(forceRefresh: true);
@@ -2163,10 +2262,13 @@ class _LoginPageState extends State<LoginPage> {
             label: 'Login',
             icon: Icons.login_rounded,
             selected: _mode == _AuthMode.login,
-            onTap: () => setState(() {
-              _mode = _AuthMode.login;
-              _resetCaptchaChallenge();
-            }),
+            onTap: () {
+              setState(() {
+                _mode = _AuthMode.login;
+                _resetCaptchaChallenge();
+              });
+              _scheduleRegisterDraftSave();
+            },
           ),
         ),
         const SizedBox(width: AppSpacing.sm),
@@ -2175,10 +2277,13 @@ class _LoginPageState extends State<LoginPage> {
             label: 'Register',
             icon: Icons.person_add_alt_1_rounded,
             selected: _mode == _AuthMode.register,
-            onTap: () => setState(() {
-              _mode = _AuthMode.register;
-              _resetCaptchaChallenge();
-            }),
+            onTap: () {
+              setState(() {
+                _mode = _AuthMode.register;
+                _resetCaptchaChallenge();
+              });
+              _scheduleRegisterDraftSave();
+            },
           ),
         ),
       ],
@@ -2255,7 +2360,10 @@ class _LoginPageState extends State<LoginPage> {
               .toList(),
           onChanged: _isSubmitting
               ? null
-              : (value) => setState(() => _selectedDepartment = value),
+              : (value) {
+                  setState(() => _selectedDepartment = value);
+                  _scheduleRegisterDraftSave();
+                },
         ),
       ],
     );

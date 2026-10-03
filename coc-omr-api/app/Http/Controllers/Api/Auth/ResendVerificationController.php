@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\VerificationEmailSender;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Schema;
 
 class ResendVerificationController extends Controller
 {
@@ -30,7 +31,10 @@ class ResendVerificationController extends Controller
                 ? VerificationEmailSender::normalizePlatform((string) $request->input('client'))
                 : $user->preferredVerifyPlatform();
 
-            if (($user->signup_client ?? null) !== $client) {
+            if (
+                Schema::hasColumn('users', 'signup_client')
+                && ($user->signup_client ?? null) !== $client
+            ) {
                 $user->forceFill(['signup_client' => $client])->save();
             }
 

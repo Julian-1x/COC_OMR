@@ -4,6 +4,10 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
+/**
+ * Production safety: older deploys may have recorded the signup_client migration
+ * without the column existing (or DB was restored without it). Always ensure it.
+ */
 return new class extends Migration
 {
     public function up(): void
@@ -13,17 +17,12 @@ return new class extends Migration
         }
 
         Schema::table('users', function (Blueprint $table) {
-            // Where the teacher signed up: mobile app vs web portal.
-            // Verification emails only include that platform's link.
-            // No ->after() — PostgreSQL on Render ignores/quirks column order.
             $table->string('signup_client', 16)->default('web');
         });
     }
 
     public function down(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn('signup_client');
-        });
+        // Keep column — dropping would break verify-link platform routing.
     }
 };

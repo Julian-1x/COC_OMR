@@ -92,6 +92,12 @@ export async function fetchAuthUpstream(
       if (response.ok || !isRetryableStatus(response.status)) {
         return response;
       }
+      // Laravel often returns JSON 503 for app errors (register/mail). That is
+      // NOT a Render cold-start — surface the body instead of "Upstream 503".
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        return response;
+      }
       lastError = new Error(`Upstream ${response.status}`);
     } catch (error) {
       clearTimeout(timer);
