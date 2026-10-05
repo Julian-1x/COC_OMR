@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/archive_retention.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 
@@ -10,8 +11,35 @@ class PhoneArchiveService {
 
   static final PhoneArchiveService instance = PhoneArchiveService._();
 
-  Future<List<PhoneArchivePack>> listPacks() {
+  Future<List<PhoneArchivePack>> listPacks() async {
+    await purgeExpiredLocalPacks();
     return LocalDataStore.instance.fetchPhoneArchivePacks();
+  }
+
+  /// Permanently remove phone archive packs older than [ArchiveRetention.months].
+  Future<int> purgeExpiredLocalPacks() async {
+    if (kIsWeb) {
+      return 0;
+    }
+    final packs = await LocalDataStore.instance.fetchPhoneArchivePacks();
+    var removed = 0;
+    for (final pack in packs) {
+      if (!ArchiveRetention.isExpired(pack.createdAt)) {
+        continue;
+      }
+      try {
+        // Queue cloud deletions when possible, then drop the local pack.
+        await LocalDataStore.instance.permanentlyDeletePhoneArchivePack(pack.id);
+        removed++;
+      } catch (error) {
+        debugPrint('Expired archive purge failed (${pack.id}): $error');
+        try {
+          await LocalDataStore.instance.deletePhoneArchivePack(pack.id);
+          removed++;
+        } catch (_) {}
+      }
+    }
+    return removed;
   }
 
   Future<int> pendingCount() {

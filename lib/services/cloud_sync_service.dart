@@ -88,6 +88,12 @@ class CloudSyncService {
     }
 
     await LocalDataStore.instance.processPendingDeletions();
+    // Drop phone packs past the 4-month archive retention window.
+    try {
+      await PhoneArchiveService.instance.purgeExpiredLocalPacks();
+    } catch (error) {
+      debugPrint('Expired phone archive purge skipped: $error');
+    }
     // Soft-archived packs → cloud archive → purge phone storage (2A).
     try {
       await PhoneArchiveService.instance.uploadAndPurge(requireOnline: false);

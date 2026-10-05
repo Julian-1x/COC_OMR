@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/api_service.dart';
+import 'package:omr_app/services/archive_retention.dart';
 import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
@@ -183,7 +184,9 @@ class _PhoneArchivePageState extends State<PhoneArchivePage> {
                           'When you remove a student or class, it lands here with scores '
                           'so you can restore offline.\n\n'
                           'When you are online, Sync Now (or Upload & clear) moves items '
-                          'to the web portal and frees phone storage.',
+                          'to the web portal and frees phone storage.\n\n'
+                          'Items left here longer than ${ArchiveRetention.months} months '
+                          'are permanently deleted.',
                           textAlign: TextAlign.center,
                           style: TextStyle(color: AppColors.brandMuted),
                         ),
@@ -202,10 +205,11 @@ class _PhoneArchivePageState extends State<PhoneArchivePage> {
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: AppColors.brandBorder),
                       ),
-                      child: const Text(
+                      child: Text(
                         'These items are only on this phone until you upload. '
-                        'Restore works offline. After upload, restore from the web when online.',
-                        style: TextStyle(
+                        'Restore works offline. After upload, restore from the web within '
+                        '${ArchiveRetention.months} months — then they are permanently deleted.',
+                        style: const TextStyle(
                           fontWeight: FontWeight.w600,
                           color: AppColors.brandText,
                         ),
@@ -213,6 +217,14 @@ class _PhoneArchivePageState extends State<PhoneArchivePage> {
                     ),
                     const SizedBox(height: 12),
                     ..._packs.map((pack) {
+                      final deleteOn = ArchiveRetention.deleteAfter(pack.createdAt);
+                      final daysLeft =
+                          deleteOn.difference(DateTime.now()).inDays;
+                      final retentionNote = daysLeft <= 0
+                          ? 'Due for permanent delete'
+                          : daysLeft == 1
+                              ? 'Deletes in 1 day if not uploaded/restored'
+                              : 'Deletes in $daysLeft days if not uploaded/restored';
                       return Card(
                         margin: const EdgeInsets.only(bottom: 10),
                         child: ListTile(
@@ -222,9 +234,10 @@ class _PhoneArchivePageState extends State<PhoneArchivePage> {
                           ),
                           subtitle: Text(
                             '${pack.subtitle}\n'
+                            '$retentionNote\n'
                             'Saved ${_formatWhen(pack.createdAt)}',
                           ),
-                          isThreeLine: true,
+                          isThreeLine: false,
                           trailing: Wrap(
                             spacing: 4,
                             children: [

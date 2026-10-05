@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Portal;
 
 use App\Http\Controllers\Controller;
 use App\Models\Section;
+use App\Services\ArchiveRetentionService;
 use App\Services\TeacherScopeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,10 +13,15 @@ class SectionController extends Controller
 {
     public function __construct(
         private readonly TeacherScopeService $scope,
+        private readonly ArchiveRetentionService $archiveRetention,
     ) {}
 
     public function index(Request $request): JsonResponse
     {
+        if ($request->boolean('archived')) {
+            $this->archiveRetention->purgeExpired($request->user()->id);
+        }
+
         $query = $this->scope->sectionsQuery($request->user())->orderBy('name');
 
         if ($request->boolean('archived')) {
@@ -30,6 +36,7 @@ class SectionController extends Controller
 
         return response()->json([
             'sections' => $query->get(),
+            'archive_retention_months' => ArchiveRetentionService::retentionMonths(),
         ]);
     }
 
