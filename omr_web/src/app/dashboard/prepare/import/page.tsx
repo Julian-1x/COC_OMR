@@ -1,14 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { PageSkeleton } from "@/components/page-skeleton";
+import { FileUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/input";
 import { commitRosterImport } from "@/lib/actions/roster";
-import { previewImportRows, parseCsvText, parseXlsxBuffer } from "@/lib/import/roster";
+import {
+  previewImportRows,
+  parseCsvText,
+  parseXlsxBuffer,
+  type ImportPreview,
+} from "@/lib/import/roster";
 import {
   commonTermLabels,
   defaultTermLabel,
@@ -17,21 +22,79 @@ import {
 } from "@/lib/academic-term";
 import { downloadText } from "@/lib/utils";
 import { SyncLoopNotice } from "@/components/desk-notices";
+import {
+  clearSessionKey,
+  readJsonPref,
+  readSessionJson,
+  writeJsonPref,
+  writeSessionJson,
+} from "@/lib/ui-prefs";
+
+const IMPORT_PREFS_KEY = "coc-omr-import-prefs-v1";
+const IMPORT_DRAFT_KEY = "coc-omr-import-draft-v1";
+
+type ImportPrefs = {
+  schoolYear?: string;
+  termLabel?: string;
+};
+
+type ImportDraft = {
+  fileName?: string | null;
+  preview?: ImportPreview | null;
+};
 
 export default function ImportRosterPage() {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [previewCount, setPreviewCount] = useState(0);
-  const [pendingRows, setPendingRows] = useState<ReturnType<typeof previewImportRows> | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [pendingRows, setPendingRows] = useState<ImportPreview | null>(null);
   const [schoolYear, setSchoolYear] = useState(schoolYearForDate());
   const [termLabel, setTermLabel] = useState(defaultTermLabel());
+  const [hydrated, setHydrated] = useState(false);
   const yearOptions = schoolYearOptions();
+
+  useEffect(() => {
+    const prefs = readJsonPref<ImportPrefs>(IMPORT_PREFS_KEY);
+    if (prefs?.schoolYear) setSchoolYear(prefs.schoolYear);
+    if (prefs?.termLabel) setTermLabel(prefs.termLabel);
+
+    const draft = readSessionJson<ImportDraft>(IMPORT_DRAFT_KEY);
+    if (draft?.preview?.rows?.length) {
+      setPendingRows(draft.preview);
+      setPreviewCount(draft.preview.rows.length);
+      setFileName(draft.fileName ?? "Restored preview");
+      setMessage(
+        `Restored unfinished import preview (${draft.preview.rows.length} students). Commit or choose a new file.`,
+      );
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    writeJsonPref(IMPORT_PREFS_KEY, { schoolYear, termLabel });
+  }, [schoolYear, termLabel, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!pendingRows?.rows?.length) {
+      clearSessionKey(IMPORT_DRAFT_KEY);
+      return;
+    }
+    writeSessionJson(IMPORT_DRAFT_KEY, {
+      fileName,
+      preview: pendingRows,
+    } satisfies ImportDraft);
+  }, [pendingRows, fileName, hydrated]);
 
   async function handleFile(file: File) {
     setError(null);
     setMessage(null);
+    setFileName(file.name);
     const ext = file.name.split(".").pop()?.toLowerCase();
     let raw: unknown[][] = [];
     if (ext === "csv") {
@@ -39,12 +102,23 @@ export default function ImportRosterPage() {
     } else if (ext === "xlsx") {
       raw = parseXlsxBuffer(await file.arrayBuffer());
     } else {
+      setPendingRows(null);
+      setPreviewCount(0);
       setError("Use a .csv or .xlsx file.");
       return;
     }
     const preview = previewImportRows(raw);
-    setPendingRows(preview);
     setPreviewCount(preview.rows.length);
+    if (preview.rows.length === 0) {
+      setPendingRows(null);
+      setError(
+        preview.errors.length
+          ? preview.errors.join(" ")
+          : "No students found. Use a Class List Report with Student ID, Student Name, and Section.",
+      );
+      return;
+    }
+    setPendingRows(preview);
     if (preview.errors.length) setError(preview.errors.join(" "));
   }
 
@@ -59,6 +133,9 @@ export default function ImportRosterPage() {
       );
       setPendingRows(null);
       setPreviewCount(0);
+      setFileName(null);
+      clearSessionKey(IMPORT_DRAFT_KEY);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed.");
@@ -99,7 +176,7 @@ export default function ImportRosterPage() {
             </select>
           </div>
           <div>
-            <Label htmlFor="term">Term</Label>
+            <Label htmlFor="term">Semester</Label>
             <select
               id="term"
               value={termLabel}
@@ -115,28 +192,66 @@ export default function ImportRosterPage() {
           </div>
         </div>
         <p className="mb-4 text-xs font-medium text-slate-500">
-          New sections from this import are tagged with this school year and term.
+          Each school year has 1st Sem and 2nd Sem (Summer optional). New sections from this
+          import are tagged with the year and semester you pick. Year and semester are remembered
+          for next time.
         </p>
         <Label htmlFor="roster">Roster file</Label>
         <input
           id="roster"
+          ref={fileInputRef}
           type="file"
           accept=".csv,.xlsx"
-          className="mt-2 block w-full text-sm"
+          className="sr-only"
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) void handleFile(file);
           }}
         />
-        {previewCount > 0 ? (
-          <p className="mt-3 text-sm font-semibold text-slate-700">{previewCount} students ready to import.</p>
-        ) : null}
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading}
+          >
+            <FileUp className="h-4 w-4" />
+            Choose roster file
+          </Button>
+          <span className="text-sm font-semibold text-slate-600">
+            {fileName ?? "No file chosen yet (.xlsx or .csv)"}
+          </span>
+        </div>
         {error ? <p className="mt-3 text-sm font-semibold text-red-600">{error}</p> : null}
         {message ? <p className="mt-3 text-sm font-semibold text-emerald-700">{message}</p> : null}
-        <div className="mt-4 flex gap-2">
-          <Button type="button" disabled={!pendingRows || loading} onClick={() => void commitImport()}>
-            {loading ? "Importing…" : "Commit import"}
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            disabled={!pendingRows || previewCount < 1 || loading}
+            onClick={() => void commitImport()}
+          >
+            {loading
+              ? "Importing…"
+              : previewCount > 0
+                ? `Commit import (${previewCount})`
+                : "Commit import"}
           </Button>
+          {pendingRows ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={loading}
+              onClick={() => {
+                setPendingRows(null);
+                setPreviewCount(0);
+                setFileName(null);
+                setMessage(null);
+                clearSessionKey(IMPORT_DRAFT_KEY);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+            >
+              Clear preview
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="secondary"

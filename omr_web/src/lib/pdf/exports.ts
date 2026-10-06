@@ -13,6 +13,7 @@ export type { QuestionAnalysis } from "@/lib/omr/item-analysis";
 export {
   buildStudentFeedbackRows,
   exportStudentFeedbackPdf,
+  type FeedbackQuestion,
   type MissedQuestion,
   type StudentFeedbackRow,
 } from "@/lib/omr/student-feedback";

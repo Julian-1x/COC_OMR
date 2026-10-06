@@ -4,12 +4,12 @@ import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BrandHeader } from "@/components/brand";
+import { PasswordField } from "@/components/auth/password-field";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { isApiConfigured, apiConfigHint } from "@/lib/api/env";
 import {
   PASSWORD_MIN_LENGTH,
-  PASSWORD_REQUIREMENT_HINT,
   passwordValidationError,
 } from "@/lib/auth/password-rules";
 import { workspaceName } from "@/lib/theme";
@@ -117,28 +117,26 @@ function ResetPasswordForm() {
           </div>
 
           <div className="mb-3">
-            <Label htmlFor="password">New password</Label>
-            <Input
+            <PasswordField
               id="password"
-              type="password"
+              label="Enter new password"
               autoComplete="new-password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={setPassword}
               minLength={PASSWORD_MIN_LENGTH}
               required
               disabled={linkInvalid}
+              showChecklist
             />
-            <p className="mt-1 text-xs text-slate-500">{PASSWORD_REQUIREMENT_HINT}</p>
           </div>
 
           <div className="mb-4">
-            <Label htmlFor="password_confirmation">Confirm new password</Label>
-            <Input
+            <PasswordField
               id="password_confirmation"
-              type="password"
+              label="Confirm new password"
               autoComplete="new-password"
               value={passwordConfirmation}
-              onChange={(e) => setPasswordConfirmation(e.target.value)}
+              onChange={setPasswordConfirmation}
               minLength={PASSWORD_MIN_LENGTH}
               required
               disabled={linkInvalid}

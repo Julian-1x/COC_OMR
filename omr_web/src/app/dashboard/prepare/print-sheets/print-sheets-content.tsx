@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label, Select } from "@/components/ui/input";
 import { AnswerKeyScopeBadge } from "@/components/answer-key-scope-badge";
 import { SyncLoopNotice } from "@/components/desk-notices";
 import { createBrowserApiClient } from "@/lib/api/laravel-client";
-import { fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
+import { fetchSections, fetchStudents, fetchSubjects, upsertSubject } from "@/lib/api/data";
 import { slowApiLoadingMessage, useSlowApiLoad } from "@/lib/api/use-slow-api-load";
 import type { DbSubject, DbStudent } from "@/lib/types/database";
 import { generateAnswerSheetsPdf } from "@/lib/pdf/answer-sheet";
@@ -20,12 +20,13 @@ import {
   liveSectionsForSubject,
 } from "@/lib/omr/answer-key-scope";
 import { canPrintOnWeb, resolvePrintLayout, webPrintBlockedReason } from "@/lib/omr/layout-profile";
+import { defaultPassingPoints, todayExamDateIso } from "@/lib/omr/passing-score";
 import { downloadBlob } from "@/lib/utils";
 
 function formatExamDateLabel(examDate: string | null | undefined): string {
-  if (!examDate) return "Exam date not set (optional)";
+  if (!examDate) return "Exam date will be stamped today when you print";
   const dateOnly = examDate.slice(0, 10);
-  return `Exam date set (${dateOnly})`;
+  return `Exam date from last print (${dateOnly}) — reprint stamps today’s date`;
 }
 
 export default function PrintSheetsPage() {
@@ -177,10 +178,9 @@ export default function PrintSheetsPage() {
         optional: sectionStudents.length === 0,
       },
       {
-        ok: Boolean(subject?.exam_date),
+        ok: true,
         label: formatExamDateLabel(subject?.exam_date),
-        fix: subject ? `/dashboard/prepare/answer-keys/${subject.local_id}` : undefined,
-        optional: !subject?.exam_date,
+        optional: true,
       },
     ];
   }, [subject, sectionValid, sectionOnKey, sectionStudents, sectionName, scope, printReady, printLayoutLabel]);
@@ -206,7 +206,12 @@ export default function PrintSheetsPage() {
       setPreviewLoading(true);
       setPreviewError(null);
       try {
-        const bytes = await generateAnswerSheetsPdf(subject!, sectionName, 1);
+        const previewSubject = {
+          ...subject!,
+          exam_date: todayExamDateIso(),
+          passing_score: defaultPassingPoints(subject!.total_questions),
+        };
+        const bytes = await generateAnswerSheetsPdf(previewSubject, sectionName, 1);
         if (cancelled) return;
         const blob = new Blob([Uint8Array.from(bytes)], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
@@ -241,20 +246,6 @@ export default function PrintSheetsPage() {
 
   const defaultCopyCount = Math.max(1, sectionStudents.length);
 
-  const generateFullPdf = useCallback(
-    async (copies: number) => {
-      if (!subject || !sectionValid) {
-        throw new Error("Choose a valid subject and section.");
-      }
-      if (blockers.length > 0) {
-        throw new Error("Fix the checklist items below before printing.");
-      }
-      const count = Math.max(1, Math.min(copies, 200));
-      return generateAnswerSheetsPdf(subject, sectionName, count);
-    },
-    [subject, sectionValid, blockers.length, sectionName],
-  );
-
   function openCopyDialog() {
     if (!subject || blockers.length > 0) {
       setError("Fix the checklist items below before printing.");
@@ -272,10 +263,33 @@ export default function PrintSheetsPage() {
     setLoading(true);
     setError(null);
     try {
-      const bytes = await generateFullPdf(copies);
+      const stampedDate = todayExamDateIso();
+      const stampedSubject: DbSubject = {
+        ...subject,
+        exam_date: stampedDate,
+        passing_score: defaultPassingPoints(subject.total_questions),
+      };
+      const api = createBrowserApiClient();
+      await upsertSubject(api, "", {
+        local_id: stampedSubject.local_id,
+        name: stampedSubject.name,
+        answer_key: stampedSubject.answer_key,
+        total_questions: stampedSubject.total_questions,
+        section_names: stampedSubject.section_names,
+        section_qr_data: stampedSubject.section_qr_data ?? {},
+        exam_date: stampedDate,
+        passing_score: stampedSubject.passing_score,
+        use_partial_credit: stampedSubject.use_partial_credit,
+      });
+      setSubjects((prev) =>
+        prev.map((row) =>
+          row.local_id === stampedSubject.local_id ? { ...row, ...stampedSubject } : row,
+        ),
+      );
+      const bytes = await generateAnswerSheetsPdf(stampedSubject, sectionName, copies);
       downloadBlob(
         new Blob([Uint8Array.from(bytes)], { type: "application/pdf" }),
-        `${subject.name}_${sectionName}_${copies}copies.pdf`,
+        `${stampedSubject.name}_${sectionName}_${copies}copies.pdf`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "PDF failed.");

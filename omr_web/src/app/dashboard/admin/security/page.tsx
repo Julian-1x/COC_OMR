@@ -10,7 +10,16 @@ function formatEvent(event: string): string {
 
 function formatWhen(iso: string): string {
   try {
-    return new Date(iso).toLocaleString();
+    return new Date(iso).toLocaleString("en-PH", {
+      timeZone: "Asia/Manila",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
   } catch {
     return iso;
   }
@@ -40,7 +49,7 @@ export default async function AdminSecurityPage({
       <div className="mb-6">
         <h1 className="text-2xl font-extrabold text-slate-800">Sign-in activity</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Failed logins, lockouts, and two-factor events
+          Failed logins, lockouts, and two-factor events (times in Philippine time)
         </p>
         <p className="mt-2 text-sm">
           <Link href="/dashboard/admin" className="font-semibold text-emerald-700 hover:underline">
