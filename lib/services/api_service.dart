@@ -154,6 +154,7 @@ class ApiService {
 
   static const Duration _requestTimeout = Duration(seconds: 15);
   static const Duration _authRequestTimeout = Duration(seconds: 45);
+  static const Duration _syncRequestTimeout = Duration(seconds: 45);
   static const Duration _mfaRequestTimeout = Duration(seconds: 90);
 
   static bool _isAuthBootstrapPath(String path) =>
@@ -161,15 +162,46 @@ class ApiService {
       path == '/register' ||
       path.startsWith('/login/mfa');
 
+  /// Sync/snapshot can hit a cold Render + Neon first request after login.
+  static bool _isSyncPath(String path) => path.startsWith('/sync');
+
   static bool _isRetryableStatus(int status) =>
       status == 500 || status == 502 || status == 503 || status == 504;
 
-  /// Wakes free-tier cloud hosts (Render) before login/register/MFA.
+  static DateTime? _lastWakeAt;
+  static Future<void>? _wakeInFlight;
+
+  /// Wakes free-tier cloud hosts (Render) before login/register/MFA/sync.
+  /// Debounced so a sync batch does not hit /up before every row upload.
   static Future<void> _wakeSchoolApi() async {
+    final last = _lastWakeAt;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 90)) {
+      return;
+    }
+    final inFlight = _wakeInFlight;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+
+    final future = _wakeSchoolApiNow();
+    _wakeInFlight = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_wakeInFlight, future)) {
+        _wakeInFlight = null;
+      }
+    }
+  }
+
+  static Future<void> _wakeSchoolApiNow() async {
     final uri = Uri.parse('$_normalizedBaseUrl/up');
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
         await http.get(uri).timeout(const Duration(seconds: 25));
+        _lastWakeAt = DateTime.now();
         return;
       } catch (_) {
         if (attempt + 1 < 3) {
@@ -188,17 +220,18 @@ class ApiService {
     _ensureConfigured();
 
     final isAuthBootstrap = !auth && _isAuthBootstrapPath(path);
-    if (isAuthBootstrap) {
+    final isSyncPath = auth && _isSyncPath(path);
+    if (isAuthBootstrap || isSyncPath) {
       await _wakeSchoolApi();
     }
 
     final isMfaPath = !auth && path.startsWith('/login/mfa');
     final timeout = isMfaPath
         ? _mfaRequestTimeout
-        : isAuthBootstrap
-            ? _authRequestTimeout
+        : (isAuthBootstrap || isSyncPath)
+            ? (isSyncPath ? _syncRequestTimeout : _authRequestTimeout)
             : _requestTimeout;
-    final maxAttempts = isAuthBootstrap ? 4 : 1;
+    final maxAttempts = (isAuthBootstrap || isSyncPath) ? 4 : 1;
     ApiException? lastError;
 
     for (var attempt = 0; attempt < maxAttempts; attempt++) {

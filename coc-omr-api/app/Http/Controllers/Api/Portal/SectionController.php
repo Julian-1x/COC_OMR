@@ -19,7 +19,11 @@ class SectionController extends Controller
     public function index(Request $request): JsonResponse
     {
         if ($request->boolean('archived')) {
-            $this->archiveRetention->purgeExpired($request->user()->id);
+            try {
+                $this->archiveRetention->purgeExpired($request->user()->id);
+            } catch (\Throwable $exception) {
+                report($exception);
+            }
         }
 
         $query = $this->scope->sectionsQuery($request->user())->orderBy('name');

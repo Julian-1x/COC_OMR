@@ -17,8 +17,12 @@ class SnapshotController extends Controller
 
     public function __invoke(Request $request): JsonResponse
     {
-        // Opportunistic purge (Render free often has no cron scheduler).
-        $this->archiveRetention->purgeExpired($request->user()->id);
+        // Opportunistic purge must never break sync (Neon/pooler quirks).
+        try {
+            $this->archiveRetention->purgeExpired($request->user()->id);
+        } catch (\Throwable $exception) {
+            report($exception);
+        }
 
         $snapshot = $this->snapshotService->buildForTeacher($request->user());
 

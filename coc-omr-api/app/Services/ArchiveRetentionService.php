@@ -6,8 +6,8 @@ use App\Models\Deadline;
 use App\Models\ScanResult;
 use App\Models\Section;
 use App\Models\Student;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Permanently delete soft-archived sections/students after the retention window.
@@ -38,14 +38,21 @@ class ArchiveRetentionService
         $scansDeleted = 0;
         $deadlinesDeleted = 0;
 
-        DB::transaction(function () use (
-            $cutoff,
-            $ownerTeacherId,
-            &$studentsDeleted,
-            &$sectionsDeleted,
-            &$scansDeleted,
-            &$deadlinesDeleted,
-        ) {
+        // Skip if catch-up migrations have not landed yet (same pattern as signup_client).
+        $studentsHaveArchive = Schema::hasColumn('students', 'archived_at');
+        $sectionsHaveArchive = Schema::hasColumn('sections', 'archived_at');
+        if (!$studentsHaveArchive && !$sectionsHaveArchive) {
+            return [
+                'students' => 0,
+                'sections' => 0,
+                'scan_results' => 0,
+                'deadlines' => 0,
+            ];
+        }
+
+        // No wrapping transaction — Neon/PgBouncer can abort the whole TX (25P02)
+        // and then break /sync/snapshot for teachers.
+        if ($studentsHaveArchive) {
             $studentQuery = Student::query()
                 ->whereNotNull('archived_at')
                 ->where('archived_at', '<=', $cutoff);
@@ -69,7 +76,9 @@ class ArchiveRetentionService
                     ->whereIn('id', $expiredStudents->pluck('id'))
                     ->delete();
             }
+        }
 
+        if ($sectionsHaveArchive) {
             $sectionQuery = Section::query()
                 ->whereNotNull('archived_at')
                 ->where('archived_at', '<=', $cutoff);
@@ -89,7 +98,7 @@ class ArchiveRetentionService
                     ->whereIn('id', $expiredSections->pluck('id'))
                     ->delete();
             }
-        });
+        }
 
         if ($studentsDeleted + $sectionsDeleted > 0) {
             Log::info('archive_retention_purged', [

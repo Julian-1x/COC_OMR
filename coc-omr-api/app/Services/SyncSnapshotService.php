@@ -8,6 +8,7 @@ use App\Models\Section;
 use App\Models\Student;
 use App\Models\Subject;
 use App\Models\User;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class SyncSnapshotService
@@ -18,12 +19,16 @@ class SyncSnapshotService
     public function buildForTeacher(User $user): array
     {
         $ownerId = $user->id;
+        $sectionsHaveArchive = Schema::hasColumn('sections', 'archived_at');
+        $studentsHaveArchive = Schema::hasColumn('students', 'archived_at');
 
-        $sections = Section::query()
+        $sectionsQuery = Section::query()
             ->where('owner_teacher_id', $ownerId)
-            ->whereNull('archived_at')
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+        if ($sectionsHaveArchive) {
+            $sectionsQuery->whereNull('archived_at');
+        }
+        $sections = $sectionsQuery->get();
 
         $activeSectionNames = $sections
             ->pluck('name')
@@ -41,12 +46,14 @@ class SyncSnapshotService
             ];
         }
 
-        $students = Student::query()
+        $studentsQuery = Student::query()
             ->where('owner_teacher_id', $ownerId)
             ->whereIn('section_name', $activeSectionNames)
-            ->whereNull('archived_at')
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+        if ($studentsHaveArchive) {
+            $studentsQuery->whereNull('archived_at');
+        }
+        $students = $studentsQuery->get();
 
         $activeOmrIds = $students->pluck('omr_id')->all();
         $activeSectionSet = collect($activeSectionNames)
