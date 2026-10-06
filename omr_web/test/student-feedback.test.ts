@@ -69,7 +69,7 @@ function scan(partial: Partial<DbScanResult> & Pick<DbScanResult, "student_omr_i
 }
 
 describe("buildStudentFeedbackRows", () => {
-  it("returns empty missed list when all answers are correct", () => {
+  it("lists every question when all answers are correct", () => {
     const rows = buildStudentFeedbackRows(
       subject,
       [
@@ -83,11 +83,12 @@ describe("buildStudentFeedbackRows", () => {
     );
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].missed).toEqual([]);
+    expect(rows[0].questions).toHaveLength(3);
+    expect(rows[0].questions.every((q) => q.status === "correct")).toBe(true);
     expect(rows[0].name).toBe("Ana Cruz");
   });
 
-  it("lists wrong answers with correct key on missed questions", () => {
+  it("includes correct and incorrect questions in one list", () => {
     const rows = buildStudentFeedbackRows(
       subject,
       [
@@ -100,18 +101,24 @@ describe("buildStudentFeedbackRows", () => {
       students,
     );
 
-    expect(rows[0].missed).toHaveLength(2);
-    expect(rows[0].missed[0]).toMatchObject({
+    expect(rows[0].questions).toHaveLength(3);
+    expect(rows[0].questions[0]).toMatchObject({
       questionNumber: 1,
       studentAnswer: "B",
       correctAnswer: "A",
-      partial: false,
+      status: "incorrect",
     });
-    expect(rows[0].missed[1]).toMatchObject({
+    expect(rows[0].questions[1]).toMatchObject({
+      questionNumber: 2,
+      studentAnswer: "B",
+      correctAnswer: "B",
+      status: "correct",
+    });
+    expect(rows[0].questions[2]).toMatchObject({
       questionNumber: 3,
       studentAnswer: "A",
       correctAnswer: "A or B",
-      partial: true,
+      status: "partial",
     });
   });
 
@@ -128,8 +135,9 @@ describe("buildStudentFeedbackRows", () => {
       students,
     );
 
-    const q1 = rows[0].missed.find((m) => m.questionNumber === 1);
+    const q1 = rows[0].questions.find((m) => m.questionNumber === 1);
     expect(q1?.studentAnswer).toBe("—");
+    expect(q1?.status).toBe("incorrect");
   });
 
   it("uses latest approved scan per student", () => {
@@ -153,8 +161,12 @@ describe("buildStudentFeedbackRows", () => {
     );
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].missed).toHaveLength(1);
-    expect(rows[0].missed[0].questionNumber).toBe(3);
+    expect(rows[0].questions).toHaveLength(3);
+    expect(rows[0].questions.filter((q) => q.status === "incorrect" || q.status === "partial")).toHaveLength(
+      1,
+    );
+    expect(rows[0].questions[2].questionNumber).toBe(3);
+    expect(rows[0].questions[2].status).toBe("partial");
   });
 
   it("excludes scans that still need review", () => {

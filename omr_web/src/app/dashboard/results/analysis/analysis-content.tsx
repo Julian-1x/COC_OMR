@@ -186,7 +186,7 @@ export function AnalysisContent({
       `Export student feedback PDF?\n\n` +
         `${feedbackRows.length} student${feedbackRows.length === 1 ? "" : "s"} in ${subject.name}` +
         (sectionLabel ? ` — ${sectionLabel}` : "") +
-        `.\n\nEach student gets one page with missed questions and correct answers.`,
+        `.\n\nEach student gets a full list of every recorded answer (correct and incorrect). Long exams may use more than one page.`,
     );
     if (!confirmed) return;
 

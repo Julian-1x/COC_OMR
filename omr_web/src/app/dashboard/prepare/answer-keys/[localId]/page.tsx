@@ -13,7 +13,6 @@ import { generateSubjectLocalId } from "@/lib/import/roster";
 import {
   defaultPassingPoints,
   formatPassingLabel,
-  passingPercent,
 } from "@/lib/omr/passing-score";
 import {
   formatCorrectAnswer,
@@ -36,8 +35,9 @@ export default function AnswerKeyEditorPage() {
 
   const [name, setName] = useState("");
   const [totalQuestions, setTotalQuestions] = useState(50);
-  const [passingScore, setPassingScore] = useState(() => defaultPassingPoints(50));
-  const [examDate, setExamDate] = useState("");
+  /** Preserved from cloud — stamped when sheets are printed, not edited here. */
+  const [examDate, setExamDate] = useState<string | null>(null);
+  const [useCustomLayout, setUseCustomLayout] = useState(false);
   const [usePartialCredit, setUsePartialCredit] = useState(false);
   const [allowMultiAnswer, setAllowMultiAnswer] = useState(false);
   const [sections, setSections] = useState<string[]>([]);
@@ -47,6 +47,7 @@ export default function AnswerKeyEditorPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fixedPassingScore = defaultPassingPoints(totalQuestions);
 
   useEffect(() => {
     async function load() {
@@ -60,17 +61,33 @@ export default function AnswerKeyEditorPage() {
           if (subject) {
             setName(subject.name);
             setTotalQuestions(subject.total_questions);
-            setPassingScore(subject.passing_score);
             setSections(subject.section_names ?? []);
             setAnswerKey(subject.answer_key ?? {});
             setSectionQrData(subject.section_qr_data ?? {});
-            setExamDate(subject.exam_date ?? "");
-            setUsePartialCredit(subject.use_partial_credit);
-            const hasMulti = Object.values(subject.answer_key ?? {}).some((v) => Array.isArray(v));
-            setAllowMultiAnswer(hasMulti);
+            setExamDate(subject.exam_date ?? null);
+            const isCustom = Boolean(subject.use_custom_layout);
+            setUseCustomLayout(isCustom);
+            setUsePartialCredit(isCustom && subject.use_partial_credit);
+            const hasMulti = Object.values(subject.answer_key ?? {}).some(
+              (v) => Array.isArray(v) && v.length > 1,
+            );
+            setAllowMultiAnswer(isCustom && hasMulti);
+            if (!isCustom && hasMulti) {
+              // Standard keys: collapse any legacy multi-letter items to one letter.
+              const collapsed: AnswerKeyMap = {};
+              for (const [q, value] of Object.entries(subject.answer_key ?? {})) {
+                if (Array.isArray(value) && value.length > 0) {
+                  collapsed[q] = value[0];
+                } else {
+                  collapsed[q] = value;
+                }
+              }
+              setAnswerKey(collapsed);
+            }
           }
         } else {
           setAnswerKey({});
+          setExamDate(null);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load.");
@@ -83,10 +100,6 @@ export default function AnswerKeyEditorPage() {
 
   function resizeKey(count: number) {
     setTotalQuestions(count);
-    setPassingScore((prev) => {
-      const pct = passingPercent(prev, totalQuestions);
-      return defaultPassingPoints(count) === prev ? prev : Math.max(1, Math.round((count * pct) / 100));
-    });
     setAnswerKey((prev) => {
       const next: AnswerKeyMap = {};
       for (let i = 1; i <= count; i++) {
@@ -118,23 +131,42 @@ export default function AnswerKeyEditorPage() {
         );
       }
       const multiCount = Object.values(answerKey).filter((v) => Array.isArray(v) && v.length > 1).length;
-      if (multiCount > 0 && !usePartialCredit && !allowMultiAnswer) {
+      if (!useCustomLayout && multiCount > 0) {
+        throw new Error(
+          "Standard answer keys allow one correct letter per item. Use a custom sheet on the phone for multi-answer exams.",
+        );
+      }
+      if (useCustomLayout && multiCount > 0 && !usePartialCredit && !allowMultiAnswer) {
         throw new Error("Multi-answer items need “Allow two correct answers” enabled.");
       }
       const api = createBrowserApiClient();
       const existing = await fetchSubjects(api);
       const localId = localIdParam ?? generateSubjectLocalId(existing);
 
+      let keyToSave = answerKey;
+      if (!useCustomLayout) {
+        const collapsed: AnswerKeyMap = {};
+        for (const [q, value] of Object.entries(answerKey)) {
+          if (Array.isArray(value) && value.length > 0) {
+            collapsed[q] = value[0];
+          } else {
+            collapsed[q] = value;
+          }
+        }
+        keyToSave = collapsed;
+      }
+
       await upsertSubject(api, "", {
         local_id: localId,
         name: name.trim(),
-        answer_key: answerKey,
+        answer_key: keyToSave,
         total_questions: totalQuestions,
         section_names: sections,
         section_qr_data: sectionQrData,
-        exam_date: examDate || null,
-        passing_score: passingScore,
-        use_partial_credit: usePartialCredit,
+        // Keep any print-stamped date; teachers do not set this here.
+        exam_date: examDate,
+        passing_score: defaultPassingPoints(totalQuestions),
+        use_partial_credit: useCustomLayout && usePartialCredit,
       });
 
       router.push("/dashboard/prepare/answer-keys");
@@ -192,59 +224,74 @@ export default function AnswerKeyEditorPage() {
                 Standard 30–100, or custom layouts synced from the phone
               </p>
             </div>
-            <div>
-              <Label htmlFor="pass">Minimum score to pass (points)</Label>
-              <Input
-                id="pass"
-                type="number"
-                min={1}
-                max={totalQuestions}
-                value={passingScore}
-                onChange={(e) => setPassingScore(parseInt(e.target.value, 10) || 1)}
-              />
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                Pass mark
+              </p>
+              <p className="mt-1 text-sm font-semibold text-slate-800">
+                {formatPassingLabel(fixedPassingScore, totalQuestions)}
+              </p>
               <p className="mt-1 text-xs text-slate-500">
-                {formatPassingLabel(passingScore, totalQuestions)} — same as the phone app
+                Fixed by the system (60%). Teachers cannot change this.
               </p>
             </div>
-            <div>
-              <Label htmlFor="exam">Exam date</Label>
-              <Input id="exam" type="date" value={examDate} onChange={(e) => setExamDate(e.target.value)} />
-            </div>
-            <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={allowMultiAnswer}
-                onChange={(e) => setAllowMultiAnswer(e.target.checked)}
-              />
-              <span>
-                Allow two correct answers per item
-                <span className="mt-0.5 block text-xs font-medium text-slate-500">
-                  Without this, each question has one correct letter.
-                </span>
-              </span>
-            </label>
-            <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={usePartialCredit}
-                onChange={(e) => setUsePartialCredit(e.target.checked)}
-              />
-              <span>
-                Use partial credit for multi-answer items
-                <span className="mt-0.5 block text-xs font-medium text-slate-500">
-                  Off = student must mark every correct option for full credit. On = partial points
-                  when some correct options are marked.
-                </span>
-              </span>
-            </label>
-            {allowMultiAnswer && !usePartialCredit ? (
-              <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
-                Multi-answer is on without partial credit: students need every correct bubble for
-                full credit on those items.
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                Exam date
               </p>
-            ) : null}
+              <p className="mt-1 text-sm font-semibold text-slate-800">
+                {examDate
+                  ? `Printed ${examDate.slice(0, 10)}`
+                  : "Set automatically when you print sheets"}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Not chosen here — the date is stamped on Print OMR sheets.
+              </p>
+            </div>
+            {useCustomLayout ? (
+              <>
+                <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={allowMultiAnswer}
+                    onChange={(e) => setAllowMultiAnswer(e.target.checked)}
+                  />
+                  <span>
+                    Allow two correct answers per item
+                    <span className="mt-0.5 block text-xs font-medium text-slate-500">
+                      Without this, each question has one correct letter.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={usePartialCredit}
+                    onChange={(e) => setUsePartialCredit(e.target.checked)}
+                  />
+                  <span>
+                    Use partial credit for multi-answer items
+                    <span className="mt-0.5 block text-xs font-medium text-slate-500">
+                      Off = student must mark every correct option for full credit. On = partial points
+                      when some correct options are marked.
+                    </span>
+                  </span>
+                </label>
+                {allowMultiAnswer && !usePartialCredit ? (
+                  <p className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+                    Multi-answer is on without partial credit: students need every correct bubble for
+                    full credit on those items.
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Standard sheets use one correct letter per item. Multi-answer and partial credit are
+                available on custom sheets from the phone (including 50-item custom layouts).
+              </p>
+            )}
             <div>
               <Label>Sections for this key</Label>
               <p className="mt-1 text-xs text-slate-500">
@@ -291,7 +338,7 @@ export default function AnswerKeyEditorPage() {
         <Card
           title="Answer key"
           subtitle={
-            allowMultiAnswer
+            useCustomLayout && allowMultiAnswer
               ? "Tap for primary answer; tap again for optional second acceptable answer"
               : "Tap a letter to set the correct option"
           }
@@ -318,7 +365,14 @@ export default function AnswerKeyEditorPage() {
                         key={letter}
                         type="button"
                         onClick={() =>
-                          setAnswerKey((prev) => toggleQuestionAnswer(prev, key, letter, allowMultiAnswer))
+                          setAnswerKey((prev) =>
+                            toggleQuestionAnswer(
+                              prev,
+                              key,
+                              letter,
+                              useCustomLayout && allowMultiAnswer,
+                            ),
+                          )
                         }
                         className={`h-8 w-8 rounded-lg text-xs font-extrabold ${
                           isAnswerSelected(answerKey, key, letter)

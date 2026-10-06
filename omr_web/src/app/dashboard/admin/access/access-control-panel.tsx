@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import {
   isAccessAdminRole,
@@ -13,8 +13,32 @@ import {
 } from "@/lib/api/admin";
 import { approveTeacherAction, deleteTeacherAction, revokeTeacherAction } from "./actions";
 import { Input, Label } from "@/components/ui/input";
+import { readJsonPref, writeJsonPref } from "@/lib/ui-prefs";
 
 type DeleteTarget = { id: string; full_name: string; email: string | null };
+
+const ACCESS_FILTERS_KEY = "coc-omr-access-filters-v1";
+
+type AccessFilters = {
+  search?: string;
+  department?: string;
+  focus?: "all" | "pending" | "approved" | "revoked";
+};
+
+function matchesTeacher(
+  teacher: { full_name?: string | null; email?: string | null; department?: string | null },
+  search: string,
+  department: string,
+): boolean {
+  const q = search.trim().toLowerCase();
+  const dept = department.trim().toLowerCase();
+  if (dept && (teacher.department ?? "").trim().toLowerCase() !== dept) {
+    return false;
+  }
+  if (!q) return true;
+  const hay = `${teacher.full_name ?? ""} ${teacher.email ?? ""} ${teacher.department ?? ""}`.toLowerCase();
+  return hay.includes(q);
+}
 
 export function AccessControlPanel({
   pending,
@@ -39,6 +63,51 @@ export function AccessControlPanel({
   const [isPending, startTransition] = useTransition();
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteEmailTyped, setDeleteEmailTyped] = useState("");
+  const [search, setSearch] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("");
+  const [focus, setFocus] = useState<AccessFilters["focus"]>("all");
+  const [filtersReady, setFiltersReady] = useState(false);
+
+  useEffect(() => {
+    const saved = readJsonPref<AccessFilters>(ACCESS_FILTERS_KEY);
+    if (saved?.search) setSearch(saved.search);
+    if (saved?.department) setDepartmentFilter(saved.department);
+    if (saved?.focus) setFocus(saved.focus);
+    setFiltersReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    writeJsonPref(ACCESS_FILTERS_KEY, {
+      search,
+      department: departmentFilter,
+      focus,
+    } satisfies AccessFilters);
+  }, [search, departmentFilter, focus, filtersReady]);
+
+  const departmentOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const list of [pending, approved, revoked]) {
+      for (const t of list) {
+        const d = t.department?.trim();
+        if (d) set.add(d);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [pending, approved, revoked]);
+
+  const filteredPending = useMemo(
+    () => pending.filter((t) => matchesTeacher(t, search, departmentFilter)),
+    [pending, search, departmentFilter],
+  );
+  const filteredApproved = useMemo(
+    () => approved.filter((t) => matchesTeacher(t, search, departmentFilter)),
+    [approved, search, departmentFilter],
+  );
+  const filteredRevoked = useMemo(
+    () => revoked.filter((t) => matchesTeacher(t, search, departmentFilter)),
+    [revoked, search, departmentFilter],
+  );
 
   function run(
     teacherId: string,
@@ -129,6 +198,10 @@ export function AccessControlPanel({
       ? `Dept: ${viewerDepartment}`
       : "Your department only";
 
+  const showPending = focus === "all" || focus === "pending";
+  const showApproved = focus === "all" || focus === "approved";
+  const showRevoked = focus === "all" || focus === "revoked";
+
   return (
     <div className="space-y-6">
       {error ? (
@@ -142,21 +215,89 @@ export function AccessControlPanel({
         </p>
       ) : null}
 
+      <section className="rounded-2xl border border-slate-200 bg-white p-4">
+        <h2 className="text-base font-extrabold text-slate-800">Find teachers</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Search and filters stay on this browser until you clear them.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="sm:col-span-2 lg:col-span-1">
+            <Label htmlFor="access-search">Search</Label>
+            <Input
+              id="access-search"
+              type="search"
+              placeholder="Name, email, or department"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          {viewerIsSuperAdmin ? (
+            <div>
+              <Label htmlFor="access-dept">Department</Label>
+              <select
+                id="access-dept"
+                value={departmentFilter}
+                onChange={(e) => setDepartmentFilter(e.target.value)}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+              >
+                <option value="">All departments</option>
+                {departmentOptions.map((dept) => (
+                  <option key={dept} value={dept}>
+                    {dept}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+          <div>
+            <Label htmlFor="access-focus">Show</Label>
+            <select
+              id="access-focus"
+              value={focus}
+              onChange={(e) => setFocus(e.target.value as AccessFilters["focus"])}
+              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+            >
+              <option value="all">All sections</option>
+              <option value="pending">Pending only</option>
+              <option value="approved">Approved only</option>
+              <option value="revoked">Revoked only</option>
+            </select>
+          </div>
+        </div>
+        {(search || departmentFilter || focus !== "all") && (
+          <button
+            type="button"
+            className="mt-3 text-xs font-bold text-emerald-700 hover:underline"
+            onClick={() => {
+              setSearch("");
+              setDepartmentFilter("");
+              setFocus("all");
+            }}
+          >
+            Clear filters
+          </button>
+        )}
+      </section>
+
+      {showPending ? (
       <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
         <h2 className="text-lg font-extrabold text-slate-800">Pending</h2>
         <p className="mt-1 text-sm text-slate-600">
           Approve sends them an email that they can sign in on the app or web.
           {scopeHint ? ` ${scopeHint}.` : ""}
         </p>
-        {pending.length === 0 ? (
+        {filteredPending.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">
-            {!viewerIsSuperAdmin
-              ? `None in ${viewerDepartment ?? "your department"}. Other departments need a super admin.`
-              : "No pending requests."}
+            {pending.length === 0
+              ? !viewerIsSuperAdmin
+                ? `None in ${viewerDepartment ?? "your department"}. Other departments need a super admin.`
+                : "No pending requests."
+              : "No pending teachers match these filters."}
           </p>
         ) : (
           <ul className="mt-4 space-y-3">
-            {pending.map((teacher) => (
+            {filteredPending.map((teacher) => (
               <li
                 key={teacher.id}
                 className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-white px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
@@ -183,11 +324,17 @@ export function AccessControlPanel({
           </ul>
         )}
       </section>
+      ) : null}
 
+      {showApproved ? (
       <section className="rounded-2xl border border-slate-200 bg-white p-4">
         <h2 className="text-lg font-extrabold text-slate-800">Approved</h2>
-        {approved.length === 0 ? (
-          <p className="mt-3 text-sm text-slate-500">No approved teachers yet.</p>
+        {filteredApproved.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">
+            {approved.length === 0
+              ? "No approved teachers yet."
+              : "No approved teachers match these filters."}
+          </p>
         ) : (
           <div className="mt-4 overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -201,7 +348,7 @@ export function AccessControlPanel({
                 </tr>
               </thead>
               <tbody>
-                {approved.map((teacher) => {
+                {filteredApproved.map((teacher) => {
                   const protectedAdmin = isAccessAdminRole(teacher.role);
                   const blockHint = isSuperAdminRole(teacher.role)
                     ? "Super admin"
@@ -245,13 +392,21 @@ export function AccessControlPanel({
           </div>
         )}
       </section>
+      ) : null}
 
-      {revoked.length > 0 ? (
+      {showRevoked ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-4">
           <h2 className="text-lg font-extrabold text-slate-800">Revoked</h2>
           <p className="mt-1 text-sm text-slate-600">Approve again to restore access.</p>
+          {filteredRevoked.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">
+              {revoked.length === 0
+                ? "No revoked teachers."
+                : "No revoked teachers match these filters."}
+            </p>
+          ) : (
           <ul className="mt-4 space-y-3">
-            {revoked.map((teacher) => (
+            {filteredRevoked.map((teacher) => (
               <li
                 key={teacher.id}
                 className="flex flex-col gap-3 rounded-xl border border-slate-200 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
@@ -276,6 +431,7 @@ export function AccessControlPanel({
               </li>
             ))}
           </ul>
+          )}
         </section>
       ) : null}
 

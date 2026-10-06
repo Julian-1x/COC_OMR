@@ -6,11 +6,12 @@ type Size = "md" | "lg";
 
 const variants: Record<Variant, string> = {
   primary:
-    "bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm disabled:bg-emerald-300",
+    "bg-emerald-500 text-white shadow-sm hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none",
   secondary:
-    "border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50",
-  ghost: "text-emerald-800 hover:bg-emerald-50",
-  danger: "bg-red-600 text-white hover:bg-red-700",
+    "border border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50 disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400",
+  ghost: "text-emerald-800 hover:bg-emerald-50 disabled:text-slate-400",
+  danger:
+    "bg-red-600 text-white hover:bg-red-700 disabled:bg-slate-200 disabled:text-slate-500",
 };
 
 const sizes: Record<Size, string> = {
@@ -37,7 +38,7 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-2xl font-extrabold transition disabled:cursor-not-allowed",
+        "inline-flex items-center justify-center gap-2 rounded-2xl font-extrabold transition disabled:cursor-not-allowed disabled:opacity-100",
         variants[variant],
         sizes[size],
         className,

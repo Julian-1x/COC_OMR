@@ -1,7 +1,9 @@
 import Link from "next/link";
-import { fetchStudents } from "@/lib/api/data";
+import { fetchSections, fetchStudents } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
+import { formatSectionTerm } from "@/lib/academic-term";
 import { SectionRosterPanel } from "./section-roster-panel";
+import { SectionTermControls } from "./section-term-controls";
 
 export default async function SectionDetailPage({
   params,
@@ -11,7 +13,22 @@ export default async function SectionDetailPage({
   const { name } = await params;
   const sectionName = decodeURIComponent(name);
   const { api } = await requireTeacherSession();
-  const students = await fetchStudents(api, sectionName);
+  const [students, allActive, allArchived] = await Promise.all([
+    fetchStudents(api, sectionName),
+    fetchSections(api, { archived: false }),
+    fetchSections(api, { archived: true }),
+  ]);
+  const section =
+    allActive.find((s) => s.name === sectionName) ??
+    allArchived.find((s) => s.name === sectionName) ??
+    null;
+  const termLine = section
+    ? formatSectionTerm({
+        school_year: section.school_year,
+        term_label: section.term_label,
+      })
+    : null;
+  const archived = Boolean(section?.archived_at);
 
   return (
     <>
@@ -20,8 +37,22 @@ export default async function SectionDetailPage({
           ← Back to classes
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">{sectionName}</h1>
-        <p className="mt-1 text-sm text-slate-500">{students.length} students</p>
+        <p className="mt-1 text-sm text-slate-500">
+          {students.length} students
+          {termLine ? ` · ${termLine}` : ""}
+          {archived ? " · Archived" : ""}
+        </p>
       </div>
+
+      {section ? (
+        <SectionTermControls
+          sectionId={section.id}
+          sectionName={sectionName}
+          schoolYear={section.school_year}
+          termLabel={section.term_label}
+          archived={archived}
+        />
+      ) : null}
 
       <div className="mb-4 flex flex-wrap gap-2">
         <Link
