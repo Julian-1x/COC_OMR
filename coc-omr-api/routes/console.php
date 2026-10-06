@@ -8,6 +8,6 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-// Render free tier may not run cron reliably — SnapshotController also purges
-// opportunistically. Keep the schedule for hosts that do run the scheduler.
+// Daily purge of archives past retention. Do not run this from /sync/snapshot —
+// sync must stay a read path. Portal Archived list still purges opportunistically.
 Schedule::command('omr:purge-expired-archives')->daily();

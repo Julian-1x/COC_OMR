@@ -726,12 +726,15 @@ class CloudAuthService {
         normalized.contains('html') ||
         normalized.startsWith('<!');
     if (genericServer &&
-        (error.statusCode == 500 ||
-            error.statusCode == 502 ||
-            error.statusCode == 503 ||
-            error.statusCode == 504)) {
-      return 'School server had a problem (may still be waking up). '
-          'Wait about a minute and try again.';
+        (error.statusCode == 502 || error.statusCode == 504)) {
+      return 'School server is waking up. Wait about a minute and try again.';
+    }
+    if (genericServer && error.statusCode == 503) {
+      return 'School server is busy. Try again in a moment.';
+    }
+    if (genericServer && error.statusCode == 500) {
+      return 'School server returned an error. Try again. '
+          'If this keeps happening, ask IT to check the API.';
     }
     if (apiMessage.isNotEmpty) {
       return apiMessage;

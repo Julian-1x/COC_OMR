@@ -12,18 +12,12 @@ class SnapshotController extends Controller
 {
     public function __construct(
         private readonly SyncSnapshotService $snapshotService,
-        private readonly ArchiveRetentionService $archiveRetention,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
-        // Opportunistic purge must never break sync (Neon/pooler quirks).
-        try {
-            $this->archiveRetention->purgeExpired($request->user()->id);
-        } catch (\Throwable $exception) {
-            report($exception);
-        }
-
+        // Read-only: never run archive purge here. Purge belongs to the
+        // scheduled command / portal archived list — sync must stay reliable.
         $snapshot = $this->snapshotService->buildForTeacher($request->user());
 
         return response()->json([

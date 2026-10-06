@@ -353,8 +353,8 @@ class ApiService {
         if (message is String && message.trim().isNotEmpty) {
           final trimmed = message.trim();
           if (trimmed.toLowerCase() == 'server error') {
-            return 'School server had a problem (may still be waking up). '
-                'Wait about a minute and try again.';
+            return 'School server returned an error. Try again. '
+                'If this keeps happening, ask IT to check the API.';
           }
           return trimmed;
         }
@@ -380,14 +380,14 @@ class ApiService {
     if (htmlTitle != null) {
       final title = htmlTitle.group(1)?.trim() ?? '';
       if (title.toLowerCase() == 'server error') {
-        return 'School server had a problem (may still be waking up). '
-            'Wait about a minute and try again.';
+        return 'School server returned an error. Try again. '
+            'If this keeps happening, ask IT to check the API.';
       }
     }
 
     if (response.statusCode == 500) {
-      return 'School server had a problem (may still be waking up). '
-          'Wait about a minute and try again.';
+      return 'School server returned an error. Try again. '
+          'If this keeps happening, ask IT to check the API.';
     }
     if (response.statusCode == 502 || response.statusCode == 504) {
       return 'School server is waking up. Wait about a minute and try again.';

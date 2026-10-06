@@ -680,6 +680,10 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     }
   }
 
+  /// Pull/push cloud data after a successful sign-in.
+  ///
+  /// Never surfaces as a red banner on the PIN unlock screen — sign-in already
+  /// succeeded; sync can retry from Settings / auto-sync.
   Future<void> _pullCloudData({required bool showErrors}) async {
     if (!ApiService.isReady) {
       return;
@@ -688,7 +692,8 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     try {
       await CloudSyncService.instance.syncAll();
     } catch (error) {
-      if (showErrors && mounted) {
+      debugPrint('Post-login sync deferred: $error');
+      if (showErrors && mounted && _stage != _LoginStage.offlineUnlock) {
         _showMessage(
           '${UserErrorMessages.friendlySyncError(error)} You can sync later from Settings.',
           isError: true,
@@ -833,7 +838,7 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         }
 
         await _clearRegisterDraft();
-        await _pullCloudData(showErrors: true);
+        await _pullCloudData(showErrors: false);
         if (!mounted) {
           return;
         }
@@ -907,7 +912,7 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         throw const CloudAuthException('Sign in failed. Try again.');
       }
 
-      await _pullCloudData(showErrors: true);
+      await _pullCloudData(showErrors: false);
       if (!mounted) {
         return;
       }
@@ -1008,7 +1013,7 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         }
       }
       await LocalDataStore.instance.claimUnownedDataForCurrentTeacher();
-      await _pullCloudData(showErrors: true);
+      await _pullCloudData(showErrors: false);
       if (!mounted) {
         return;
       }
@@ -1499,7 +1504,7 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         return;
       }
 
-      await _pullCloudData(showErrors: true);
+      await _pullCloudData(showErrors: false);
       if (!mounted) {
         return;
       }

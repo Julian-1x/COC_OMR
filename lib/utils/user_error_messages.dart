@@ -85,10 +85,14 @@ abstract final class UserErrorMessages {
 
   static String _friendlyApiMessage(String message) {
     final normalized = message.toLowerCase();
+    // Keep an honest wake tip only when the API client already said so.
+    if (normalized.contains('waking up')) {
+      return message;
+    }
     if (normalized.contains('server error') ||
         normalized.contains('server had a problem')) {
-      return 'School server had a problem (may still be waking up). '
-          'Wait about a minute and try again.';
+      return 'School server returned an error. Try Sync again. '
+          'If it keeps failing, ask IT to check the API logs.';
     }
     if (normalized.contains('credentials') ||
         normalized.contains('incorrect')) {
