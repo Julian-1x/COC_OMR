@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { EmptyState } from "@/components/dashboard-shell";
 import { Input } from "@/components/ui/input";
-import { displaySectionStudentCount, fetchSections } from "@/lib/api/data";
+import {
+  displaySectionStudentCount,
+  fetchSections,
+  fetchStudents,
+  studentCountsFromRoster,
+} from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
 import {
   commonTermLabels,
@@ -37,10 +42,16 @@ export default async function ClassesPage({
   const schoolYear = year?.trim() || undefined;
   const termFilter = term?.trim() || undefined;
   const { api } = await requireTeacherSession();
-  const sections = await fetchSections(api, {
-    archived: showArchived,
-    schoolYear,
-  });
+  const [sections, students] = await Promise.all([
+    fetchSections(api, {
+      archived: showArchived,
+      schoolYear,
+    }),
+    // Live roster counts — without this, Classes always shows "still syncing"
+    // whenever section.student_count > 0 (Prepare already did this correctly).
+    showArchived ? Promise.resolve([]) : fetchStudents(api),
+  ]);
+  const liveCounts = studentCountsFromRoster(students);
 
   const afterTerm = termFilter
     ? sections.filter((s) => (s.term_label ?? "").trim() === termFilter)
@@ -179,10 +190,13 @@ export default async function ClassesPage({
           archived={showArchived}
           groupByTerm={groupByTerm}
           sections={filtered.map((section) => {
-            const { count, rosterPending } = displaySectionStudentCount(
-              undefined,
-              section.student_count,
-            );
+            const live = liveCounts.get(section.name);
+            const { count, rosterPending } = showArchived
+              ? {
+                  count: section.student_count ?? live ?? 0,
+                  rosterPending: false,
+                }
+              : displaySectionStudentCount(live, section.student_count);
             return {
               id: section.id,
               name: section.name,
