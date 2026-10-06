@@ -30,6 +30,25 @@ class SyncSnapshotService
         }
         $sections = $sectionsQuery->get();
 
+        $archivedSections = collect();
+        if ($sectionsHaveArchive) {
+            $archivedSections = Section::query()
+                ->where('owner_teacher_id', $ownerId)
+                ->whereNotNull('archived_at')
+                ->orderBy('name')
+                ->get([
+                    'id',
+                    'name',
+                    'teacher',
+                    'student_count',
+                    'school_year',
+                    'term_label',
+                    'archived_at',
+                    'owner_teacher_id',
+                    'updated_at',
+                ]);
+        }
+
         $activeSectionNames = $sections
             ->pluck('name')
             ->filter(fn (string $name) => $name !== '')
@@ -39,6 +58,7 @@ class SyncSnapshotService
         if ($activeSectionNames === []) {
             return [
                 'sections' => $sections,
+                'archived_sections' => $archivedSections,
                 'students' => collect(),
                 'subjects' => collect(),
                 'scan_results' => collect(),
@@ -97,6 +117,7 @@ class SyncSnapshotService
 
         return [
             'sections' => $sections,
+            'archived_sections' => $archivedSections,
             'students' => $students,
             'subjects' => $subjects,
             'scan_results' => $scanResults,

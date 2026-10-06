@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Portal;
 use App\Http\Controllers\Controller;
 use App\Models\Section;
 use App\Services\ArchiveRetentionService;
+use App\Services\SectionPermanentDeleteService;
 use App\Services\TeacherScopeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,6 +15,7 @@ class SectionController extends Controller
     public function __construct(
         private readonly TeacherScopeService $scope,
         private readonly ArchiveRetentionService $archiveRetention,
+        private readonly SectionPermanentDeleteService $permanentDelete,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -107,10 +109,18 @@ class SectionController extends Controller
 
     public function destroy(Request $request, string $id): JsonResponse
     {
-        $section = Section::query()->findOrFail($id);
+        $section = $this->scope->sectionsQuery($request->user())->findOrFail($id);
         $this->authorize('delete', $section);
-        $section->delete();
 
-        return response()->json(['message' => 'Deleted.']);
+        try {
+            $summary = $this->permanentDelete->deleteArchived($section);
+        } catch (\InvalidArgumentException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
+        }
+
+        return response()->json([
+            'message' => 'Deleted permanently.',
+            'deleted' => $summary,
+        ]);
     }
 }

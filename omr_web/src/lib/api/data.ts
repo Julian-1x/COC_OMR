@@ -140,6 +140,11 @@ export async function updateSectionMeta(
   return section;
 }
 
+/** Permanently delete an archived section (and its cloud roster/scores). */
+export async function permanentlyDeleteSection(api: ApiClient, sectionId: string) {
+  await api.delete(`/sections/${sectionId}`);
+}
+
 export async function upsertStudent(
   api: ApiClient,
   _ownerId: string,

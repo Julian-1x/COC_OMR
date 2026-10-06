@@ -69,6 +69,27 @@ class CloudSyncService {
 
     final cloud = await _fetchCloudSnapshot();
     final merged = await LocalDataStore.instance.applyCloudSnapshot(cloud);
+    // Web-archived classes are omitted from the active snapshot; move them into
+    // Phone Archive so they leave the dashboard after Sync Now.
+    final archivedNames =
+        cloud.archivedSections.map((section) => section.name).toList();
+    if (archivedNames.isNotEmpty) {
+      try {
+        await PhoneArchiveService.instance.mirrorCloudArchivedSections(
+          archivedNames,
+        );
+      } catch (error) {
+        debugPrint('Cloud archive mirror failed: $error');
+      }
+    }
+    try {
+      await PhoneArchiveService.instance.dropPermanentlyDeletedCloudSections(
+        activeSectionNames: cloud.sections.map((section) => section.name),
+        archivedSectionNames: archivedNames,
+      );
+    } catch (error) {
+      debugPrint('Cloud permanent-delete reconcile failed: $error');
+    }
     await SyncPreferencesService.setLastPullAt(DateTime.now());
 
     return PullSummary(downloaded: cloud.total, merged: merged);
@@ -241,13 +262,20 @@ class CloudSyncService {
       response['sections'],
       _sectionFromCloudRow,
     );
+    final archivedSections = _mapRows(
+      response['archived_sections'],
+      _sectionFromCloudRow,
+    );
     final activeSectionNames = sections
         .map((section) => section.name)
         .where((name) => name.isNotEmpty)
         .toList();
 
     if (activeSectionNames.isEmpty) {
-      return CloudPullSnapshot(sections: sections);
+      return CloudPullSnapshot(
+        sections: sections,
+        archivedSections: archivedSections,
+      );
     }
 
     final studentsResponse = response['students'];
@@ -267,6 +295,7 @@ class CloudSyncService {
 
     return CloudPullSnapshot(
       sections: sections,
+      archivedSections: archivedSections,
       students: students,
       subjects: subjects,
       scanResults: scanResults,

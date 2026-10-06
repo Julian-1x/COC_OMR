@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState, useTransition } from "react";
-import { Archive, Hash, Printer, RotateCcw, Users } from "lucide-react";
+import { Archive, Hash, Printer, RotateCcw, Trash2, Users } from "lucide-react";
 import {
   ExpandableClassCard,
   type ExpandableClassSection,
@@ -13,7 +13,11 @@ import {
   sectionPrintSheetsHref,
 } from "@/lib/prepare-links";
 import { formatSectionTerm, termGroupKey, termGroupOrder } from "@/lib/academic-term";
-import { archiveSectionAction, restoreSection } from "@/lib/actions/sections";
+import {
+  archiveSectionAction,
+  permanentlyDeleteSectionAction,
+  restoreSection,
+} from "@/lib/actions/sections";
 import { archiveRetentionLabel } from "@/lib/archive-retention";
 
 export type ClassListItem = {
@@ -137,7 +141,14 @@ export function ClassesList({
                         />
                       </>
                     ) : (
-                      <RestoreSectionButton name={section.name} />
+                      <>
+                        <RestoreSectionButton name={section.name} />
+                        <DeleteArchivedSectionButton
+                          sectionId={section.id}
+                          name={section.name}
+                          studentCount={section.count}
+                        />
+                      </>
                     )}
                   </div>
                 </ExpandableClassCard>
@@ -167,7 +178,7 @@ function ArchiveSectionButton({
     const confirmed = window.confirm(
       `Archive "${name}" (${termLine})?\n\n` +
         `Scores and roster stay on the web under Archived.\n` +
-        `On the phone, this class disappears after the teacher taps Sync Now.\n\n` +
+        `On the phone, after Sync Now this class leaves the dashboard and appears in Phone Archive.\n\n` +
         `Tip: each school year has 1st Sem and 2nd Sem — archive when that semester ends.`,
     );
     if (!confirmed) return;
@@ -231,6 +242,61 @@ function RestoreSectionButton({ name }: { name: string }) {
       >
         <RotateCcw className="h-3.5 w-3.5" />
         {isPending ? "Restoring…" : "Restore"}
+      </button>
+      {error ? <span className="text-xs font-semibold text-red-600">{error}</span> : null}
+    </div>
+  );
+}
+
+function DeleteArchivedSectionButton({
+  sectionId,
+  name,
+  studentCount,
+}: {
+  sectionId: string;
+  name: string;
+  studentCount: number;
+}) {
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleDelete() {
+    const confirmed = window.confirm(
+      `Delete "${name}" forever?\n\n` +
+        `This permanently removes the class and its ${studentCount} student` +
+        `${studentCount === 1 ? "" : "s"} / scores from the school server.\n` +
+        `This cannot be undone. Phones drop it after Sync Now.`,
+    );
+    if (!confirmed) return;
+    const typed = window.prompt(
+      `Type DELETE to permanently remove "${name}" from the school server.`,
+    );
+    if (typed?.trim().toUpperCase() !== "DELETE") {
+      return;
+    }
+
+    setError(null);
+    startTransition(async () => {
+      try {
+        await permanentlyDeleteSectionAction({ sectionId, sectionName: name });
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Could not delete. Try again.",
+        );
+      }
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={isPending}
+        className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-800 hover:border-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        {isPending ? "Deleting…" : "Delete forever"}
       </button>
       {error ? <span className="text-xs font-semibold text-red-600">{error}</span> : null}
     </div>

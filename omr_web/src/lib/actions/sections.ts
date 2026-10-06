@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireTeacherSession } from "@/lib/api/session";
 import {
   archiveSection,
+  permanentlyDeleteSection,
   unarchiveSection,
   updateSectionMeta,
 } from "@/lib/api/data";
@@ -27,6 +28,22 @@ export async function restoreSection(name: string) {
 
   await unarchiveSection(api, trimmed);
   revalidateSectionPaths(trimmed);
+  return { ok: true };
+}
+
+export async function permanentlyDeleteSectionAction(input: {
+  sectionId: string;
+  sectionName: string;
+}) {
+  const { api } = await requireTeacherSession();
+  const sectionId = input.sectionId.trim();
+  const sectionName = input.sectionName.trim();
+  if (!sectionId || !sectionName) {
+    throw new Error("Section is required.");
+  }
+
+  await permanentlyDeleteSection(api, sectionId);
+  revalidateSectionPaths(sectionName);
   return { ok: true };
 }
 
