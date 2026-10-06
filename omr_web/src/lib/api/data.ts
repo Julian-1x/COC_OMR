@@ -112,6 +112,34 @@ export async function unarchiveSection(api: ApiClient, name: string) {
   return section;
 }
 
+export async function archiveSection(
+  api: ApiClient,
+  name: string,
+  meta?: { schoolYear?: string; termLabel?: string },
+) {
+  const { section } = await api.patch<{ section: DbSection }>(
+    "/sync/sections/archive",
+    {
+      name,
+      school_year: meta?.schoolYear,
+      term_label: meta?.termLabel,
+    },
+  );
+  return section;
+}
+
+export async function updateSectionMeta(
+  api: ApiClient,
+  sectionId: string,
+  meta: { schoolYear?: string | null; termLabel?: string | null },
+) {
+  const { section } = await api.patch<{ section: DbSection }>(`/sections/${sectionId}`, {
+    school_year: meta.schoolYear,
+    term_label: meta.termLabel,
+  });
+  return section;
+}
+
 export async function upsertStudent(
   api: ApiClient,
   _ownerId: string,
@@ -204,6 +232,11 @@ export async function upsertStudentsBatch(
   }
 }
 
+/**
+ * Prefer live students-table counts. "Roster still syncing" only when the
+ * section row has a cached student_count but zero live students for that name.
+ * Callers must pass a real liveCount (never omit it on Classes).
+ */
 export function displaySectionStudentCount(
   liveCount: number | undefined,
   cachedCount: number | null | undefined,
