@@ -6,6 +6,7 @@ import 'package:omr_app/utils/student_identity.dart';
 class CloudPullSnapshot {
   const CloudPullSnapshot({
     this.sections = const <Section>[],
+    this.archivedSections = const <Section>[],
     this.students = const <Student>[],
     this.subjects = const <Subject>[],
     this.scanResults = const <ScanResult>[],
@@ -13,6 +14,9 @@ class CloudPullSnapshot {
   });
 
   final List<Section> sections;
+
+  /// Soft-archived on the school server — phone should mirror into Phone Archive.
+  final List<Section> archivedSections;
   final List<Student> students;
   final List<Subject> subjects;
   final List<ScanResult> scanResults;

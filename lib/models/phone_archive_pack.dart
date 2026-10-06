@@ -14,6 +14,7 @@ class PhoneArchivePack {
     required this.students,
     required this.scanResults,
     this.section,
+    this.mirroredFromCloud = false,
   });
 
   static const String kindStudent = 'student';
@@ -29,13 +30,19 @@ class PhoneArchivePack {
   final List<ScanResult> scanResults;
   final Section? section;
 
+  /// True when the pack was created because the web already archived the class.
+  /// Keep it on the phone for offline restore; do not auto-upload/purge on Sync.
+  final bool mirroredFromCloud;
+
   int get studentCount => students.length;
   int get scanCount => scanResults.length;
 
   String get subtitle {
     final scans = scanCount == 1 ? '1 score' : '$scanCount scores';
     if (kind == kindSection) {
-      return 'Class · $studentCount student${studentCount == 1 ? '' : 's'} · $scans';
+      final base =
+          'Class · $studentCount student${studentCount == 1 ? '' : 's'} · $scans';
+      return mirroredFromCloud ? '$base · from web archive' : base;
     }
     return 'Student · $scans · waiting to upload';
   }
@@ -50,6 +57,7 @@ class PhoneArchivePack {
         'students': students.map((s) => s.toJson()).toList(),
         'scanResults': scanResults.map(_scanForArchive).toList(),
         if (section != null) 'section': section!.toJson(),
+        'mirroredFromCloud': mirroredFromCloud,
       };
 
   factory PhoneArchivePack.fromJson(Map<String, dynamic> json) {
@@ -79,6 +87,7 @@ class PhoneArchivePack {
       section: sectionJson is Map
           ? Section.fromJson(Map<String, dynamic>.from(sectionJson))
           : null,
+      mirroredFromCloud: json['mirroredFromCloud'] == true,
     );
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/archive_retention.dart';
@@ -50,8 +51,95 @@ class PhoneArchiveService {
     return LocalDataStore.instance.moveStudentsToPhoneArchive(omrIds);
   }
 
-  Future<PhoneArchiveMoveSummary> archiveSection(String sectionName) {
-    return LocalDataStore.instance.moveSectionToPhoneArchive(sectionName);
+  Future<PhoneArchiveMoveSummary> archiveSection(
+    String sectionName, {
+    bool mirroredFromCloud = false,
+  }) {
+    return LocalDataStore.instance.moveSectionToPhoneArchive(
+      sectionName,
+      mirroredFromCloud: mirroredFromCloud,
+    );
+  }
+
+  /// After a cloud pull: classes archived on the web leave the phone dashboard
+  /// and land in Phone Archive for offline restore.
+  Future<int> mirrorCloudArchivedSections(Iterable<String> sectionNames) async {
+    var moved = 0;
+    final seen = <String>{};
+    for (final raw in sectionNames) {
+      final name = raw.trim();
+      if (name.isEmpty) {
+        continue;
+      }
+      final key = name.toLowerCase();
+      if (!seen.add(key)) {
+        continue;
+      }
+      try {
+        await archiveSection(name, mirroredFromCloud: true);
+        moved++;
+      } catch (error) {
+        // Already gone from active dashboard, or name mismatch — safe to skip.
+        debugPrint('Cloud archive mirror skipped ($name): $error');
+      }
+    }
+    return moved;
+  }
+
+  /// Drop local classes that were permanently deleted on the school server.
+  Future<int> dropPermanentlyDeletedCloudSections({
+    required Iterable<String> activeSectionNames,
+    required Iterable<String> archivedSectionNames,
+  }) async {
+    final known = <String>{
+      for (final name in activeSectionNames)
+        if (name.trim().isNotEmpty) name.trim().toLowerCase(),
+      for (final name in archivedSectionNames)
+        if (name.trim().isNotEmpty) name.trim().toLowerCase(),
+    };
+
+    var removed = 0;
+    final localSections = List<Section>.from(globalSections);
+    for (final section in localSections) {
+      final key = section.name.trim().toLowerCase();
+      if (key.isEmpty || known.contains(key)) {
+        continue;
+      }
+      // Keep brand-new local-only classes that never reached the cloud.
+      final syncedToCloud =
+          section.cloudId != null && section.cloudId!.trim().isNotEmpty;
+      if (!syncedToCloud) {
+        continue;
+      }
+      try {
+        await LocalDataStore.instance.archiveSectionLocally(section.name);
+        removed++;
+      } catch (error) {
+        debugPrint('Cloud permanent-delete drop skipped (${section.name}): $error');
+      }
+    }
+
+    // Also drop mirrored packs for sections no longer on the server.
+    final packs = await listPacks();
+    for (final pack in packs) {
+      if (!pack.mirroredFromCloud || pack.kind != PhoneArchivePack.kindSection) {
+        continue;
+      }
+      final packName = (pack.section?.name ??
+              (pack.sectionNames.isNotEmpty ? pack.sectionNames.first : ''))
+          .trim()
+          .toLowerCase();
+      if (packName.isEmpty || known.contains(packName)) {
+        continue;
+      }
+      try {
+        await LocalDataStore.instance.deletePhoneArchivePack(pack.id);
+      } catch (error) {
+        debugPrint('Cloud deleted pack cleanup skipped (${pack.id}): $error');
+      }
+    }
+
+    return removed;
   }
 
   Future<void> restoreLocally(String packId) {
@@ -84,6 +172,10 @@ class PhoneArchiveService {
 
     var purged = 0;
     for (final pack in packs) {
+      // Already archived on the web — keep the pack on the phone for restore.
+      if (pack.mirroredFromCloud) {
+        continue;
+      }
       try {
         await _uploadPack(pack);
         await LocalDataStore.instance.deletePhoneArchivePack(pack.id);

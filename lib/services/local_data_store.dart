@@ -13,6 +13,7 @@ import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/backup_compare.dart';
 import 'package:omr_app/services/cloud_snapshot.dart';
+import 'package:omr_app/services/scan_reassign_service.dart';
 import 'package:omr_app/services/sqlite_init.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
@@ -250,6 +251,129 @@ class LocalDataStore {
     );
     globalScanResults.add(replacementResult);
     rebuildStudentIndex();
+  }
+
+  /// Move a saved scan to another roster OMR ID.
+  ///
+  /// When [replaceExisting] is false and the target already has a score for
+  /// this subject, throws [StateError] — callers must show the name-blank
+  /// conflict UI first. When true, the target's prior subject scan is removed.
+  Future<ScanResult> reassignScan({
+    required ScanResult scan,
+    required String targetOmrId,
+    bool replaceExisting = false,
+  }) async {
+    final plan = ScanReassignService.plan(
+      scan: scan,
+      targetOmrId: targetOmrId,
+      students: globalStudentDatabase,
+      scans: globalScanResults,
+    );
+
+    switch (plan.status) {
+      case ScanReassignStatus.sameStudent:
+        throw StateError('That paper is already assigned to this student.');
+      case ScanReassignStatus.targetNotFound:
+        throw StateError('No student found with that OMR ID.');
+      case ScanReassignStatus.targetHasExistingScore:
+        if (!replaceExisting) {
+          throw StateError(
+            'TARGET_HAS_EXISTING_SCORE',
+          );
+        }
+      case ScanReassignStatus.ready:
+        break;
+    }
+
+    final target = plan.target!;
+    final previousOmrId = scan.studentOmrId;
+    final moved = scan.copyWith(
+      studentOmrId: target.omrId,
+      syncStatus: SyncStatus.pending,
+      updatedAt: DateTime.now(),
+      // After a teacher-confirmed reassign, clear stale review noise.
+      needsReview: false,
+      manuallyConfirmed: true,
+      reviewReasons: const <String>[],
+    );
+
+    if (kIsWeb) {
+      if (replaceExisting && plan.existingOnTarget != null) {
+        globalScanResults.removeWhere(
+          (entry) => _matchesStudentSubject(entry, plan.existingOnTarget!),
+        );
+      }
+      globalScanResults.removeWhere((entry) => _matchesScanIdentity(entry, scan));
+      globalScanResults.add(moved);
+      refreshStudentSnapshotFromLatestScan(previousOmrId);
+      refreshStudentSnapshotFromLatestScan(target.omrId);
+      rebuildStudentIndex();
+      return moved;
+    }
+
+    await _enqueueDbWrite(() async {
+      final database = await _openDatabase();
+      await database.transaction((txn) async {
+        if (replaceExisting && plan.existingOnTarget != null) {
+          await _deleteStoredScanResult(txn, plan.existingOnTarget!);
+          await _deleteOtherStoredSubjectScans(txn, plan.existingOnTarget!);
+        }
+        await _deleteStoredScanResult(txn, scan);
+        await txn.insert('scan_results', _scanResultRow(moved));
+        await _promoteReviewedScanToStudent(txn, moved);
+        // Clear score snapshot on the previous student if they have no scans left.
+        final remainingForPrevious = await txn.query(
+          'scan_results',
+          columns: const <String>['score', 'detected_answers_json', 'scan_time', 'confidence'],
+          where: 'student_omr_id = ?',
+          whereArgs: <Object?>[previousOmrId],
+          orderBy: 'scan_time DESC',
+          limit: 1,
+        );
+        if (remainingForPrevious.isEmpty) {
+          await txn.update(
+            'students',
+            <String, Object?>{
+              'answers_json': null,
+              'score': null,
+              'confidence': null,
+              'scan_date': null,
+              'sync_status': SyncStatus.pending,
+              'updated_at': DateTime.now().toIso8601String(),
+            },
+            where: 'omr_id = ?',
+            whereArgs: <Object?>[previousOmrId],
+          );
+        } else {
+          final row = remainingForPrevious.first;
+          await txn.update(
+            'students',
+            <String, Object?>{
+              'answers_json': row['detected_answers_json'],
+              'score': row['score'],
+              'confidence': row['confidence'],
+              'scan_date': row['scan_time'],
+              'sync_status': SyncStatus.pending,
+              'updated_at': DateTime.now().toIso8601String(),
+            },
+            where: 'omr_id = ?',
+            whereArgs: <Object?>[previousOmrId],
+          );
+        }
+      });
+    });
+
+    if (replaceExisting && plan.existingOnTarget != null) {
+      globalScanResults.removeWhere(
+        (entry) => _matchesStudentSubject(entry, plan.existingOnTarget!),
+      );
+    }
+    globalScanResults.removeWhere((entry) => _matchesScanIdentity(entry, scan));
+    globalScanResults.add(moved);
+    refreshStudentSnapshotFromLatestScan(previousOmrId);
+    refreshStudentSnapshotFromLatestScan(target.omrId);
+    rebuildStudentIndex();
+    return moved;
   }
 
   Future<void> upsertSection(Section section) async {
@@ -786,8 +910,9 @@ class LocalDataStore {
   }
 
   Future<PhoneArchiveMoveSummary> moveSectionToPhoneArchive(
-    String sectionName,
-  ) async {
+    String sectionName, {
+    bool mirroredFromCloud = false,
+  }) async {
     final stored = _resolveStoredSectionName(sectionName);
     if (stored == null) {
       throw StateError('Section "$sectionName" was not found.');
@@ -841,6 +966,7 @@ class LocalDataStore {
       students: List<Student>.from(students),
       scanResults: scans,
       section: sectionRow.copyWith(archivedAt: DateTime.now()),
+      mirroredFromCloud: mirroredFromCloud,
     );
 
     await _insertPhoneArchivePack(pack);

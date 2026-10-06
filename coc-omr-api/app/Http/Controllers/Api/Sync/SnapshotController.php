@@ -22,6 +22,7 @@ class SnapshotController extends Controller
 
         return response()->json([
             'sections' => $snapshot['sections'],
+            'archived_sections' => $snapshot['archived_sections'] ?? [],
             'students' => $snapshot['students'],
             'subjects' => $snapshot['subjects'],
             'scan_results' => $snapshot['scan_results'],
