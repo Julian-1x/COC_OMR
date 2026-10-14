@@ -728,6 +728,50 @@ class ScanResult {
           DateTime.now(),
     );
   }
+
+  ScanResult copyWith({
+    String? studentOmrId,
+    String? subjectId,
+    String? subjectName,
+    String? sheetId,
+    Map<int, String>? detectedAnswers,
+    Map<int, double>? correctnessMap,
+    num? score,
+    int? totalQuestions,
+    double? confidence,
+    DateTime? scanTime,
+    String? scannedImagePath,
+    List<String>? reviewReasons,
+    List<int>? flaggedQuestions,
+    bool? manuallyConfirmed,
+    bool? needsReview,
+    String? ownerTeacherId,
+    String? cloudId,
+    String? syncStatus,
+    DateTime? updatedAt,
+  }) {
+    return ScanResult(
+      studentOmrId: studentOmrId ?? this.studentOmrId,
+      subjectId: subjectId ?? this.subjectId,
+      subjectName: subjectName ?? this.subjectName,
+      sheetId: sheetId ?? this.sheetId,
+      detectedAnswers: detectedAnswers ?? this.detectedAnswers,
+      correctnessMap: correctnessMap ?? this.correctnessMap,
+      score: score ?? this.score,
+      totalQuestions: totalQuestions ?? this.totalQuestions,
+      confidence: confidence ?? this.confidence,
+      scanTime: scanTime ?? this.scanTime,
+      scannedImagePath: scannedImagePath ?? this.scannedImagePath,
+      reviewReasons: reviewReasons ?? this.reviewReasons,
+      flaggedQuestions: flaggedQuestions ?? this.flaggedQuestions,
+      manuallyConfirmed: manuallyConfirmed ?? this.manuallyConfirmed,
+      needsReview: needsReview ?? this.needsReview,
+      ownerTeacherId: ownerTeacherId ?? this.ownerTeacherId,
+      cloudId: cloudId ?? this.cloudId,
+      syncStatus: syncStatus ?? this.syncStatus,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
 }
 
 /// Deadline for grading tasks
@@ -1007,6 +1051,11 @@ void _refreshStudentSnapshotFromLatestScan(String omrId) {
     syncStatus: SyncStatus.pending,
     updatedAt: DateTime.now(),
   );
+}
+
+/// Public wrapper used after reassign / delete so roster cards stay accurate.
+void refreshStudentSnapshotFromLatestScan(String omrId) {
+  _refreshStudentSnapshotFromLatestScan(omrId);
 }
 
 SubjectDeletionSummary deleteSubjectAndRelatedData(Subject subject) {

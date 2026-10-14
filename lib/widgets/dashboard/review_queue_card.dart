@@ -17,6 +17,7 @@ class ReviewQueueCard extends StatelessWidget {
     required this.studentName,
     required this.onRescan,
     required this.onApprove,
+    this.onReassign,
     this.onPreviewImage,
   });
 
@@ -24,6 +25,7 @@ class ReviewQueueCard extends StatelessWidget {
   final String studentName;
   final Future<void> Function() onRescan;
   final Future<void> Function() onApprove;
+  final Future<void> Function()? onReassign;
   final VoidCallback? onPreviewImage;
 
   @override
@@ -151,6 +153,21 @@ class ReviewQueueCard extends StatelessWidget {
                 ),
               ],
             ),
+            if (onReassign != null) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => onReassign!(),
+                  icon: const Icon(Icons.swap_horiz_rounded, size: 18),
+                  label: const Text('Wrong student? Reassign'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.warningText,
+                    side: const BorderSide(color: AppColors.warningAccent),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
