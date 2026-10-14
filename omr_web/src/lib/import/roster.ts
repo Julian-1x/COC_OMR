@@ -28,6 +28,10 @@ export function normalizeSchoolId(value: string): string {
   return value.trim().toUpperCase();
 }
 
+export function schoolIdMatchKey(value: string): string {
+  return normalizeSchoolId(value).replace(/[^A-Z0-9]/g, "");
+}
+
 function normalizeHeader(value: string): string {
   return value
     .trim()

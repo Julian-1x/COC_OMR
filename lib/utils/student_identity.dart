@@ -3,6 +3,10 @@ import 'package:omr_app/models/exam_data.dart';
 /// Canonical form for roster matching (phone, web, cloud).
 String normalizeSchoolId(String value) => value.trim().toUpperCase();
 
+/// Same student ID with hyphens or spaces still counts as the same ID.
+String schoolIdMatchKey(String value) =>
+    normalizeSchoolId(value).replaceAll(RegExp(r'[^A-Z0-9]'), '');
+
 String _studentGroupKey(Student student) =>
     '${student.ownerTeacherId ?? ''}|${normalizeSchoolId(student.schoolId)}';
 
@@ -162,4 +166,34 @@ Student? findStudentBySchoolId(
     }
   }
   return null;
+}
+
+/// Active roster first, then a punctuation-insensitive match.
+Student? findStudentBySchoolIdFlexible(
+  Iterable<Student> students,
+  String schoolId,
+) {
+  final exact = findStudentBySchoolId(students, schoolId);
+  if (exact != null) {
+    return exact;
+  }
+  final key = schoolIdMatchKey(schoolId);
+  if (key.isEmpty) {
+    return null;
+  }
+  for (final student in students) {
+    if (schoolIdMatchKey(student.schoolId) == key) {
+      return student;
+    }
+  }
+  return null;
+}
+
+String studentIdTakenMessage(Student student, {required bool archived}) {
+  final place = archived
+      ? 'the archive (${student.section})'
+      : student.section;
+  return 'Student ID ${student.schoolId} already belongs to ${student.name} '
+      '(OMR ${student.omrId}) in $place. '
+      'Nothing was added. Use a different student ID.';
 }

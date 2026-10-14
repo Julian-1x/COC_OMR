@@ -42,6 +42,7 @@ class StudentController extends Controller
             'confidence',
             'local_id',
             'sync_status',
+            'archived_at',
             'created_at',
             'updated_at',
         ]);

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { normalizePersonName, normalizePersonNameFromParts } from "@/lib/person-name";
+import {
+  compareByLastName,
+  normalizePersonName,
+  normalizePersonNameFromParts,
+  surnameSortKey,
+} from "@/lib/person-name";
 
 describe("normalizePersonName", () => {
   it("title-cases plain names", () => {
@@ -16,6 +21,24 @@ describe("normalizePersonName", () => {
 
   it("lowercases name particles", () => {
     expect(normalizePersonName("MARIA DE LA CRUZ")).toBe("Maria de la Cruz");
+  });
+});
+
+describe("compareByLastName", () => {
+  it("sorts by surname, not given name", () => {
+    const names = [
+      "Alberico Gabriel Loma Geromo",
+      "Allen James Septimo Opaon",
+      "Bryan Ulan de los Reyes",
+      "Charisse Shane del Puerto Balistoy",
+    ];
+    const sorted = [...names].sort(compareByLastName);
+    expect(sorted.map(surnameSortKey)).toEqual([
+      "balistoy",
+      "de los reyes",
+      "geromo",
+      "opaon",
+    ]);
   });
 });
 

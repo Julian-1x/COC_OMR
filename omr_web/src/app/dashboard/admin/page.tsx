@@ -16,6 +16,8 @@ function statusBadgeClass(status: string): string {
       return "bg-emerald-100 text-emerald-800";
     case "Not started":
       return "bg-amber-100 text-amber-800";
+    case "Email not confirmed":
+      return "bg-amber-100 text-amber-900";
     case "Pending approval":
       return "bg-amber-100 text-amber-900";
     case "Revoked":

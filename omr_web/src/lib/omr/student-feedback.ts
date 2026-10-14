@@ -6,6 +6,7 @@ import {
   calculateQuestionScore,
   parseStoredAnswerSelections,
 } from "@/lib/omr/question-score";
+import { compareByLastName } from "@/lib/person-name";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 
 export type FeedbackQuestionStatus = "correct" | "incorrect" | "partial";
@@ -94,7 +95,7 @@ export function buildStudentFeedbackRows(
   return rows.sort((a, b) => {
     const bySection = a.sectionName.localeCompare(b.sectionName);
     if (bySection !== 0) return bySection;
-    return a.name.localeCompare(b.name);
+    return compareByLastName(a.name, b.name);
   });
 }
 

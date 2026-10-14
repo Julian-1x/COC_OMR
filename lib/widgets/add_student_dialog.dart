@@ -76,36 +76,31 @@ class _AddStudentDialogState extends State<_AddStudentDialog> {
       return;
     }
 
-    final existing = findStudentBySchoolId(globalStudentDatabase, schoolId);
-    if (existing != null) {
-      final confirmed = await showDialog<bool>(
+    final taken = await ImportService.findTakenStudentId(schoolId);
+    if (!mounted) {
+      return;
+    }
+    if (taken != null) {
+      await showDialog<void>(
         context: context,
         builder: (dialogContext) => AlertDialog(
-          title: const Text('Student already on roster'),
+          title: const Text('Student ID already used'),
           content: Text(
-            '${existing.name} (${existing.schoolId}) already has OMR '
-            '${existing.omrId} in ${existing.section}.\n\n'
-            'Update name and section and keep the same OMR ID?',
+            studentIdTakenMessage(taken.student, archived: taken.archived),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel'),
-            ),
             FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () => Navigator.pop(dialogContext),
               style: FilledButton.styleFrom(
                 backgroundColor: AppColors.brandGreen,
                 foregroundColor: Colors.white,
               ),
-              child: const Text('Keep OMR ID'),
+              child: const Text('OK'),
             ),
           ],
         ),
       );
-      if (confirmed != true || !mounted) {
-        return;
-      }
+      return;
     }
 
     setState(() {
@@ -145,7 +140,7 @@ class _AddStudentDialogState extends State<_AddStudentDialog> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'For late enrollees not in the Excel roster. OMR ID is assigned automatically.',
+              'For a new student who is not already on the roster. If this student ID is taken, you will see who it belongs to.',
               style: TextStyle(color: AppColors.brandMuted, height: 1.35),
             ),
             const SizedBox(height: 14),

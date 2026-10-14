@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { compareByLastName } from "@/lib/person-name";
 import type { DbScanResult, DbStudent, DbSubject } from "@/lib/types/database";
 import { formatCorrectAnswer } from "@/lib/omr/answer-key";
 import { scanPassed } from "@/lib/omr/passing-score";
@@ -184,7 +185,7 @@ export async function exportOmrIdsPdf(
 export function exportSectionRosterCsv(students: DbStudent[], sectionName: string): string {
   const filtered = students
     .filter((s) => s.section_name === sectionName)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => compareByLastName(a.name, b.name));
   const header = "Student ID,OMR ID,Name,Section";
   const lines = filtered.map((s) =>
     [s.school_id, s.omr_id, `"${s.name.replace(/"/g, '""')}"`, s.section_name].join(","),

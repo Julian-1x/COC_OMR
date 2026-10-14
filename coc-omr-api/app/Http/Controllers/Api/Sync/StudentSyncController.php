@@ -36,13 +36,23 @@ class StudentSyncController extends Controller
             ? Carbon::parse($validated['updated_at'])
             : now();
 
+        $existing = Student::query()
+            ->where('owner_teacher_id', $ownerId)
+            ->where('school_id', $schoolId)
+            ->first();
+
+        // Re-importing an archived class must keep the printed OMR ID.
+        // A new local ID would collide with students_owner_omr_unique and
+        // break Sync Now.
+        $omrId = $existing?->omr_id ?: $validated['omr_id'];
+
         $student = Student::query()->updateOrCreate(
             [
                 'owner_teacher_id' => $ownerId,
                 'school_id' => $schoolId,
             ],
             [
-                'omr_id' => $validated['omr_id'],
+                'omr_id' => $omrId,
                 'name' => PersonName::normalize($validated['name']),
                 'section_name' => trim($validated['section_name']),
                 'score' => $validated['score'] ?? null,
@@ -51,7 +61,7 @@ class StudentSyncController extends Controller
                     ? Carbon::parse($validated['scan_date'])
                     : null,
                 'confidence' => $validated['confidence'] ?? null,
-                'local_id' => $validated['omr_id'],
+                'local_id' => $omrId,
                 'sync_status' => 'synced',
                 'archived_at' => null,
                 'updated_at' => $updatedAt,

@@ -10,6 +10,8 @@ import 'package:omr_app/pages/custom_sheet_layouts_page.dart';
 import 'package:omr_app/services/answer_key_io_service.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/auto_sync_service.dart';
+import 'package:omr_app/services/form_draft_store.dart';
+import 'package:omr_app/services/teacher_form_drafts.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/widgets/answer_key_delete_dialog.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
@@ -67,7 +69,8 @@ class AnswerKeyPage extends StatefulWidget {
   State<AnswerKeyPage> createState() => _AnswerKeyPageState();
 }
 
-class _AnswerKeyPageState extends State<AnswerKeyPage> {
+class _AnswerKeyPageState extends State<AnswerKeyPage>
+    with WidgetsBindingObserver {
   static const Color _brandGreen = AppColors.brandGreen;
   static const Color _brandGreenDark = AppColors.brandGreenDark;
   static const Color _brandSurface = AppColors.brandSurface;
@@ -111,6 +114,9 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
   final Map<int, Set<String>> _correctAnswers = {};
   int _questionCount = 50;
+
+  /// Bumps the sheet-size dropdown back to [_questionCount] after Cancel.
+  int _sheetSizePickerEpoch = 0;
   int _editorStep = 0;
   bool _isEditing = false;
   bool get _sheetModeLocked => widget.sheetMode != null;
@@ -147,6 +153,14 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   bool _splitEditMode = false;
   bool _sharedEditWarning = false;
   bool _sharedEditPromptHandled = false;
+  Timer? _draftSaveTimer;
+  bool _draftRestored = false;
+
+  /// Saved or discarded — do not write the form back as an unfinished draft.
+  bool _draftClosed = false;
+
+  /// Multi-answer + partial credit only on custom sheets (not standard 30–100).
+  bool get _supportsMultiAnswerFeatures => _useSavedCustomSheet;
 
   CustomSheetLayout? get _selectedCustomLayout {
     final id = _selectedCustomLayoutId;
@@ -206,7 +220,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     required String subjectName,
     required List<String> sections,
     required int passingScore,
-    required DateTime examDate,
+    DateTime? examDate,
     int? totalQuestions,
     String? ownerTeacherId,
     String? subjectCloudId,
@@ -370,7 +384,9 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       );
     }
 
-    if (!_usePartialCredit && _multiAnswerQuestionCount > 0) {
+    if (_supportsMultiAnswerFeatures &&
+        !_usePartialCredit &&
+        _multiAnswerQuestionCount > 0) {
       warnings.add(
         '$_multiAnswerQuestionCount question(s) have multiple correct answers. Without partial credit, students must mark every correct option for full credit.',
       );
@@ -573,6 +589,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _nameController.addListener(_scheduleAnswerKeyDraftSave);
     if (widget.sheetMode == AnswerKeySheetMode.custom) {
       _useSavedCustomSheet = true;
     } else if (widget.sheetMode == AnswerKeySheetMode.standard) {
@@ -586,7 +604,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           (widget.subjectToEdit!.sectionNames ?? const <String>[])
               .map(_canonicalizeSectionName)
               .toSet();
-      _usePartialCredit = widget.subjectToEdit!.usePartialCredit;
+      _usePartialCredit = widget.subjectToEdit!.usePartialCredit &&
+          widget.subjectToEdit!.useCustomLayout;
       _initCustomSheetModeFromSubject(widget.subjectToEdit!);
       for (final entry in widget.subjectToEdit!.answerKey.entries) {
         final sanitized = _sanitizeAnswers(entry.value);
@@ -594,17 +613,26 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
           _correctAnswers[entry.key] = sanitized;
         }
       }
+      if (!_useSavedCustomSheet) {
+        _collapseMultiAnswersToSingle();
+        _usePartialCredit = false;
+      }
     } else if (widget.templateSubject != null) {
       final template = widget.templateSubject!;
       _nameController.text = template.name;
       _questionCount = template.totalQuestions;
-      _usePartialCredit = template.usePartialCredit;
+      _usePartialCredit =
+          template.usePartialCredit && template.useCustomLayout;
       _initCustomSheetModeFromSubject(template);
       for (final entry in template.answerKey.entries) {
         final sanitized = _sanitizeAnswers(entry.value);
         if (sanitized.isNotEmpty) {
           _correctAnswers[entry.key] = sanitized;
         }
+      }
+      if (!_useSavedCustomSheet) {
+        _collapseMultiAnswersToSingle();
+        _usePartialCredit = false;
       }
     }
 
@@ -615,11 +643,174 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
     _applyInitialCustomLayoutIfNeeded();
 
-    if (widget.subjectToEdit != null && _focusedSection != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_maybeRestoreAnswerKeyDraft());
+      if (widget.subjectToEdit != null && _focusedSection != null) {
         unawaited(_promptSharedKeyEditMode());
-      });
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      unawaited(_saveAnswerKeyDraft());
     }
+  }
+
+  String _answerKeyDraftPrefix() {
+    final id = (widget.subjectToEdit?.id ?? 'new').trim();
+    return 'answer_key_draft_v1_${id}';
+  }
+
+  String _answerKeyDraftKey() {
+    return TeacherFormDrafts.answerKeyKey(
+      subjectId: widget.subjectToEdit?.id,
+    );
+  }
+
+  void _scheduleAnswerKeyDraftSave() {
+    _draftSaveTimer?.cancel();
+    _draftSaveTimer = Timer(
+      const Duration(milliseconds: 450),
+      () => unawaited(_saveAnswerKeyDraft()),
+    );
+  }
+
+  Future<void> _saveAnswerKeyDraft() async {
+    if (_draftClosed) return;
+    if (_answeredQuestionsCount == 0 &&
+        _nameController.text.trim().isEmpty &&
+        _selectedSections.isEmpty) {
+      return;
+    }
+    await TeacherFormDrafts.save(_answerKeyDraftKey(), {
+      'name': _nameController.text.trim(),
+      'questionCount': _questionCount,
+      'editorStep': _editorStep,
+      'sections': _selectedSections.toList()..sort(),
+      'correctAnswers': TeacherFormDrafts.encodeAnswerMap(_correctAnswers),
+      'useSavedCustomSheet': _useSavedCustomSheet,
+      'customLayoutId': _selectedCustomLayoutId,
+      'usePartialCredit': _usePartialCredit,
+      'splitEditMode': _splitEditMode,
+    });
+  }
+
+  Future<void> _discardStoredDraft() async {
+    _draftSaveTimer?.cancel();
+    await FormDraftStore.clearPrefix(_answerKeyDraftPrefix());
+  }
+
+  Future<void> _clearAnswerKeyDraft() async {
+    _draftClosed = true;
+    await _discardStoredDraft();
+  }
+
+  bool _draftAlreadySaved(Map<int, Set<String>> draftAnswers) {
+    if (draftAnswers.isEmpty) return false;
+    for (final subject in globalSubjects) {
+      final savedFilled = subject.answerKey.entries
+          .where((entry) => entry.value.isNotEmpty)
+          .length;
+      if (savedFilled != draftAnswers.length) continue;
+      var matches = true;
+      for (final entry in draftAnswers.entries) {
+        final saved = (subject.answerKey[entry.key] ?? const <String>[])
+            .map((answer) => answer.toUpperCase())
+            .toSet();
+        final draft =
+            entry.value.map((answer) => answer.toUpperCase()).toSet();
+        if (saved.length != draft.length || !saved.containsAll(draft)) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return true;
+    }
+    return false;
+  }
+
+  Future<void> _maybeRestoreAnswerKeyDraft() async {
+    if (_draftRestored || !mounted) return;
+    final draft =
+        await FormDraftStore.loadNewestWithPrefix(_answerKeyDraftPrefix());
+    if (draft == null || !mounted) return;
+    final draftAnswers =
+        TeacherFormDrafts.decodeAnswerMap(draft['correctAnswers']);
+    final draftName = (draft['name'] as String?)?.trim() ?? '';
+    final draftFilled = draftAnswers.values.where((s) => s.isNotEmpty).length;
+    if (draftFilled == 0 && draftName.isEmpty) return;
+    if (_draftAlreadySaved(draftAnswers)) {
+      await _discardStoredDraft();
+      _draftRestored = true;
+      return;
+    }
+
+    final restore = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Restore unfinished answer key?'),
+        content: Text(
+          draftFilled > 0
+              ? 'You have a draft with $draftFilled answered question'
+                  '${draftFilled == 1 ? '' : 's'}. Restore it?'
+              : 'You have a saved draft for this answer key. Restore it?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Start fresh'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+    if (restore != true || !mounted) {
+      if (restore == false) {
+        await _discardStoredDraft();
+      }
+      _draftRestored = true;
+      return;
+    }
+
+    setState(() {
+      if (draftName.isNotEmpty) {
+        _nameController.text = draftName;
+      }
+      final qc = draft['questionCount'];
+      if (qc is int && qc > 0) {
+        _questionCount = qc;
+      }
+      final step = draft['editorStep'];
+      if (step is int && step >= 0 && step <= 2) {
+        _editorStep = step;
+      }
+      final sections = draft['sections'];
+      if (sections is List && sections.isNotEmpty) {
+        _selectedSections = sections
+            .map((e) => _canonicalizeSectionName(e.toString()))
+            .where((e) => e.isNotEmpty)
+            .toSet();
+      }
+      if (draft['useSavedCustomSheet'] == true) {
+        _useSavedCustomSheet = true;
+      }
+      final layoutId = draft['customLayoutId'] as String?;
+      if (layoutId != null && layoutId.isNotEmpty) {
+        _selectedCustomLayoutId = layoutId;
+      }
+      _usePartialCredit = draft['usePartialCredit'] == true;
+      _splitEditMode = draft['splitEditMode'] == true;
+      _correctAnswers
+        ..clear()
+        ..addAll(draftAnswers);
+    });
+    _draftRestored = true;
   }
 
   void _applyInitialCustomLayoutIfNeeded() {
@@ -644,6 +835,12 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _draftSaveTimer?.cancel();
+    if (!_draftClosed) {
+      unawaited(_saveAnswerKeyDraft());
+    }
+    _nameController.removeListener(_scheduleAnswerKeyDraftSave);
     _nameController.dispose();
     _sectionController.dispose();
     super.dispose();
@@ -714,6 +911,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     setState(() {
       _useSavedCustomSheet = false;
       _selectedCustomLayoutId = null;
+      _usePartialCredit = false;
+      _collapseMultiAnswersToSingle();
       if (!_supportedQuestionCounts.contains(_questionCount)) {
         _questionCount = 50;
         _correctAnswers.removeWhere((question, _) => question > _questionCount);
@@ -1218,18 +1417,37 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         continue;
       }
       final answers = _sanitizeAnswers(entry.value).toList()..sort();
-      if (answers.isNotEmpty) {
+      if (answers.isEmpty) {
+        continue;
+      }
+      // Standard sheets: freeze to one correct letter per item.
+      if (!_supportsMultiAnswerFeatures) {
+        normalized[entry.key] = [answers.first];
+      } else {
         normalized[entry.key] = answers;
       }
     }
     return normalized;
   }
 
+  void _collapseMultiAnswersToSingle() {
+    final collapsed = <int, Set<String>>{};
+    for (final entry in _correctAnswers.entries) {
+      if (entry.value.isEmpty) continue;
+      final sorted = entry.value.toList()..sort();
+      collapsed[entry.key] = {sorted.first};
+    }
+    _correctAnswers
+      ..clear()
+      ..addAll(collapsed);
+  }
+
   Future<void> _saveSubject(String subjectName) async {
     final existingSubject = widget.subjectToEdit;
-    final passingScore =
-        existingSubject?.passingScore ?? (_questionCount * 0.6).round();
-    final examDate = existingSubject?.examDate ?? DateTime.now();
+    // Pass mark is fixed by school policy (60%) — never teacher-edited.
+    final passingScore = (_questionCount * 0.6).round();
+    // Exam date is stamped when sheets are printed, not when the key is saved.
+    final examDate = existingSubject?.examDate;
 
     if (_splitEditMode &&
         existingSubject != null &&
@@ -1302,7 +1520,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         ),
         examDate: examDate,
         passingScore: passingScore,
-        usePartialCredit: _usePartialCredit,
+        usePartialCredit: _supportsMultiAnswerFeatures && _usePartialCredit,
       );
 
       await LocalDataStore.instance.upsertSubject(
@@ -1325,6 +1543,8 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       if (!mounted) {
         return;
       }
+      await _clearAnswerKeyDraft();
+      if (!mounted) return;
       Navigator.pop(context, AnswerKeyEditorResult.updated(newSubject));
       return;
     }
@@ -1354,7 +1574,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       sectionQrData: sectionQrData,
       examDate: examDate,
       passingScore: passingScore,
-      usePartialCredit: _usePartialCredit,
+      usePartialCredit: _supportsMultiAnswerFeatures && _usePartialCredit,
       ownerTeacherId: targetSubject?.ownerTeacherId,
       cloudId: targetSubject?.cloudId,
     );
@@ -1374,12 +1594,14 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
       return;
     }
 
+    await _clearAnswerKeyDraft();
+    if (!mounted) {
+      return;
+    }
+
     if (_isEditing) {
       Navigator.pop(context, AnswerKeyEditorResult.updated(persistedSubject));
     } else {
-      if (!mounted) {
-        return;
-      }
       final colorScheme = Theme.of(context).colorScheme;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -1997,7 +2219,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
 
   // ==================== QUESTION COUNT CHANGE ====================
 
-  void _changeQuestionCount(int newCount) {
+  Future<void> _changeQuestionCount(int newCount) async {
     final isDecreasing = newCount < _questionCount;
     final answersToLose = isDecreasing
         ? _correctAnswers.keys.where((q) => q > newCount).length
@@ -2008,7 +2230,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
     final newTemplate = OmrTemplateSpec.forItemCount(newCount);
     final layoutChanges = oldTemplate.templateId != newTemplate.templateId;
 
-    showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Change Question Count?"),
@@ -2095,19 +2317,22 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(context, false),
             child: const Text("CANCEL"),
           ),
           FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _applyQuestionCountChange(newCount, layoutChanges);
-            },
+            onPressed: () => Navigator.pop(context, true),
             child: const Text("CHANGE"),
           ),
         ],
       ),
     );
+    if (!mounted) return;
+    if (confirmed == true) {
+      _applyQuestionCountChange(newCount, layoutChanges);
+      return;
+    }
+    setState(() => _sheetSizePickerEpoch++);
   }
 
   void _applyQuestionCountChange(int newCount, bool layoutChanged) {
@@ -2203,9 +2428,9 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                   ),
                   const SizedBox(height: 14),
                   Text(
-                    _usePartialCredit
-                        ? 'Answer (tap one or more)'
-                        : 'Answer',
+                    _supportsMultiAnswerFeatures
+                        ? 'Answer (tap one or more if needed)'
+                        : 'Answer (one letter)',
                     style: const TextStyle(
                       fontWeight: FontWeight.w700,
                       color: _brandText,
@@ -2224,7 +2449,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
                         checkmarkColor: _brandGreen,
                         onSelected: (value) {
                           setDialogState(() {
-                            if (_usePartialCredit) {
+                            if (_supportsMultiAnswerFeatures) {
                               if (value) {
                                 selectedLetters.add(letter);
                               } else {
@@ -2852,7 +3077,7 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
               if (_effectiveSheetMode == AnswerKeySheetMode.standard) ...[
                 if (_supportedQuestionCounts.contains(_questionCount))
                   DropdownButtonFormField<int>(
-                    key: ValueKey('standard-$_questionCount'),
+                    key: ValueKey('standard-$_questionCount-$_sheetSizePickerEpoch'),
                     initialValue: _questionCount,
                     decoration: const InputDecoration(
                       labelText: 'Questions on sheet',
@@ -3030,43 +3255,59 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
             ],
           ),
         ),
-        const SizedBox(height: 12),
-        _buildStepCard(
-          title: 'Advanced',
-          subtitle: 'Optional scoring settings.',
-          child: Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              title: const Text(
-                'Partial credit',
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 14,
+        if (_supportsMultiAnswerFeatures) ...[
+          const SizedBox(height: 12),
+          _buildStepCard(
+            title: 'Advanced',
+            subtitle: 'Custom-sheet scoring only.',
+            child: Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text(
+                  'Partial credit',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
                 ),
-              ),
-              subtitle: Text(
-                _multiAnswerQuestionCount == 0
-                    ? 'Enable after adding multi-answer questions'
-                    : _usePartialCredit
-                        ? 'Proportional points for partial answers'
-                        : 'All-or-nothing scoring',
-                style: const TextStyle(fontSize: 12, color: _brandMuted),
-              ),
-              children: [
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Use partial credit'),
-                  value: _usePartialCredit,
-                  activeThumbColor: _brandGreen,
-                  onChanged: _multiAnswerQuestionCount > 0
-                      ? (value) => setState(() => _usePartialCredit = value)
-                      : null,
+                subtitle: Text(
+                  _multiAnswerQuestionCount == 0
+                      ? 'Optional — only if you want proportional points'
+                      : _usePartialCredit
+                          ? 'Proportional points for partial answers'
+                          : 'All-or-nothing (student must mark every correct letter)',
+                  style: const TextStyle(fontSize: 12, color: _brandMuted),
                 ),
-              ],
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Use partial credit'),
+                    subtitle: const Text(
+                      'Not required for multi-answer keys. Leave off for all-or-nothing.',
+                      style: TextStyle(fontSize: 12, color: _brandMuted),
+                    ),
+                    value: _usePartialCredit,
+                    activeThumbColor: _brandGreen,
+                    onChanged: _multiAnswerQuestionCount > 0
+                        ? (value) => setState(() => _usePartialCredit = value)
+                        : null,
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
+        ] else ...[
+          const SizedBox(height: 12),
+          _buildStepCard(
+            title: 'Advanced',
+            subtitle: 'Standard sheets use one correct letter per item.',
+            child: const Text(
+              'Multi-answer keys and partial credit are available when you build the exam on a custom sheet (including 50-item custom layouts).',
+              style: TextStyle(fontSize: 13, color: _brandMuted, height: 1.35),
+            ),
+          ),
+        ],
         if (_reviewWarnings.isNotEmpty) ...[
           const SizedBox(height: 12),
           _buildStepCard(
@@ -3216,7 +3457,11 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
               ),
               _ReviewRow(
                 label: 'Partial credit',
-                value: _usePartialCredit ? 'Enabled' : 'Disabled',
+                value: !_supportsMultiAnswerFeatures
+                    ? 'Standard sheet (off)'
+                    : _usePartialCredit
+                        ? 'Enabled'
+                        : 'Disabled',
                 isLast: true,
               ),
             ],
@@ -3366,11 +3611,14 @@ class _AnswerKeyPageState extends State<AnswerKeyPage> {
         } else {
           _correctAnswers[qNum] = answers;
         }
-      } else {
+      } else if (_supportsMultiAnswerFeatures) {
         answers.add(label);
         _correctAnswers[qNum] = answers;
+      } else {
+        _correctAnswers[qNum] = {label};
       }
     });
+    _scheduleAnswerKeyDraftSave();
   }
 
   Widget _buildSectionSelectChip({

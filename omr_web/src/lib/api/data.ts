@@ -38,9 +38,16 @@ export async function fetchSections(
   return sections ?? [];
 }
 
-export async function fetchStudents(api: ApiClient, sectionName?: string): Promise<DbStudent[]> {
+export async function fetchStudents(
+  api: ApiClient,
+  sectionName?: string,
+  options?: { includeArchived?: boolean },
+): Promise<DbStudent[]> {
   const { students } = await api.get<{ students: DbStudent[] }>("/students", {
-    params: { section_name: sectionName },
+    params: {
+      section_name: sectionName,
+      include_archived: options?.includeArchived ? 1 : undefined,
+    },
   });
   return students ?? [];
 }

@@ -76,7 +76,7 @@ class CloudSyncService {
     if (archivedNames.isNotEmpty) {
       try {
         await PhoneArchiveService.instance.mirrorCloudArchivedSections(
-          archivedNames,
+          cloud.archivedSections,
         );
       } catch (error) {
         debugPrint('Cloud archive mirror failed: $error');

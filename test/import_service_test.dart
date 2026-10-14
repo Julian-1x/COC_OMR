@@ -2,8 +2,10 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/pages/answer_sheet_generator.dart';
 import 'package:omr_app/services/import_service.dart';
+import 'package:omr_app/services/phone_archive_service.dart';
 
 void main() {
   setUp(() {
@@ -191,5 +193,102 @@ void main() {
     expect(payload.subjectId, mathB.id);
     expect(payload.sheetId, 'SHEET-000123');
     expect(payload.resolveSubject()?.id, mathB.id);
+  });
+
+  test('re-importing an archived class reuses OMR IDs', () {
+    final pack = PhoneArchivePack(
+      id: 'arch_sec_1',
+      kind: PhoneArchivePack.kindSection,
+      title: 'BSIT-1A',
+      createdAt: DateTime.utc(2026, 10, 1),
+      omrIds: const ['0007', '0008'],
+      sectionNames: const ['BSIT-1A'],
+      students: [
+        Student(
+          schoolId: '2024001',
+          omrId: '0007',
+          name: 'Ava Cruz',
+          section: 'BSIT-1A',
+          cloudId: 'cloud-ava',
+        ),
+        Student(
+          schoolId: '2024002',
+          omrId: '0008',
+          name: 'Liam Santos',
+          section: 'BSIT-1A',
+          cloudId: 'cloud-liam',
+        ),
+      ],
+      scanResults: const [],
+      section: Section(
+        name: 'BSIT-1A',
+        cloudId: 'cloud-section',
+        archivedAt: DateTime.utc(2026, 10, 1),
+        syncStatus: SyncStatus.synced,
+      ),
+    );
+
+    final summary = ImportService.importRows(
+      [
+        ['School ID', 'Name', 'Section'],
+        ['2024001', 'Ava Cruz', 'BSIT-1A'],
+        ['2024002', 'Liam Santos', 'BSIT-1A'],
+        ['2024003', 'New Student', 'BSIT-1A'],
+      ],
+      fileName: 'same-class.xlsx',
+      archivedPacks: [pack],
+    );
+
+    expect(summary.restored, 2);
+    expect(summary.imported, 1);
+    expect(summary.restoredSections, ['BSIT-1A']);
+    expect(
+      globalStudentDatabase.map((student) => student.omrId).toList(),
+      ['0007', '0008', '0009'],
+    );
+    expect(
+      globalStudentDatabase.firstWhere((s) => s.schoolId == '2024001').cloudId,
+      'cloud-ava',
+    );
+    final section = globalSections.single;
+    expect(section.cloudId, 'cloud-section');
+    expect(section.archivedAt, isNull);
+    expect(section.syncStatus, SyncStatus.pending);
+  });
+
+  test('a class brought back locally is not archived again on sync', () {
+    final archivedAt = DateTime.utc(2026, 10, 1, 8);
+    globalSections = [
+      Section(
+        name: 'BSIT-1A',
+        syncStatus: SyncStatus.pending,
+        updatedAt: DateTime.utc(2026, 10, 2, 9),
+      ),
+    ];
+
+    expect(
+      PhoneArchiveService.shouldKeepActiveSection(
+        Section(
+          name: 'bsit-1a',
+          archivedAt: archivedAt,
+          syncStatus: SyncStatus.synced,
+        ),
+      ),
+      isTrue,
+    );
+
+    globalSections = [
+      Section(
+        name: 'BSIT-1A',
+        syncStatus: SyncStatus.synced,
+        updatedAt: DateTime.utc(2026, 9, 1),
+      ),
+    ];
+    expect(
+      PhoneArchiveService.shouldKeepActiveSection(
+        Section(name: 'BSIT-1A', archivedAt: archivedAt),
+      ),
+      isFalse,
+    );
   });
 }

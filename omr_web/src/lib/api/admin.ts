@@ -64,7 +64,8 @@ export type TeacherMonitorStatus =
   | "active"
   | "no_sync"
   | "pending"
-  | "revoked";
+  | "revoked"
+  | "unverified";
 
 export type AccessStatus = "pending" | "approved" | "revoked";
 
@@ -93,6 +94,7 @@ export type AccessRequestTeacher = {
   school_name: string | null;
   department?: string | null;
   created_at: string | null;
+  email_verified?: boolean;
 };
 
 export type SchoolAdminStats = {
@@ -161,6 +163,8 @@ export function teacherStatusLabel(status: TeacherMonitorStatus): string {
       return "You";
     case "no_sync":
       return "Not started";
+    case "unverified":
+      return "Email not confirmed";
     case "pending":
       return "Pending approval";
     case "revoked":

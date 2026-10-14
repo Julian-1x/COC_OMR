@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
 import { removeStudent, saveStudent } from "@/lib/actions/students";
+import { compareByLastName } from "@/lib/person-name";
 import { exportSectionRosterCsv } from "@/lib/pdf/exports";
 import { downloadText } from "@/lib/utils";
 import type { DbStudent } from "@/lib/types/database";
@@ -26,13 +27,15 @@ export function SectionRosterPanel({
 
   const filteredStudents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return students;
-    return students.filter(
-      (student) =>
-        student.name.toLowerCase().includes(q) ||
-        student.school_id.toLowerCase().includes(q) ||
-        student.omr_id.includes(q),
-    );
+    const rows = !q
+      ? students
+      : students.filter(
+          (student) =>
+            student.name.toLowerCase().includes(q) ||
+            student.school_id.toLowerCase().includes(q) ||
+            student.omr_id.includes(q),
+        );
+    return [...rows].sort((a, b) => compareByLastName(a.name, b.name));
   }, [students, searchQuery]);
 
   async function addStudent(e: React.FormEvent) {

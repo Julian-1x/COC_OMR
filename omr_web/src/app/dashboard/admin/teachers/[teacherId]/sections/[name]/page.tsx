@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { fetchSectionStudentsForAdmin, fetchTeacherProfileForAdmin } from "@/lib/api/admin";
 import { requireAdminSession } from "@/lib/api/session";
+import { compareByLastName } from "@/lib/person-name";
 
 export default async function AdminSectionRosterPage({
   params,
@@ -17,7 +18,9 @@ export default async function AdminSectionRosterPage({
   const teacher = await fetchTeacherProfileForAdmin(api, teacherId, schoolName);
   if (!teacher) notFound();
 
-  const students = await fetchSectionStudentsForAdmin(api, teacherId, sectionName, schoolName);
+  const students = (await fetchSectionStudentsForAdmin(api, teacherId, sectionName, schoolName))
+    ?.slice()
+    .sort((a, b) => compareByLastName(a.name, b.name)) ?? null;
   if (students === null) notFound();
 
   return (

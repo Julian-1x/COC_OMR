@@ -15,6 +15,7 @@ import 'package:omr_app/widgets/add_student_dialog.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/widgets/app_card.dart';
 import 'package:omr_app/widgets/app_primary_button.dart';
+import 'package:omr_app/utils/person_name.dart';
 import 'package:omr_app/utils/user_error_messages.dart';
 import 'package:omr_app/utils/answer_key_scope.dart';
 import 'package:omr_app/widgets/answer_key_scope_badge.dart';
@@ -500,7 +501,7 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
       if (_sortMode == 0) {
         result = a.omrId.compareTo(b.omrId);
       } else if (_sortMode == 1) {
-        result = a.name.compareTo(b.name);
+        result = PersonName.compareByLastName(a.name, b.name);
       } else {
         final aScore = _percentageForStudent(a);
         final bScore = _percentageForStudent(b);
@@ -2377,100 +2378,123 @@ class _SectionDetailPageState extends State<SectionDetailPage> {
   void _showMoreOptions() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                    color: brandBorder,
-                    borderRadius: BorderRadius.circular(2))),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.upload_rounded),
-              title: const Text('Import Students'),
-              onTap: () {
-                Navigator.pop(context);
-                _handleImport();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.fact_check_rounded, color: brandGreen),
-              title: const Text('Exam-day board'),
-              subtitle: const Text('Who is scanned, missing, or needs review'),
-              onTap: () {
-                Navigator.pop(context);
-                _openExamDayBoard();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_rounded),
-              title: const Text('Export Results'),
-              onTap: () {
-                Navigator.pop(context);
-                _exportSectionResults();
-              },
-            ),
-            if (_sectionStudents.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.tag_rounded, color: brandGreen),
-                title: const Text('Export OMR IDs'),
-                subtitle: const Text('Printable list for exam day'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _exportSectionOmrIds();
-                },
+      builder: (context) {
+        final maxHeight = MediaQuery.sizeOf(context).height * 0.85;
+        final bottomInset = MediaQuery.paddingOf(context).bottom;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(bottom: bottomInset > 0 ? 8 : 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: brandBorder,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    leading: const Icon(Icons.upload_rounded),
+                    title: const Text('Import Students'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _handleImport();
+                    },
+                  ),
+                  ListTile(
+                    leading:
+                        const Icon(Icons.fact_check_rounded, color: brandGreen),
+                    title: const Text('Exam-day board'),
+                    subtitle:
+                        const Text('Who is scanned, missing, or needs review'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openExamDayBoard();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.download_rounded),
+                    title: const Text('Export Results'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _exportSectionResults();
+                    },
+                  ),
+                  if (_sectionStudents.isNotEmpty)
+                    ListTile(
+                      leading:
+                          const Icon(Icons.tag_rounded, color: brandGreen),
+                      title: const Text('Export OMR IDs'),
+                      subtitle: const Text('Printable list for exam day'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _exportSectionOmrIds();
+                      },
+                    ),
+                  const Divider(),
+                  ListTile(
+                    leading:
+                        const Icon(Icons.drive_file_rename_outline_rounded),
+                    title: const Text('Rename section'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _renameCurrentSection();
+                    },
+                  ),
+                  if (_allSectionNames.length > 1)
+                    ListTile(
+                      leading: const Icon(Icons.merge_rounded),
+                      title: const Text('Merge into another section'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _mergeCurrentSection();
+                      },
+                    ),
+                  if (_sectionStudents.isEmpty)
+                    ListTile(
+                      leading: const Icon(
+                        Icons.delete_outline_rounded,
+                        color: Colors.red,
+                      ),
+                      title: const Text(
+                        'Delete empty section',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _deleteEmptyCurrentSection();
+                      },
+                    ),
+                  if (_sectionStudents.isNotEmpty)
+                    ListTile(
+                      leading: const Icon(
+                        Icons.inventory_2_outlined,
+                        color: brandGreen,
+                      ),
+                      title: const Text('Move class to Phone Archive'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _deleteCurrentSectionWithStudents();
+                      },
+                    ),
+                  const SizedBox(height: 12),
+                ],
               ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline_rounded),
-              title: const Text('Rename section'),
-              onTap: () {
-                Navigator.pop(context);
-                _renameCurrentSection();
-              },
             ),
-            if (_allSectionNames.length > 1)
-              ListTile(
-                leading: const Icon(Icons.merge_rounded),
-                title: const Text('Merge into another section'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _mergeCurrentSection();
-                },
-              ),
-            if (_sectionStudents.isEmpty)
-              ListTile(
-                leading: const Icon(Icons.delete_outline_rounded, color: Colors.red),
-                title: const Text(
-                  'Delete empty section',
-                  style: TextStyle(color: Colors.red),
-                ),
-                onTap: () {
-                  Navigator.pop(context);
-                  _deleteEmptyCurrentSection();
-                },
-              ),
-            if (_sectionStudents.isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.inventory_2_outlined, color: brandGreen),
-                title: const Text('Move class to Phone Archive'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _deleteCurrentSectionWithStudents();
-                },
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 

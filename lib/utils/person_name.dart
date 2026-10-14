@@ -67,6 +67,54 @@ class PersonName {
     return normalized.join(' ');
   }
 
+  static const Set<String> _surnameParticles = {
+    'de',
+    'del',
+    'dela',
+    'la',
+    'las',
+    'los',
+    'van',
+    'von',
+    'da',
+    'dos',
+    'das',
+    'san',
+    'santa',
+    'sta',
+    'sto',
+  };
+
+  static final RegExp _nameSuffix = RegExp(
+    r'^(jr|sr|ii|iii|iv)\.?$',
+    caseSensitive: false,
+  );
+
+  /// Surname used for A–Z lists (last word, plus particles such as "de los").
+  static String surnameSortKey(String name) {
+    final words = name.trim().replaceAll(RegExp(r'\s+'), ' ').split(' ')
+      ..removeWhere((word) => word.isEmpty);
+    while (words.length > 1 && _nameSuffix.hasMatch(words.last)) {
+      words.removeLast();
+    }
+    if (words.isEmpty) {
+      return '';
+    }
+    var start = words.length - 1;
+    while (start > 0 && _surnameParticles.contains(words[start - 1].toLowerCase())) {
+      start -= 1;
+    }
+    return words.sublist(start).join(' ').toLowerCase();
+  }
+
+  static int compareByLastName(String a, String b) {
+    final byLast = surnameSortKey(a).compareTo(surnameSortKey(b));
+    if (byLast != 0) {
+      return byLast;
+    }
+    return a.toLowerCase().compareTo(b.toLowerCase());
+  }
+
   /// Form fields: last name, first name, optional suffix (Jr., III, etc.).
   static String normalizeFromParts({
     required String lastName,

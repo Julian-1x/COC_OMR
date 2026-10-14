@@ -63,16 +63,23 @@ class PhoneArchiveService {
 
   /// After a cloud pull: classes archived on the web leave the phone dashboard
   /// and land in Phone Archive for offline restore.
-  Future<int> mirrorCloudArchivedSections(Iterable<String> sectionNames) async {
+  ///
+  /// A class the teacher just imported back stays on the dashboard. Sync then
+  /// clears the cloud archive instead of creating a second class.
+  Future<int> mirrorCloudArchivedSections(Iterable<Section> archivedSections) async {
     var moved = 0;
     final seen = <String>{};
-    for (final raw in sectionNames) {
-      final name = raw.trim();
+    for (final archived in archivedSections) {
+      final name = archived.name.trim();
       if (name.isEmpty) {
         continue;
       }
-      final key = name.toLowerCase();
+      final key = normalizeSectionName(name);
       if (!seen.add(key)) {
+        continue;
+      }
+      if (shouldKeepActiveSection(archived)) {
+        debugPrint('Cloud archive mirror skipped ($name): class was brought back locally.');
         continue;
       }
       try {
@@ -84,6 +91,23 @@ class PhoneArchiveService {
       }
     }
     return moved;
+  }
+
+  /// True when this phone already put the class back after the cloud archived it.
+  static bool shouldKeepActiveSection(Section archived) {
+    final key = normalizeSectionName(archived.name);
+    Section? local;
+    for (final section in globalSections) {
+      if (normalizeSectionName(section.name) == key && !section.isArchived) {
+        local = section;
+        break;
+      }
+    }
+    if (local == null || local.syncStatus != SyncStatus.pending) {
+      return false;
+    }
+    final cloudStamp = archived.archivedAt ?? archived.updatedAt;
+    return !local.updatedAt.isBefore(cloudStamp);
   }
 
   /// Drop local classes that were permanently deleted on the school server.
@@ -176,6 +200,15 @@ class PhoneArchiveService {
       if (pack.mirroredFromCloud) {
         continue;
       }
+      if (_sectionPackIsActiveAgain(pack)) {
+        // Teacher imported this class back. Do not archive it on the server again.
+        try {
+          await LocalDataStore.instance.deletePhoneArchivePack(pack.id);
+        } catch (error) {
+          debugPrint('Active archive pack cleanup skipped (${pack.id}): $error');
+        }
+        continue;
+      }
       try {
         await _uploadPack(pack);
         await LocalDataStore.instance.deletePhoneArchivePack(pack.id);
@@ -185,6 +218,24 @@ class PhoneArchiveService {
       }
     }
     return purged;
+  }
+
+  bool _sectionPackIsActiveAgain(PhoneArchivePack pack) {
+    if (pack.kind != PhoneArchivePack.kindSection) {
+      return false;
+    }
+    final raw = pack.section?.name ??
+        (pack.sectionNames.isEmpty ? '' : pack.sectionNames.first);
+    final key = normalizeSectionName(raw);
+    if (key.isEmpty) {
+      return false;
+    }
+    for (final section in globalSections) {
+      if (normalizeSectionName(section.name) == key && !section.isArchived) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _uploadPack(PhoneArchivePack pack) async {

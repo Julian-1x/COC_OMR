@@ -108,4 +108,26 @@ void main() {
   test('normalizeSchoolId trims and uppercases', () {
     expect(normalizeSchoolId(' 02-2223-44444 '), '02-2223-44444');
   });
+
+  test('flexible student ID match ignores hyphens and names the owner', () {
+    final existing = Student(
+      schoolId: '02-2223-44444',
+      omrId: '0007',
+      name: 'Juan Dela Cruz',
+      section: 'BSIT-1A',
+    );
+    final match = findStudentBySchoolIdFlexible(
+      [existing],
+      '02222344444',
+    );
+    expect(match?.omrId, '0007');
+    expect(
+      studentIdTakenMessage(existing, archived: false),
+      contains('already belongs to Juan Dela Cruz'),
+    );
+    expect(
+      studentIdTakenMessage(existing, archived: false),
+      contains('OMR 0007'),
+    );
+  });
 }

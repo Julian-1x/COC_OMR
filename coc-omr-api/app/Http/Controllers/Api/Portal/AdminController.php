@@ -116,9 +116,6 @@ class AdminController extends Controller
         $teachers = $this->scope->schoolTeachersQuery($admin)
             ->with('user')
             ->where('access_status', CocSchool::ACCESS_PENDING)
-            ->whereHas('user', function ($query) {
-                $query->whereNotNull('email_verified_at');
-            })
             ->orderBy('created_at')
             ->get();
 
@@ -127,6 +124,7 @@ class AdminController extends Controller
                 'id' => $teacher->id,
                 'full_name' => $teacher->full_name,
                 'email' => $teacher->user?->email,
+                'email_verified' => $teacher->user?->email_verified_at !== null,
                 'role' => $teacher->role,
                 'access_status' => $teacher->access_status,
                 'school_name' => $teacher->school_name,
@@ -155,6 +153,13 @@ class AdminController extends Controller
 
         if (CocSchool::isAccessAdminRole((string) $teacher->role) && ! $admin->isSuperAdmin()) {
             return response()->json(['message' => 'Only a super admin can change another admin account.'], 403);
+        }
+
+        $teacher->loadMissing('user');
+        if ($teacher->user !== null && $teacher->user->email_verified_at === null) {
+            return response()->json([
+                'message' => 'This teacher has not confirmed their email. Delete the account if they abandoned signup, or ask them to open the verification link.',
+            ], 422);
         }
 
         $wasApproved = $teacher->isApproved();
@@ -693,9 +698,12 @@ class AdminController extends Controller
                 ->where('needs_review', true)
                 ->count();
 
+            $emailVerified = $teacher->user?->email_verified_at !== null;
             $status = 'active';
             if ($teacherId === $admin->id) {
                 $status = 'you';
+            } elseif (! $emailVerified) {
+                $status = 'unverified';
             } elseif ($teacher->access_status === CocSchool::ACCESS_PENDING) {
                 $status = 'pending';
             } elseif ($teacher->access_status === CocSchool::ACCESS_REVOKED) {

@@ -9,7 +9,7 @@ import {
   upsertSection,
   upsertStudent,
 } from "@/lib/api/data";
-import { nextOmrId, normalizeSchoolId } from "@/lib/import/roster";
+import { nextOmrId, normalizeSchoolId, schoolIdMatchKey } from "@/lib/import/roster";
 import { normalizePersonName } from "@/lib/person-name";
 
 export async function saveStudent(input: {
@@ -19,16 +19,26 @@ export async function saveStudent(input: {
   section_name: string;
 }) {
   const { user, api } = await requireTeacherSession();
-  const existing = await fetchStudents(api);
+  const existing = await fetchStudents(api, undefined, { includeArchived: true });
   const schoolId = normalizeSchoolId(input.school_id);
   if (!schoolId) {
     throw new Error("Student ID is required.");
   }
 
-  const match = existing.find(
-    (student) => normalizeSchoolId(student.school_id) === schoolId,
-  );
-  const omrId = input.omr_id ?? match?.omr_id ?? nextOmrId(existing, new Set());
+  const typedKey = schoolIdMatchKey(schoolId);
+  const match = existing.find((student) => {
+    if (normalizeSchoolId(student.school_id) === schoolId) return true;
+    return typedKey.length > 0 && schoolIdMatchKey(student.school_id) === typedKey;
+  });
+  if (match && !input.omr_id) {
+    const place = match.archived_at
+      ? `the archive (${match.section_name})`
+      : match.section_name;
+    throw new Error(
+      `Student ID ${match.school_id} already belongs to ${match.name} (OMR ${match.omr_id}) in ${place}. Nothing was added. Use a different student ID.`,
+    );
+  }
+  const omrId = input.omr_id ?? nextOmrId(existing, new Set());
 
   await upsertStudent(api, user.id, {
     school_id: schoolId,

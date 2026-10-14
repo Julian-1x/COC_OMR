@@ -68,6 +68,48 @@ export function normalizePersonName(input: string): string {
   return normalized.join(" ");
 }
 
+const SURNAME_PARTICLES = new Set([
+  "de",
+  "del",
+  "dela",
+  "la",
+  "las",
+  "los",
+  "van",
+  "von",
+  "da",
+  "dos",
+  "das",
+  "san",
+  "santa",
+  "sta",
+  "sto",
+]);
+
+const NAME_SUFFIX = /^(jr|sr|ii|iii|iv)\.?$/i;
+
+/** Sort key is the surname (last word, plus particles such as "de los"). */
+export function surnameSortKey(name: string): string {
+  const words = name.trim().replace(/\s+/g, " ").split(" ").filter(Boolean);
+  while (words.length > 1 && NAME_SUFFIX.test(words[words.length - 1])) {
+    words.pop();
+  }
+  if (words.length === 0) return "";
+  let start = words.length - 1;
+  while (start > 0 && SURNAME_PARTICLES.has(words[start - 1].toLowerCase())) {
+    start -= 1;
+  }
+  return words.slice(start).join(" ").toLowerCase();
+}
+
+export function compareByLastName(a: string, b: string): number {
+  const byLast = surnameSortKey(a).localeCompare(surnameSortKey(b), "en", {
+    sensitivity: "base",
+  });
+  if (byLast !== 0) return byLast;
+  return a.localeCompare(b, "en", { sensitivity: "base" });
+}
+
 /** Combine separate fields (form: last name, then first name) into stored "First Last" form. */
 export function normalizePersonNameFromParts(
   firstName: string,

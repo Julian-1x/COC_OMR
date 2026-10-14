@@ -33,6 +33,7 @@ import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/auto_sync_service.dart';
 import 'package:omr_app/services/teacher_pin_sync_service.dart';
+import 'package:omr_app/services/teacher_form_drafts.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
@@ -52,6 +53,7 @@ import 'package:omr_app/widgets/dashboard/teacher_hub_drawer.dart';
 import 'package:omr_app/widgets/dashboard/dashboard_top_bar.dart';
 import 'package:omr_app/widgets/dashboard/home_status_panel.dart';
 import 'package:omr_app/widgets/dashboard/review_queue_card.dart';
+import 'package:omr_app/widgets/reassign_scan_sheet.dart';
 import 'package:omr_app/widgets/pressable_scale.dart';
 import 'package:omr_app/widgets/app_bottom_sheet.dart';
 import 'package:omr_app/utils/section_program.dart';
@@ -170,7 +172,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_runDeferredStartupNetworkWork());
     });
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       unawaited(ScannerEngine.warmUp());
     }
   }
@@ -1166,7 +1168,64 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     int step = 0;
     String? layoutError;
 
-    await AppBottomSheet.showScrollable<void>(
+    final printDraft =
+        await TeacherFormDrafts.load(TeacherFormDrafts.printSheetsKey);
+    if (printDraft != null) {
+      final subjectId = printDraft['subjectId']?.toString();
+      if (subjectId != null && subjectId.isNotEmpty) {
+        for (final subject in globalSubjects) {
+          if (subject.id == subjectId) {
+            selectedSubject = subject;
+            for (final group in _subjectGroups) {
+              if (group.subjects.any((s) => s.id == subjectId)) {
+                selectedGroup = group;
+                break;
+              }
+            }
+            break;
+          }
+        }
+      }
+      selectedSection = printDraft['section']?.toString();
+      useStandardLayout = printDraft['useStandard'] != false;
+      final layoutId = printDraft['customLayoutId']?.toString();
+      if (layoutId != null && layoutId.isNotEmpty) {
+        for (final layout in globalCustomSheetLayouts) {
+          if (layout.id == layoutId) {
+            selectedCustomLayout = layout;
+            break;
+          }
+        }
+      }
+      final draftCopies = printDraft['copies'];
+      if (draftCopies is int && draftCopies >= 1 && draftCopies <= 200) {
+        copies = draftCopies;
+      }
+      savePaperTiling = printDraft['savePaperTiling'] != false;
+      final draftStep = printDraft['step'];
+      if (draftStep is int && draftStep >= 0 && draftStep <= 3) {
+        step = draftStep;
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    Future<void> persistPrintDraft() async {
+      await TeacherFormDrafts.save(TeacherFormDrafts.printSheetsKey, {
+        'subjectId': selectedSubject?.id,
+        'section': selectedSection,
+        'useStandard': useStandardLayout,
+        'customLayoutId': selectedCustomLayout?.id,
+        'copies': copies,
+        'savePaperTiling': savePaperTiling,
+        'step': step,
+      });
+    }
+
+    try {
+      await AppBottomSheet.showScrollable<void>(
       context: context,
       showDragHandle: true,
       builder: (context) {
@@ -1624,9 +1683,26 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   printSubject = layout.applyToSubject(subject);
                 }
 
+                // Stamp exam date + fixed 60% pass mark at print time.
+                final printNow = DateTime.now();
+                final stamped = printSubject.copyWith(
+                  examDate: printNow,
+                  passingScore:
+                      (printSubject.totalQuestions * 0.6).round().clamp(1, 1000),
+                  updatedAt: printNow,
+                  syncStatus: SyncStatus.pending,
+                );
+                printSubject = stamped.copyWith(
+                  sectionQrData: buildSectionQrDataForSubject(
+                    stamped,
+                    stamped.sectionNames ?? const <String>[],
+                  ),
+                );
+
                 Navigator.pop(context);
                 try {
                   await LocalDataStore.instance.upsertSubject(printSubject);
+                  AutoSyncService.instance.scheduleSync(immediate: true);
                   if (!useStandardLayout && selectedCustomLayout != null) {
                     await LocalDataStore.instance.markCustomSheetLayoutUsed(
                       layoutId: selectedCustomLayout!.id,
@@ -1815,6 +1891,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         );
       },
     );
+    } finally {
+      await persistPrintDraft();
+    }
   }
 
   @override
@@ -2766,10 +2845,15 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
 
   Future<({bool confirmed, bool replaceRoster})?> _confirmImportPreview(
     ImportPreview preview,
-  ) {
+  ) async {
     final summary = preview.summary;
 
-    var replaceRoster = false;
+    final importPrefs =
+        await TeacherFormDrafts.load(TeacherFormDrafts.importPrefsKey);
+    var replaceRoster = importPrefs?['replaceRoster'] == true;
+    if (!mounted) {
+      return null;
+    }
 
     return showDialog<({bool confirmed, bool replaceRoster})>(
       context: context,
@@ -2810,6 +2894,26 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     label: 'New students',
                     value: effectiveSummary.imported,
                   ),
+                  if (effectiveSummary.restored > 0) ...[
+                    _ImportStatLine(
+                      color: AppColors.brandGreenDark,
+                      icon: Icons.unarchive_rounded,
+                      label: 'Brought back from archive',
+                      value: effectiveSummary.restored,
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4, bottom: 8),
+                      child: Text(
+                        effectiveSummary.restoredSections.isEmpty
+                            ? 'These students were already archived. Import uses their existing OMR IDs so Sync does not create a second class.'
+                            : 'Already archived: ${effectiveSummary.restoredSections.join(', ')}. Import puts that class back on your dashboard with the same OMR IDs.',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.brandMuted,
+                        ),
+                      ),
+                    ),
+                  ],
                   if (effectiveSummary.updated > 0)
                     _ImportStatLine(
                       color: AppColors.brandGreenDark,
@@ -2922,10 +3026,18 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               FilledButton(
                 onPressed: effective.hasNothingToImport
                     ? null
-                    : () => Navigator.pop(
+                    : () {
+                        unawaited(
+                          TeacherFormDrafts.save(
+                            TeacherFormDrafts.importPrefsKey,
+                            {'replaceRoster': replaceRoster},
+                          ),
+                        );
+                        Navigator.pop(
                           dialogContext,
                           (confirmed: true, replaceRoster: replaceRoster),
-                        ),
+                        );
+                      },
                 style: FilledButton.styleFrom(backgroundColor: AppColors.brandGreen),
                 child: Text(
                   effective.hasNothingToImport
@@ -3070,7 +3182,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
       builder: (context) => AlertDialog(
         title: const Text('Sign out?'),
         content: const Text(
-          'You can unlock again with your offline PIN, or sign in online on this or another device.',
+          'You will return to the email sign-in screen. '
+          'Your classes, keys, and scores stay on this phone for your account. '
+          'Sync first if you want a cloud copy before switching devices.',
         ),
         actions: [
           TextButton(
@@ -3930,6 +4044,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
             const Text(
               'Restore offline from Settings → Phone Archive. '
               'When online, Sync Now uploads to the web and frees phone storage. '
+              'Archived items are permanently deleted after 4 months if not restored. '
               'Delete forever is only inside Phone Archive.',
               style: TextStyle(color: AppColors.brandMuted, fontSize: 13),
             ),
@@ -4937,7 +5052,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                         if (section.totalStudents > 0)
                           const PopupMenuItem(
                             value: 'delete_class',
-                            child: Text('Delete class permanently'),
+                            child: Text('Move class to Phone Archive'),
                           ),
                       ],
                       icon: Icon(
@@ -5955,6 +6070,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                 'Remove student or class → lands here with scores. '
                 'Restore while still on this phone. When online, Sync Now (or Upload & clear) '
                 'moves items to the web portal and clears phone storage. '
+                'Items left archived for 4 months are permanently deleted. '
                 'Delete forever is only available inside Phone Archive.',
               ),
               const SizedBox(height: 16),
@@ -6021,25 +6137,14 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildSettingsTipBox(
-                'Think of a backup like photocopying your gradebook. You save a file to your phone '
-                'or Google Drive so you can recover your work later.',
+                'A backup is a file copy of your classes, keys, and scores. '
+                'Use it for a new phone or extra safety. Cloud sync (above) is separate.',
               ),
-              const SizedBox(height: 18),
-              _buildSettingsSubheading('Cloud sync vs backup file'),
+              const SizedBox(height: 16),
+              _buildSettingsSubheading('Save'),
               const SizedBox(height: 8),
-              _buildSettingsBullet(
-                'Cloud sync (above) updates online when you tap Sync now or when Wi‑Fi auto-sync uploads pending changes.',
-              ),
-              _buildSettingsBullet(
-                'A backup file is something you save and open yourself—helpful with no internet, a new phone, or extra safety.',
-              ),
-              const SizedBox(height: 18),
-              _buildSettingsSubheading('How to save a backup'),
-              const SizedBox(height: 8),
-              _buildSettingsBullet('Tap Save backup file below.'),
-              _buildSettingsBullet('Choose where to store it (Files, Drive, etc.).'),
-              _buildSettingsBullet('Keep the file private—anyone with it can see your class data.'),
-              const SizedBox(height: 14),
+              _buildSettingsBullet('Save the file to Files or Drive. Keep it private.'),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
@@ -6056,15 +6161,11 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   ),
                 ),
               ),
-              const SizedBox(height: 22),
-              _buildSettingsSubheading('How to load a backup'),
+              const SizedBox(height: 20),
+              _buildSettingsSubheading('Load'),
               const SizedBox(height: 8),
               _buildSettingsBullet(
-                'Loading a backup first compares it with this phone, then you choose: '
-                'add missing only, let backup win on overlaps, or replace everything.',
-              ),
-              _buildSettingsBullet(
-                'It changes data for your account on this device—not other teachers\' data.',
+                'You will choose: add missing only, let the backup win, or replace everything.',
               ),
               const SizedBox(height: 10),
               Container(
@@ -6082,8 +6183,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                     SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Loading a backup replaces your current work on this device. '
-                        'Double-check that you picked the right file.',
+                        'Check you picked the right file before loading.',
                         style: TextStyle(
                           color: AppColors.brandText,
                           fontSize: 12.5,
@@ -6095,7 +6195,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
                   ],
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
@@ -6114,7 +6214,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               ),
               const SizedBox(height: 12),
               const Text(
-                'Scanned answer sheet photos are not included in backup files—they stay on this device only.',
+                'Scan photos stay on this phone and are not in the backup file.',
                 style: TextStyle(color: AppColors.brandMuted, fontSize: 12, height: 1.35),
               ),
             ],
@@ -6130,11 +6230,9 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                ApiService.hasActiveSession
-                    ? 'You are signed in. Sign out if you are done on this device or switching accounts.'
-                    : 'You are using the app with your PIN on this device. Sign out to return to the login screen.',
-                style: const TextStyle(
+              const Text(
+                'Sign out returns you to email login. Your exam data stays on this phone for your account.',
+                style: TextStyle(
                   color: AppColors.brandMuted,
                   fontSize: 13,
                   height: 1.4,
@@ -6159,8 +6257,7 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               ),
               const SizedBox(height: 8),
               const Text(
-                'Forgot your PIN? Sign out, tap Forgot PIN on the unlock screen, '
-                'then sign in online to set a new one.',
+                'Forgot your PIN? Sign out, sign in online, then set a new PIN.',
                 style: TextStyle(
                   color: AppColors.brandMuted,
                   fontSize: 12,
@@ -6917,6 +7014,17 @@ class _ReviewQueueSheetState extends State<_ReviewQueueSheet> {
           needsReview: false,
         );
         if (mounted) {
+          setState(() {});
+          widget.onReviewComplete();
+        }
+      },
+      onReassign: () async {
+        final moved = await showReassignScanSheet(
+          context,
+          scan: scan,
+          preferSection: student?.section,
+        );
+        if (moved && mounted) {
           setState(() {});
           widget.onReviewComplete();
         }

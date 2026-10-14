@@ -285,6 +285,7 @@ export function AccessControlPanel({
         <h2 className="text-lg font-extrabold text-slate-800">Pending</h2>
         <p className="mt-1 text-sm text-slate-600">
           Approve sends them an email that they can sign in on the app or web.
+          Accounts that never confirmed their email stay here until you delete them.
           {scopeHint ? ` ${scopeHint}.` : ""}
         </p>
         {filteredPending.length === 0 ? (
@@ -308,15 +309,22 @@ export function AccessControlPanel({
                     {teacher.email ?? "No email"}
                     {teacher.department ? ` · ${teacher.department}` : ""}
                   </p>
+                  {teacher.email_verified === false ? (
+                    <p className="mt-1 text-xs font-bold text-amber-800">
+                      Email not confirmed. They never finished signup. Delete this account if it should not stay on the list.
+                    </p>
+                  ) : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    disabled={isPending && pendingId === teacher.id}
-                    onClick={() => run(teacher.id, approveTeacherAction)}
-                  >
-                    {isPending && pendingId === teacher.id ? "Approving…" : "Approve"}
-                  </Button>
+                  {teacher.email_verified === false ? null : (
+                    <Button
+                      type="button"
+                      disabled={isPending && pendingId === teacher.id}
+                      onClick={() => run(teacher.id, approveTeacherAction)}
+                    >
+                      {isPending && pendingId === teacher.id ? "Approving…" : "Approve"}
+                    </Button>
+                  )}
                   <DeleteButton teacher={teacher} />
                 </div>
               </li>

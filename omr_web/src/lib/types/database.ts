@@ -26,6 +26,7 @@ export type DbStudent = {
   confidence: number | null;
   local_id: string | null;
   sync_status: string;
+  archived_at?: string | null;
   created_at: string;
   updated_at: string;
 };

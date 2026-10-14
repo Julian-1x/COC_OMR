@@ -4,6 +4,7 @@ import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:omr_app/models/exam_data.dart';
+import 'package:omr_app/models/phone_archive_pack.dart';
 import 'package:omr_app/services/local_data_store.dart';
 import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/utils/academic_term.dart';
@@ -27,6 +28,8 @@ class ImportSummary {
     this.updated = 0,
     this.removed = 0,
     this.unchanged = 0,
+    this.restored = 0,
+    this.restoredSections = const <String>[],
   });
 
   const ImportSummary.cancelled()
@@ -38,7 +41,9 @@ class ImportSummary {
         errors = const [],
         updated = 0,
         removed = 0,
-        unchanged = 0;
+        unchanged = 0,
+        restored = 0,
+        restoredSections = const <String>[];
 
   final int imported;
   final int skipped;
@@ -50,6 +55,10 @@ class ImportSummary {
   final int removed;
   final int unchanged;
 
+  /// Students matched to a class already in Phone Archive. Same OMR ID is kept.
+  final int restored;
+  final List<String> restoredSections;
+
   int get totalRows => imported + skipped + duplicates + updated + unchanged;
   bool get hasChanges =>
       imported > 0 ||
@@ -57,11 +66,13 @@ class ImportSummary {
       duplicates > 0 ||
       updated > 0 ||
       removed > 0 ||
-      unchanged > 0;
+      unchanged > 0 ||
+      restored > 0;
 
   String get feedbackMessage {
     final parts = <String>[
       if (imported > 0) 'added $imported',
+      if (restored > 0) 'brought back $restored from archive',
       if (updated > 0) 'updated $updated',
       if (unchanged > 0) 'unchanged $unchanged',
       if (skipped > 0) 'skipped $skipped',
@@ -177,8 +188,27 @@ class ImportService {
         reservedOmrIds: reservedOmrIds,
       );
 
-  /// Add one student by school ID / name / section. Same school ID keeps the
-  /// existing OMR ID; a new student gets the next available ID (0001–9999).
+  /// Student ID already on the active roster or in Phone Archive.
+  static Future<({Student student, bool archived})?> findTakenStudentId(
+    String schoolId,
+  ) async {
+    await LocalDataStore.instance.reloadForCurrentTeacher();
+    final active = findStudentBySchoolIdFlexible(globalStudentDatabase, schoolId);
+    if (active != null) {
+      return (student: active, archived: false);
+    }
+    final packs = await LocalDataStore.instance.fetchPhoneArchivePacks();
+    for (final pack in packs) {
+      final archived = findStudentBySchoolIdFlexible(pack.students, schoolId);
+      if (archived != null) {
+        return (student: archived, archived: true);
+      }
+    }
+    return null;
+  }
+
+  /// Add one new student. An existing student ID is refused so a different
+  /// name cannot take over that ID or receive a second OMR ID.
   static Future<ManualStudentResult> addManualStudent({
     required String schoolId,
     required String name,
@@ -198,27 +228,22 @@ class ImportService {
       throw const FormatException('Enter the section.');
     }
 
-    await LocalDataStore.instance.reloadForCurrentTeacher();
+    final taken = await findTakenStudentId(trimmedId);
+    if (taken != null) {
+      throw FormatException(
+        studentIdTakenMessage(taken.student, archived: taken.archived),
+      );
+    }
 
     final ownerTeacherId = ApiService.currentUserId?.trim();
-    final existing = findStudentBySchoolId(globalStudentDatabase, trimmedId);
-    final student = existing == null
-        ? Student(
-            schoolId: trimmedId,
-            name: trimmedName,
-            section: sectionName,
-            omrId: _buildOmrId(trimmedId, reservedOmrIds: {}),
-            ownerTeacherId: ownerTeacherId,
-            syncStatus: SyncStatus.pending,
-          )
-        : existing.copyWith(
-            schoolId: trimmedId,
-            name: trimmedName,
-            section: sectionName,
-            ownerTeacherId: ownerTeacherId ?? existing.ownerTeacherId,
-            syncStatus: SyncStatus.pending,
-            updatedAt: DateTime.now(),
-          );
+    final student = Student(
+      schoolId: trimmedId,
+      name: trimmedName,
+      section: sectionName,
+      omrId: _buildOmrId(trimmedId, reservedOmrIds: {}),
+      ownerTeacherId: ownerTeacherId,
+      syncStatus: SyncStatus.pending,
+    );
 
     await LocalDataStore.instance.saveImportedStudents(
       students: [student],
@@ -229,8 +254,8 @@ class ImportService {
 
     return ManualStudentResult(
       student: student,
-      created: existing == null,
-      omrIdReused: existing != null,
+      created: true,
+      omrIdReused: false,
     );
   }
 
@@ -295,7 +320,12 @@ class ImportService {
 
     try {
       final rows = await _rowsFromPickedFile(file);
-      final batch = _prepareImportRows(rows, fileName: file.name);
+      final packs = await LocalDataStore.instance.fetchPhoneArchivePacks();
+      final batch = _prepareImportRows(
+        rows,
+        fileName: file.name,
+        archivedPacks: packs,
+      );
       return ImportPreview._(batch);
     } on FormatException catch (error) {
       throw FormatException(error.message);
@@ -309,6 +339,7 @@ class ImportService {
         fileName: preview._batch.summary.fileName,
         hasHeader: preview._batch.hasHeader,
         replaceRoster: true,
+        archivedPacks: preview._batch.archivedPacks,
       ),
     );
   }
@@ -319,6 +350,7 @@ class ImportService {
         preview._batch.rows,
         fileName: preview._batch.summary.fileName,
         hasHeader: preview._batch.hasHeader,
+        archivedPacks: preview._batch.archivedPacks,
       ),
     );
   }
@@ -332,6 +364,7 @@ class ImportService {
     final effective = replaceRoster
         ? preview.replaceRosterPreview()
         : refreshPreview(preview);
+    await _restoreArchivedPacks(effective._batch.archivePackIds);
     await LocalDataStore.instance.saveImportedStudents(
       students: effective._batch.students,
       sections: effective._batch.sections,
@@ -358,7 +391,25 @@ class ImportService {
       updated: base.updated,
       removed: removed,
       unchanged: base.unchanged,
+      restored: base.restored,
+      restoredSections: base.restoredSections,
     );
+  }
+
+  /// Put archived classes back on the dashboard before saving the file, so
+  /// Sync Now does not upload a second copy and archive it again.
+  static Future<void> _restoreArchivedPacks(Iterable<String> packIds) async {
+    final seen = <String>{};
+    for (final id in packIds) {
+      if (id.isEmpty || !seen.add(id)) {
+        continue;
+      }
+      try {
+        await LocalDataStore.instance.restorePhoneArchivePack(id);
+      } catch (error) {
+        debugPrint('Archive restore before import skipped ($id): $error');
+      }
+    }
   }
 
   /// Preview import without actually importing (returns row count)
@@ -396,12 +447,14 @@ class ImportService {
     Iterable<List<dynamic>> rows, {
     required String fileName,
     bool hasHeader = true,
+    List<PhoneArchivePack> archivedPacks = const <PhoneArchivePack>[],
     ImportProgressCallback? onProgress,
   }) {
     final batch = _prepareImportRows(
       rows,
       fileName: fileName,
       hasHeader: hasHeader,
+      archivedPacks: archivedPacks,
       onProgress: onProgress,
     );
     _applyPreparedImportToMemory(batch);
@@ -416,13 +469,16 @@ class ImportService {
     required String fileName,
     bool hasHeader = true,
     bool replaceRoster = false,
+    List<PhoneArchivePack> archivedPacks = const <PhoneArchivePack>[],
     ImportProgressCallback? onProgress,
   }) {
     int imported = 0;
     int updated = 0;
     int unchanged = 0;
+    int restored = 0;
     int skipped = 0;
     int duplicates = 0;
+    final archive = _ArchiveRosterIndex(archivedPacks);
     final errors = <String>[];
     final importedStudents = <Student>[];
     final sectionsByName = <String, Section>{};
@@ -435,7 +491,8 @@ class ImportService {
     final assignedOmrIds = globalStudentDatabase
         .map((student) => student.omrId.trim())
         .where((value) => value.isNotEmpty)
-        .toSet();
+        .toSet()
+      ..addAll(archive.reservedOmrIds);
     final importedInBatch = <String>{};
     final fileSchoolIds = <String>{};
 
@@ -534,7 +591,11 @@ class ImportService {
       if (existingStudent != null) {
         sectionsByName.putIfAbsent(
           resolvedSection,
-          () => _importSection(resolvedSection, ownerTeacherId: ownerTeacherId),
+          () => _sectionForImport(
+            resolvedSection,
+            ownerTeacherId: ownerTeacherId,
+            archive: archive,
+          ),
         );
 
         final sameName = existingStudent.name.trim() == name.trim();
@@ -564,6 +625,33 @@ class ImportService {
         continue;
       }
 
+      final archivedStudent = archive.studentBySchoolId[studentKey];
+      if (archivedStudent != null) {
+        sectionsByName.putIfAbsent(
+          resolvedSection,
+          () => _sectionForImport(
+            resolvedSection,
+            ownerTeacherId: ownerTeacherId,
+            archive: archive,
+          ),
+        );
+        importedStudents.add(
+          archivedStudent.copyWith(
+            schoolId: schoolId,
+            name: name,
+            section: resolvedSection,
+            ownerTeacherId: ownerTeacherId ?? archivedStudent.ownerTeacherId,
+            syncStatus: SyncStatus.pending,
+            updatedAt: DateTime.now(),
+          ),
+        );
+        archive.consumeSchoolId(studentKey);
+        importedInBatch.add(studentKey);
+        assignedOmrIds.add(archivedStudent.omrId);
+        restored++;
+        continue;
+      }
+
       final newStudent = Student(
         schoolId: schoolId,
         name: name,
@@ -578,7 +666,11 @@ class ImportService {
       importedStudents.add(newStudent);
       sectionsByName.putIfAbsent(
         resolvedSection,
-        () => _importSection(resolvedSection, ownerTeacherId: ownerTeacherId),
+        () => _sectionForImport(
+          resolvedSection,
+          ownerTeacherId: ownerTeacherId,
+          archive: archive,
+        ),
       );
       existingStudentIds.add(studentKey);
       assignedOmrIds.add(newStudent.omrId);
@@ -608,6 +700,8 @@ class ImportService {
       updated: updated,
       removed: studentsToRemove.length,
       unchanged: unchanged,
+      restored: restored,
+      restoredSections: archive.restoredSectionNames.toList()..sort(),
     );
 
     return _PreparedImportBatch(
@@ -617,6 +711,27 @@ class ImportService {
       studentsToRemove: studentsToRemove,
       rows: rowList,
       hasHeader: hasHeader,
+      archivedPacks: archivedPacks,
+      archivePackIds: archive.packIdsToRestore.toList(),
+    );
+  }
+
+  static Section _sectionForImport(
+    String name, {
+    required String? ownerTeacherId,
+    required _ArchiveRosterIndex archive,
+  }) {
+    final archived = archive.sectionByName[normalizeSectionName(name)];
+    if (archived == null) {
+      return _importSection(name, ownerTeacherId: ownerTeacherId);
+    }
+    archive.noteSection(name);
+    return archived.copyWith(
+      name: name,
+      clearArchivedAt: true,
+      ownerTeacherId: ownerTeacherId ?? archived.ownerTeacherId,
+      syncStatus: SyncStatus.pending,
+      updatedAt: DateTime.now(),
     );
   }
 
@@ -643,11 +758,14 @@ class ImportService {
         );
       }
 
+      final packs = await LocalDataStore.instance.fetchPhoneArchivePacks();
       final batch = _prepareImportRows(
         rows,
         fileName: fileName,
+        archivedPacks: packs,
         onProgress: onProgress,
       );
+      await _restoreArchivedPacks(batch.archivePackIds);
       await LocalDataStore.instance.saveImportedStudents(
         students: batch.students,
         sections: batch.sections,
@@ -705,6 +823,8 @@ class _PreparedImportBatch {
     this.studentsToRemove = const <Student>[],
     required this.rows,
     required this.hasHeader,
+    this.archivedPacks = const <PhoneArchivePack>[],
+    this.archivePackIds = const <String>[],
   });
 
   final ImportSummary summary;
@@ -713,4 +833,67 @@ class _PreparedImportBatch {
   final List<Student> studentsToRemove;
   final List<List<dynamic>> rows;
   final bool hasHeader;
+  final List<PhoneArchivePack> archivedPacks;
+  final List<String> archivePackIds;
+}
+
+/// Students and classes sitting in Phone Archive, keyed for roster import.
+class _ArchiveRosterIndex {
+  _ArchiveRosterIndex(List<PhoneArchivePack> packs) {
+    for (final pack in packs) {
+      final sectionName = pack.section?.name ??
+          (pack.sectionNames.isEmpty ? '' : pack.sectionNames.first);
+      final sectionKey = normalizeSectionName(sectionName);
+      if (sectionKey.isNotEmpty) {
+        _packIdsBySection.putIfAbsent(sectionKey, () => <String>{}).add(pack.id);
+        final section = pack.section;
+        if (section != null) {
+          _sections[sectionKey] = section;
+        }
+      }
+      for (final student in pack.students) {
+        final schoolKey = normalizeSchoolId(student.schoolId);
+        if (schoolKey.isEmpty) {
+          continue;
+        }
+        _students.putIfAbsent(schoolKey, () => student);
+        _packIdsBySchool.putIfAbsent(schoolKey, () => <String>{}).add(pack.id);
+        final omrId = student.omrId.trim();
+        if (omrId.isNotEmpty) {
+          _reservedOmrIds.add(omrId);
+        }
+      }
+    }
+  }
+
+  final Map<String, Student> _students = <String, Student>{};
+  final Map<String, Section> _sections = <String, Section>{};
+  final Map<String, Set<String>> _packIdsBySchool = <String, Set<String>>{};
+  final Map<String, Set<String>> _packIdsBySection = <String, Set<String>>{};
+  final Set<String> _reservedOmrIds = <String>{};
+  final Set<String> _packIdsToRestore = <String>{};
+  final Set<String> _restoredSections = <String>{};
+
+  Map<String, Student> get studentBySchoolId => _students;
+  Map<String, Section> get sectionByName => _sections;
+  Set<String> get reservedOmrIds => _reservedOmrIds;
+  Set<String> get packIdsToRestore => _packIdsToRestore;
+  Set<String> get restoredSectionNames => _restoredSections;
+
+  void consumeSchoolId(String schoolKey) {
+    _packIdsToRestore.addAll(_packIdsBySchool[schoolKey] ?? const <String>{});
+    final student = _students[schoolKey];
+    if (student != null) {
+      noteSection(student.section);
+    }
+  }
+
+  void noteSection(String name) {
+    final key = normalizeSectionName(name);
+    if (key.isEmpty || !_packIdsBySection.containsKey(key)) {
+      return;
+    }
+    _restoredSections.add(name);
+    _packIdsToRestore.addAll(_packIdsBySection[key] ?? const <String>{});
+  }
 }
