@@ -1,7 +1,6 @@
 import { Suspense } from "react";
 import { fetchScanResults, fetchSections, fetchStudents, fetchSubjects } from "@/lib/api/data";
 import { requireTeacherSession } from "@/lib/api/session";
-import { schoolYearOptions } from "@/lib/academic-term";
 import { ResultsContent } from "./results-content";
 
 export default async function ResultsPage({
@@ -9,15 +8,13 @@ export default async function ResultsPage({
 }: {
   searchParams: Promise<{
     view?: string;
-    year?: string;
     review?: string;
     section?: string;
     subject?: string;
   }>;
 }) {
-  const { view, year, review, section, subject } = await searchParams;
+  const { view, review, section, subject } = await searchParams;
   const showArchived = view === "archived";
-  const schoolYear = year?.trim() || undefined;
   const reviewFilter =
     review === "pending" || review === "passed" || review === "failed" ? review : "";
   const { api } = await requireTeacherSession();
@@ -25,7 +22,7 @@ export default async function ResultsPage({
     fetchScanResults(api),
     fetchStudents(api),
     fetchSubjects(api),
-    fetchSections(api, { archived: showArchived ? true : false, schoolYear }),
+    fetchSections(api, { archived: showArchived ? true : false }),
   ]);
 
   const allowedSectionNames = new Set(sections.map((row) => row.name));
@@ -39,8 +36,6 @@ export default async function ResultsPage({
         sections={sections}
         allowedSectionNames={allowedSectionNames}
         showArchived={showArchived}
-        schoolYear={schoolYear}
-        yearOptions={schoolYearOptions()}
         initialReviewFilter={reviewFilter}
         initialSectionFilter={section?.trim() ?? ""}
         initialSubjectFilter={subject?.trim() ?? ""}

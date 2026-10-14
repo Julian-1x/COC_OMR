@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
-/** Sync reminder for prepare / classes / results. */
+/** Sync reminder for prepare, classes, and results. */
 export function SyncLoopNotice({ className = "" }: { className?: string }) {
   return (
     <p

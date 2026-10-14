@@ -21,11 +21,9 @@ import {
 
 type ReviewFilter = "" | "pending" | "passed" | "failed";
 
-function resultsHref(view?: "archived", year?: string, review?: ReviewFilter) {
+function resultsHref(view?: "archived") {
   const params = new URLSearchParams();
   if (view === "archived") params.set("view", "archived");
-  if (year) params.set("year", year);
-  if (review) params.set("review", review);
   const query = params.toString();
   return query ? `/dashboard/results?${query}` : "/dashboard/results";
 }
@@ -44,8 +42,6 @@ export function ResultsContent({
   sections,
   allowedSectionNames,
   showArchived = false,
-  schoolYear,
-  yearOptions = [],
   initialReviewFilter = "",
   initialSectionFilter = "",
   initialSubjectFilter = "",
@@ -54,11 +50,9 @@ export function ResultsContent({
   students: DbStudent[];
   subjects: DbSubject[];
   sections: { name: string; school_year?: string | null; term_label?: string | null }[];
-  /** Sections in the current Active/Archived + year filter — used for the dropdown only. */
+  /** Sections in the current Active or Archived list — used for the dropdown only. */
   allowedSectionNames?: Set<string>;
   showArchived?: boolean;
-  schoolYear?: string;
-  yearOptions?: string[];
   initialReviewFilter?: ReviewFilter;
   initialSectionFilter?: string;
   initialSubjectFilter?: string;
@@ -274,7 +268,7 @@ export function ResultsContent({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
-            href={resultsHref(undefined, schoolYear)}
+            href={resultsHref()}
             className={`rounded-xl px-3 py-2 text-sm font-bold ${
               !showArchived
                 ? "bg-emerald-500 text-white"
@@ -284,7 +278,7 @@ export function ResultsContent({
             Active
           </Link>
           <Link
-            href={resultsHref("archived", schoolYear)}
+            href={resultsHref("archived")}
             className={`rounded-xl px-3 py-2 text-sm font-bold ${
               showArchived
                 ? "bg-emerald-500 text-white"
@@ -293,28 +287,6 @@ export function ResultsContent({
           >
             Archived
           </Link>
-          <form className="flex items-center gap-2" method="get">
-            {showArchived ? <input type="hidden" name="view" value="archived" /> : null}
-            <select
-              name="year"
-              defaultValue={schoolYear ?? ""}
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
-              aria-label="School year"
-            >
-              <option value="">All years</option>
-              {yearOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700 hover:border-emerald-300"
-            >
-              Filter
-            </button>
-          </form>
           <Link
             href="/dashboard/results/analysis"
             className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-extrabold text-emerald-800 hover:bg-emerald-100"

@@ -6,6 +6,7 @@ import 'package:omr_app/services/api_service.dart';
 import 'package:omr_app/services/phone_archive_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/utils/student_identity.dart';
+import 'package:omr_app/utils/sync_activity_message.dart';
 
 class SyncSummary {
   const SyncSummary({
@@ -14,6 +15,8 @@ class SyncSummary {
     required this.subjects,
     required this.scanResults,
     required this.deadlines,
+    this.notes = const <String>[],
+    this.failureNotes = const <String>[],
   });
 
   final int sections;
@@ -21,6 +24,12 @@ class SyncSummary {
   final int subjects;
   final int scanResults;
   final int deadlines;
+
+  /// What this upload actually changed, in teacher language.
+  final List<String> notes;
+
+  /// Rows that were waiting and did not reach the cloud.
+  final List<String> failureNotes;
 
   int get total => sections + students + subjects + scanResults + deadlines;
 }
@@ -137,6 +146,8 @@ class CloudSyncService {
     var subjects = 0;
     var scanResults = 0;
     var deadlines = 0;
+    final notes = <String>[];
+    final failureNotes = <String>[];
 
     for (final section in pending.sections) {
       if (section.ownerTeacherId != null &&
@@ -152,6 +163,7 @@ class CloudSyncService {
         sections++;
       } catch (error) {
         debugPrint('Sync section failed (${section.name}): $error');
+        failureNotes.add(failedUploadSentence('Class ${section.name}'));
       }
     }
 
@@ -169,6 +181,7 @@ class CloudSyncService {
         students++;
       } catch (error) {
         debugPrint('Sync student failed (${student.omrId}): $error');
+        failureNotes.add(failedUploadSentence(student.name));
       }
     }
 
@@ -186,8 +199,15 @@ class CloudSyncService {
           cloudId: cloudId,
         );
         subjects++;
+        notes.add(
+          uploadedSubjectSentence(
+            name: subject.name,
+            sections: subject.sectionNames,
+          ),
+        );
       } catch (error) {
         debugPrint('Sync subject failed (${subject.id}): $error');
+        failureNotes.add(failedUploadSentence('The answer key ${subject.name}'));
       }
     }
 
@@ -215,6 +235,9 @@ class CloudSyncService {
         debugPrint(
           'Sync scan failed (${result.studentOmrId}/${result.subjectName}): $error',
         );
+        failureNotes.add(
+          failedUploadSentence('A graded sheet for ${result.subjectName}'),
+        );
       }
     }
 
@@ -240,6 +263,7 @@ class CloudSyncService {
         deadlines++;
       } catch (error) {
         debugPrint('Sync deadline failed (${deadline.id}): $error');
+        failureNotes.add(failedUploadSentence('A deadline'));
       }
     }
 
@@ -252,6 +276,8 @@ class CloudSyncService {
       subjects: subjects,
       scanResults: scanResults,
       deadlines: deadlines,
+      notes: notes,
+      failureNotes: failureNotes,
     );
   }
 

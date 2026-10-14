@@ -39,6 +39,7 @@ import 'package:omr_app/services/cloud_sync_service.dart';
 import 'package:omr_app/services/sync_preferences_service.dart';
 import 'package:omr_app/theme/app_colors.dart';
 import 'package:omr_app/utils/answer_key_sections.dart';
+import 'package:omr_app/utils/sync_activity_message.dart';
 import 'package:omr_app/utils/answer_key_scope.dart';
 import 'package:omr_app/widgets/answer_key_scope_badge.dart';
 import 'package:omr_app/services/scanner_engine.dart';
@@ -3259,12 +3260,28 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
         _lastSyncSummary = fullSummary.push;
         _isSyncing = false;
       });
-      final pushed = fullSummary.push.total;
-      final pulled = fullSummary.pull.downloaded;
-      final message = pushed == 0 && pulled == 0
-          ? 'Everything is already synced.'
-          : 'Downloaded $pulled cloud item${pulled == 1 ? '' : 's'} and uploaded $pushed local change${pushed == 1 ? '' : 's'}.';
-      _showSnackBar(message, backgroundColor: AppColors.brandGreen);
+      final push = fullSummary.push;
+      final pull = fullSummary.pull.merged;
+      final message = describeSyncActivity(
+        uploadedNotes: push.notes,
+        failureNotes: push.failureNotes,
+        uploadedSections: push.sections,
+        uploadedStudents: push.students,
+        uploadedScanResults: push.scanResults,
+        uploadedDeadlines: push.deadlines,
+        downloadedNotes: pull.notes,
+        downloadedSections: pull.sections,
+        downloadedStudents: pull.students,
+        downloadedScanResults: pull.scanResults,
+        downloadedDeadlines: pull.deadlines,
+      );
+      _showSnackBar(
+        message,
+        backgroundColor: fullSummary.push.failureNotes.isEmpty
+            ? AppColors.brandGreen
+            : Colors.red,
+        duration: const Duration(seconds: 5),
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -4104,13 +4121,18 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
     }
   }
 
-  void _showSnackBar(String message, {Color backgroundColor = AppColors.brandGreen}) {
+  void _showSnackBar(
+    String message, {
+    Color backgroundColor = AppColors.brandGreen,
+    Duration duration = const Duration(seconds: 4),
+  }) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: backgroundColor,
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        duration: duration,
       ),
     );
   }
@@ -5982,9 +6004,12 @@ class _DashboardPageState extends State<DashboardPage> with WidgetsBindingObserv
               _SettingsRow(
                 icon: Icons.download_done_rounded,
                 label: 'Last upload batch',
-                value: _lastSyncSummary == null
-                    ? 'None yet'
-                    : '${_lastSyncSummary!.total} item${_lastSyncSummary!.total == 1 ? '' : 's'}',
+                value: lastUploadBatchLabel(
+                  hasSummary: _lastSyncSummary != null,
+                  total: _lastSyncSummary?.total ?? 0,
+                  subjects: _lastSyncSummary?.subjects ?? 0,
+                  failed: _lastSyncSummary?.failureNotes.isNotEmpty ?? false,
+                ),
               ),
               const Divider(height: 24),
               SwitchListTile(

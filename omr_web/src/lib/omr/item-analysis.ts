@@ -189,15 +189,14 @@ export function discriminationQuality(d: number | null): DiscriminationQuality {
 export function discriminationLabel(d: number | null): string {
   switch (discriminationQuality(d)) {
     case "strong":
-      return "Strong";
     case "good":
-      return "Good";
+      return "Works well";
     case "fair":
-      return "Fair";
+      return "Okay";
     case "weak":
-      return "Weak";
+      return "Check this question";
     default:
-      return "Need more scans";
+      return "Need more graded sheets";
   }
 }
 
@@ -268,10 +267,14 @@ export function questionsNeedingAttention(
     const d = q.discriminationIndex;
 
     if (rate < 0.3) {
-      reasons.push(`Only ${Math.round(rate * 100)}% got it right`);
+      reasons.push(
+        rate <= 0
+          ? "Nobody got this right"
+          : `Only ${Math.round(rate * 100)}% got this right`,
+      );
     }
     if (d !== null && d < 0.2) {
-      reasons.push(`Weak discrimination (D ${d.toFixed(2)})`);
+      reasons.push("Strong students missed this too");
     }
 
     let topWrongChoice: string | null = null;
@@ -288,7 +291,7 @@ export function questionsNeedingAttention(
       topWrongCount >= Math.max(2, Math.ceil(q.totalAttempts * 0.25))
     ) {
       reasons.push(
-        `Many chose ${topWrongChoice} (${topWrongCount}/${q.totalAttempts})`,
+        `${topWrongCount} of ${q.totalAttempts} chose ${topWrongChoice}`,
       );
     }
 
@@ -315,7 +318,7 @@ export function exportItemAnalysisCsv(
   subject?: DbSubject,
 ): string {
   const header =
-    "Question,Correct Answer,Attempts,Correct,Partial,Percent Correct,Discrimination,D Quality,Difficulty,Attention";
+    "Question,Correct answer,Graded sheets,Got it right,Partly right,Percent correct,How hard,Separates the class,What to look at";
   const attention = subject
     ? new Map(
         questionsNeedingAttention(subject, report).map((f) => [
@@ -327,7 +330,6 @@ export function exportItemAnalysisCsv(
 
   const lines = report.questions.map((a) => {
     const pct = a.totalAttempts > 0 ? Math.round((a.correctCount / a.totalAttempts) * 100) : 0;
-    const d = a.discriminationIndex !== null ? a.discriminationIndex.toFixed(2) : "";
     return [
       a.questionNumber,
       `"${a.correctAnswer.replace(/"/g, '""')}"`,
@@ -335,9 +337,8 @@ export function exportItemAnalysisCsv(
       a.correctCount,
       a.partialCount,
       `${pct}%`,
-      d,
-      discriminationLabel(a.discriminationIndex),
       difficultyLabel(a),
+      discriminationLabel(a.discriminationIndex),
       `"${(attention.get(a.questionNumber) ?? "").replace(/"/g, '""')}"`,
     ].join(",");
   });
@@ -378,89 +379,98 @@ export async function exportItemAnalysisPdf(
     color: rgb(0.06, 0.2, 0.15),
   });
   y -= 20;
-  page.drawText(
-    `Graded: ${report.gradedStudentCount} students · Pending review: ${report.pendingReviewCount} · ` +
-      `Overall correct: ${Math.round(overallDifficulty(report) * 100)}%`,
-    { x: 40, y, size: 9, font },
+
+  function drawWrapped(text: string, x: number, size: number, usedFont: typeof font) {
+    const words = text.split(" ");
+    let line = "";
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      if (usedFont.widthOfTextAtSize(next, size) > 515 - (x - 40) && line) {
+        newPageIfNeeded();
+        page.drawText(line, { x, y, size, font: usedFont });
+        y -= size + 4;
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    if (line) {
+      newPageIfNeeded();
+      page.drawText(line, { x, y, size, font: usedFont });
+      y -= size + 4;
+    }
+  }
+
+  const overall = Math.round(overallDifficulty(report) * 100);
+  const pendingLine =
+    report.pendingReviewCount > 0
+      ? `${report.pendingReviewCount} sheet${report.pendingReviewCount === 1 ? "" : "s"} still need review on the phone.`
+      : "No sheets are waiting for review.";
+  drawWrapped(
+    `${report.gradedStudentCount} graded students. They got ${overall}% of the questions right. ${pendingLine}`,
+    40,
+    9,
+    font,
   );
-  y -= 24;
+  y -= 8;
 
   const hardest = [...report.questions]
     .sort((a, b) => questionDifficulty(a) - questionDifficulty(b))
     .slice(0, 5);
   if (hardest.length > 0) {
-    page.drawText("Hardest questions:", { x: 40, y, size: 10, font: bold });
-    y -= 14;
+    page.drawText("Hardest questions", { x: 40, y, size: 11, font: bold });
+    y -= 16;
     for (const q of hardest) {
-      newPageIfNeeded();
       const pct = Math.round(questionDifficulty(q) * 100);
-      page.drawText(`Q${q.questionNumber} — ${pct}% correct (key ${q.correctAnswer})`, {
-        x: 48,
-        y,
-        size: 9,
+      const howHard = pct <= 0 ? "Nobody got this right" : `${pct}% got this right`;
+      drawWrapped(
+        `Question ${q.questionNumber} — ${howHard}. The answer is ${q.correctAnswer}.`,
+        48,
+        9,
         font,
-      });
-      y -= 12;
+      );
     }
     y -= 8;
   }
 
   if (subject) {
-    const attention = questionsNeedingAttention(subject, report).slice(0, 8);
+    const attention = questionsNeedingAttention(subject, report);
     if (attention.length > 0) {
-      page.drawText("Needs attention (reteach or rewrite):", {
-        x: 40,
-        y,
-        size: 10,
-        font: bold,
-      });
-      y -= 14;
+      newPageIfNeeded(3);
+      page.drawText("Questions to reteach", { x: 40, y, size: 11, font: bold });
+      y -= 16;
       for (const flag of attention) {
-        newPageIfNeeded(2);
-        page.drawText(`Q${flag.questionNumber} — ${flag.reasons.join("; ").slice(0, 85)}`, {
-          x: 48,
-          y,
-          size: 8,
+        drawWrapped(
+          `Question ${flag.questionNumber} — ${flag.reasons.join(". ")}.`,
+          48,
+          9,
           font,
-        });
-        y -= 11;
+        );
       }
       y -= 8;
     }
   }
 
-  page.drawText("Q#  Key  Correct  Partial  P%  D   Quality", {
-    x: 40,
-    y,
-    size: 9,
-    font: bold,
-  });
-  y -= 14;
+  newPageIfNeeded(3);
+  page.drawText("Every question", { x: 40, y, size: 11, font: bold });
+  y -= 16;
 
   for (const a of report.questions) {
-    newPageIfNeeded(2);
-    const pct = a.totalAttempts > 0 ? Math.round((a.correctCount / a.totalAttempts) * 100) : 0;
-    const d = a.discriminationIndex !== null ? a.discriminationIndex.toFixed(2) : "—";
-    const quality = discriminationLabel(a.discriminationIndex);
-    page.drawText(
-      `${String(a.questionNumber).padStart(2)}   ${a.correctAnswer.padEnd(4)} ${String(a.correctCount).padStart(3)}/${a.totalAttempts}   ${String(a.partialCount).padStart(3)}   ${String(pct).padStart(3)}%  ${d.padStart(5)}  ${quality}`,
-      { x: 40, y, size: 8, font },
+    const partial =
+      a.partialCount > 0 ? ` ${a.partialCount} were partly right.` : "";
+    drawWrapped(
+      `Question ${a.questionNumber}. Answer ${a.correctAnswer}. ${a.correctCount} of ${a.totalAttempts} got it right. ${difficultyLabel(a)}. ${discriminationLabel(a.discriminationIndex)}.${partial}`,
+      48,
+      9,
+      font,
     );
-    y -= 11;
     const dist = sortedDistributionKeys(a.answerDistribution)
-      .map((k) => `${k}:${a.answerDistribution[k]}`)
-      .join(" ");
+      .map((k) => `${k} ${a.answerDistribution[k]}`)
+      .join(", ");
     if (dist) {
-      newPageIfNeeded();
-      page.drawText(`     ${dist.slice(0, 90)}`, {
-        x: 40,
-        y,
-        size: 7,
-        font,
-        color: rgb(0.4, 0.4, 0.4),
-      });
-      y -= 10;
+      drawWrapped(`Choices: ${dist}`, 60, 8, font);
     }
+    y -= 4;
   }
 
   return pdf.save();

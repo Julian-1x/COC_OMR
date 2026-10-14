@@ -70,10 +70,10 @@ function scan(
 describe("web item analysis helpers", () => {
   it("labels discrimination bands for teachers", () => {
     expect(discriminationQuality(0.45)).toBe("strong");
-    expect(discriminationLabel(0.32)).toBe("Good");
-    expect(discriminationLabel(0.21)).toBe("Fair");
-    expect(discriminationLabel(0.1)).toBe("Weak");
-    expect(discriminationLabel(null)).toBe("Need more scans");
+    expect(discriminationLabel(0.32)).toBe("Works well");
+    expect(discriminationLabel(0.21)).toBe("Okay");
+    expect(discriminationLabel(0.1)).toBe("Check this question");
+    expect(discriminationLabel(null)).toBe("Need more graded sheets");
   });
 
   it("sorts hardest and weakest D", () => {

@@ -233,7 +233,7 @@ export function AnalysisContent({
           ← Results
         </Link>
         <h1 className="mt-2 text-2xl font-extrabold text-slate-800">Item analysis</h1>
-        <p className="mt-1 text-sm text-slate-500">Hard items, weak questions, popular wrong answers</p>
+        <p className="mt-1 text-sm text-slate-500">Which questions to reteach</p>
       </div>
 
       <SyncLoopNotice className="mb-3" />
@@ -279,7 +279,7 @@ export function AnalysisContent({
               <option value="number">By question #</option>
               <option value="hardest">Hardest first</option>
               <option value="easiest">Easiest first</option>
-              <option value="weakD">Weakest discrimination first</option>
+              <option value="weakD">Questions to check first</option>
             </Select>
           </div>
           <div className="flex flex-col justify-end gap-2">
@@ -289,7 +289,7 @@ export function AnalysisContent({
                 checked={showDistribution}
                 onChange={(e) => setShowDistribution(e.target.checked)}
               />
-              Show answer distribution
+              Show how many chose each answer
             </label>
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="secondary" onClick={downloadCsv} disabled={!report}>
@@ -329,15 +329,17 @@ export function AnalysisContent({
               <p className="mt-1 text-2xl font-extrabold text-slate-800">{passRate}%</p>
             </Card>
             <Card>
-              <p className="text-xs font-bold uppercase text-slate-500">Avg. item correct</p>
+              <p className="text-xs font-bold uppercase text-slate-500">Questions right</p>
               <p className="mt-1 text-2xl font-extrabold text-slate-800">{avgDifficultyPct}%</p>
+              <p className="mt-1 text-xs text-slate-500">Average across every question</p>
             </Card>
             {report.supersededScanCount > 0 ? (
               <Card>
-                <p className="text-xs font-bold uppercase text-slate-500">Older rescans ignored</p>
+                <p className="text-xs font-bold uppercase text-slate-500">Old scans left out</p>
                 <p className="mt-1 text-2xl font-extrabold text-slate-800">
                   {report.supersededScanCount}
                 </p>
+                <p className="mt-1 text-xs text-slate-500">Only the latest scan counts</p>
               </Card>
             ) : (
               <Card>
@@ -351,9 +353,9 @@ export function AnalysisContent({
 
           {attention.length > 0 ? (
             <Card className="mb-4 border-red-200 bg-red-50">
-              <p className="text-sm font-extrabold text-red-900">Needs attention</p>
+              <p className="text-sm font-extrabold text-red-900">Questions to reteach</p>
               <p className="mt-1 text-xs text-red-800">
-                Reteach these items, or rewrite if many strong students also miss them (weak D).
+                These were hard, or many students picked the same wrong answer.
               </p>
               <ul className="mt-3 space-y-2">
                 {attention.slice(0, 8).map((flag) => (
@@ -376,7 +378,7 @@ export function AnalysisContent({
               </ul>
               {attention.length > 8 ? (
                 <p className="mt-2 text-xs text-red-800">
-                  +{attention.length - 8} more — sort by hardest or weak discrimination below.
+                  +{attention.length - 8} more. Sort questions by Hardest first to see the rest.
                 </p>
               ) : null}
             </Card>
@@ -409,20 +411,20 @@ export function AnalysisContent({
 
           <Card>
             <p className="mb-3 text-xs text-slate-500">
-              <strong>D</strong> compares top vs bottom scorers. Strong (≥0.30) separates who knows the topic.
+              Check this question means students who passed the exam missed it too. Look at the wording before the next test.
             </p>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs font-bold uppercase text-slate-500">
-                    <th className="sticky left-0 bg-white px-2 py-2 text-left">Q#</th>
-                    <th className="px-2 py-2 text-left">Key</th>
-                    <th className="px-2 py-2 text-left">Correct</th>
-                    <th className="px-2 py-2 text-left">Partial</th>
-                    <th className="px-2 py-2 text-left">Difficulty</th>
-                    <th className="px-2 py-2 text-left">Discrimination</th>
+                    <th className="sticky left-0 bg-white px-2 py-2 text-left">Question</th>
+                    <th className="px-2 py-2 text-left">Answer</th>
+                    <th className="px-2 py-2 text-left">Got it right</th>
+                    <th className="px-2 py-2 text-left">Partly right</th>
+                    <th className="px-2 py-2 text-left">How hard</th>
+                    <th className="px-2 py-2 text-left">Separates the class</th>
                     {showDistribution ? (
-                      <th className="px-2 py-2 text-left">Distribution</th>
+                      <th className="px-2 py-2 text-left">Choices</th>
                     ) : null}
                   </tr>
                 </thead>
@@ -445,7 +447,7 @@ export function AnalysisContent({
                           {a.questionNumber}
                           {flagged ? (
                             <span className="ml-1 text-[10px] font-bold uppercase text-red-700">
-                              review
+                              Reteach
                             </span>
                           ) : null}
                         </td>
@@ -468,13 +470,10 @@ export function AnalysisContent({
                             <span
                               className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold ${discriminationColorClass(a.discriminationIndex)}`}
                             >
-                              {a.discriminationIndex.toFixed(2)}
-                              <span className="font-semibold opacity-80">
-                                {discriminationLabel(a.discriminationIndex)}
-                              </span>
+                              {discriminationLabel(a.discriminationIndex)}
                             </span>
                           ) : (
-                            <span className="text-xs text-slate-500">Need ≥4 graded</span>
+                            <span className="text-xs text-slate-500">Need at least 4 graded sheets</span>
                           )}
                         </td>
                         {showDistribution ? (

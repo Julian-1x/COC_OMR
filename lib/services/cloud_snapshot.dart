@@ -1,6 +1,7 @@
 import 'package:omr_app/models/exam_data.dart';
 import 'package:omr_app/utils/answer_key_sections.dart';
 import 'package:omr_app/utils/student_identity.dart';
+import 'package:omr_app/utils/sync_activity_message.dart';
 
 /// Rows downloaded from the cloud API before merging into local SQLite.
 class CloudPullSnapshot {
@@ -39,6 +40,7 @@ class CloudMergeSummary {
     required this.subjects,
     required this.scanResults,
     required this.deadlines,
+    this.notes = const <String>[],
   });
 
   final int sections;
@@ -46,6 +48,9 @@ class CloudMergeSummary {
   final int subjects;
   final int scanResults;
   final int deadlines;
+
+  /// Teacher-facing lines for answer keys that actually arrived from the cloud.
+  final List<String> notes;
 
   int get total =>
       sections + students + subjects + scanResults + deadlines;
@@ -109,6 +114,7 @@ class CloudSnapshotMerger {
         subjects: subjects.applied + healedSubjectCount,
         scanResults: scanResults.applied,
         deadlines: deadlines.applied,
+        notes: subjects.notes,
       ),
     );
   }
@@ -215,6 +221,7 @@ class CloudSnapshotMerger {
       for (final entry in local) entry.id: entry,
     };
     var applied = 0;
+    final notes = <String>[];
 
     for (final cloudRow in cloud) {
       final existing = byId[cloudRow.id] ??
@@ -223,6 +230,23 @@ class CloudSnapshotMerger {
       if (existing == null || existing.updatedAt != merged.updatedAt) {
         applied++;
       }
+      if (identical(merged, cloudRow)) {
+        final sectionsChanged = existing != null &&
+            !_sameSectionNames(existing.sectionNames, cloudRow.sectionNames);
+        final isNew = existing == null;
+        final contentChanged =
+            existing != null && existing.updatedAt != cloudRow.updatedAt;
+        if (isNew || sectionsChanged || contentChanged) {
+          notes.add(
+            cloudSubjectSentence(
+              name: cloudRow.name,
+              sections: cloudRow.sectionNames,
+              isNew: isNew,
+              sectionsChanged: sectionsChanged,
+            ),
+          );
+        }
+      }
       byId[cloudRow.id] = merged;
     }
 
@@ -230,6 +254,7 @@ class CloudSnapshotMerger {
       merged: byId.values.toList()
         ..sort((a, b) => a.name.compareTo(b.name)),
       applied: applied,
+      notes: notes,
     );
   }
 
@@ -404,8 +429,13 @@ class CloudSnapshotMerger {
 }
 
 class _MergeResult<T> {
-  const _MergeResult({required this.merged, required this.applied});
+  const _MergeResult({
+    required this.merged,
+    required this.applied,
+    this.notes = const <String>[],
+  });
 
   final List<T> merged;
   final int applied;
+  final List<String> notes;
 }
